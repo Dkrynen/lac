@@ -93,7 +93,7 @@ jobs:
       - name: Create DMG
         run: |
           pip install dmgbuild
-          dmgbuild -s .dmgsettings.py "Model Hub" dist/Model-Hub.dmg
+          dmgbuild -s .github/dmgsettings.py "Model Hub" dist/Model-Hub.dmg
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -9,6 +9,7 @@ build/
 *.exe
 *.msi
 *.iss
+!installer.iss
 *.log
 .venv/
 venv/
