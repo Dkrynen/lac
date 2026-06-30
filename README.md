@@ -4,7 +4,7 @@ Hardware scanner + model recommender + installer + chat for local LLMs.
 
 Scans your GPU, VRAM, RAM, and CPU — then recommends the best models that fit your hardware. Installs and runs models via [Ollama](https://ollama.com).
 
-![Dashboard](https://raw.githubusercontent.com/anomalyco/model-hub/main/screenshots/dashboard.png)
+![Dashboard](https://raw.githubusercontent.com/Dkrynen/model-hub/main/screenshots/dashboard.png)
 
 ## Features
 
@@ -19,7 +19,7 @@ Scans your GPU, VRAM, RAM, and CPU — then recommends the best models that fit 
 
 ### Option 1: Download the installer (Windows)
 
-Download the latest `Model-Hub-Setup-x.x.x.exe` from the [Releases page](https://github.com/anomalyco/model-hub/releases).
+Download the latest `Model-Hub-Setup-x.x.x.exe` from the [Releases page](https://github.com/Dkrynen/model-hub/releases).
 
 ### Option 2: Run from source
 
@@ -28,7 +28,7 @@ Download the latest `Model-Hub-Setup-x.x.x.exe` from the [Releases page](https:/
 #    https://ollama.com/download
 
 # 2. Clone and run
-git clone https://github.com/anomalyco/model-hub.git
+git clone https://github.com/Dkrynen/model-hub.git
 cd model-hub
 pip install flask
 python server.py

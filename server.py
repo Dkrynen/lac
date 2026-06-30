@@ -27,7 +27,7 @@ def get_version():
 
 def check_for_update(current_version: str) -> dict | None:
     try:
-        url = "https://api.github.com/repos/anomalyco/model-hub/releases/latest"
+        url = "https://api.github.com/repos/Dkrynen/model-hub/releases/latest"
         req = urllib.request.Request(url, method="GET")
         req.add_header("Accept", "application/json")
         resp = urllib.request.urlopen(req, timeout=5)

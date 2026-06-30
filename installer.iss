@@ -5,7 +5,7 @@
 #define MyAppName "Model Hub"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Model Hub Contributors"
-#define MyAppURL "https://github.com/anomalyco/model-hub"
+#define MyAppURL "https://github.com/Dkrynen/model-hub"
 #define MyAppExeName "model-hub.exe"
 
 [Setup]

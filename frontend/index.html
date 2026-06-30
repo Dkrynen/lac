@@ -7,8 +7,11 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="sidebar">
-  <div class="sidebar-brand">Model Hub</div>
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <span class="brand-icon">⬡</span> Model Hub
+    <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">&times;</button>
+  </div>
   <nav>
     <a class="active" data-page="dashboard" href="#dashboard">Dashboard</a>
     <a data-page="scan" href="#scan">Scan &amp; Recommend</a>
@@ -29,19 +32,19 @@
   <div class="card-grid">
     <div class="card" id="card-system">
       <h3>System</h3>
-      <div class="card-body"><em>Scanning...</em></div>
+      <div class="card-body"><div class="spinner"></div></div>
     </div>
     <div class="card" id="card-gpu">
       <h3>GPU</h3>
-      <div class="card-body"><em>Scanning...</em></div>
+      <div class="card-body"><div class="spinner"></div></div>
     </div>
     <div class="card" id="card-ollama">
       <h3>Ollama</h3>
-      <div class="card-body"><em>Checking...</em></div>
+      <div class="card-body"><div class="spinner"></div></div>
     </div>
     <div class="card" id="card-models">
       <h3>Installed Models</h3>
-      <div class="card-body"><em>Loading...</em></div>
+      <div class="card-body"><div class="spinner"></div></div>
     </div>
   </div>
   <div class="quick-recs">
@@ -53,8 +56,8 @@
 <div id="page-scan" class="page">
   <h1>Scan &amp; Recommend</h1>
   <div class="scan-section">
-    <button class="btn" onclick="runScan()">Scan Hardware</button>
-    <button class="btn btn-secondary" onclick="runScanAndRecommend()">Scan + Recommend</button>
+    <button class="btn" id="btn-scan">Scan Hardware</button>
+    <button class="btn btn-secondary" id="btn-recommend">Scan + Recommend</button>
   </div>
   <div class="scan-vram">
     <label>VRAM override (GB): <input type="number" id="vram-override" min="0" step="0.5" value="0" style="width:80px"></label>
@@ -66,6 +69,15 @@
         <option value="chat">Chat</option>
       </select>
     </label>
+    <label class="sort-label">Sort:
+      <select id="sort-recs">
+        <option value="score">Score</option>
+        <option value="vram">VRAM</option>
+        <option value="context">Context</option>
+        <option value="name">Name</option>
+      </select>
+    </label>
+    <button class="btn btn-sm btn-secondary" id="btn-export-csv" title="Export as CSV">Export CSV</button>
   </div>
   <div id="scan-result"></div>
   <div id="recs-result"></div>
@@ -73,23 +85,27 @@
 
 <div id="page-models" class="page">
   <h1>Installed Models</h1>
-  <button class="btn" onclick="loadInstalledModels()">Refresh</button>
-  <div id="installed-models"><em>Loading...</em></div>
+  <div class="models-toolbar">
+    <input type="text" id="model-search" placeholder="Filter models..." class="search-input">
+    <button class="btn btn-sm" id="btn-refresh-models">Refresh</button>
+  </div>
+  <div id="installed-models"><div class="spinner"></div></div>
 </div>
 
 <div id="page-chat" class="page">
   <h1>Chat</h1>
   <div class="chat-controls">
     <select id="chat-model"><option value="">— Select a model —</option></select>
-    <button class="btn" onclick="loadChatModels()">Refresh</button>
+    <button class="btn btn-sm" id="btn-refresh-chat-models">Refresh</button>
+    <button class="btn btn-sm btn-secondary" id="btn-clear-chat">Clear</button>
   </div>
   <div class="chat-box" id="chat-box">
     <div class="chat-welcome">Select a model above and start chatting.</div>
   </div>
   <div class="chat-input-row">
-    <textarea id="chat-input" rows="2" placeholder="Type a message..." disabled></textarea>
-    <button class="btn" id="chat-send" onclick="sendChat()" disabled>Send</button>
-    <button class="btn btn-secondary" id="chat-stop" onclick="stopChat()" style="display:none">Stop</button>
+    <textarea id="chat-input" rows="2" placeholder="Type a message... (Ctrl+Enter to send)" disabled></textarea>
+    <button class="btn" id="chat-send" disabled>Send</button>
+    <button class="btn btn-secondary" id="chat-stop" style="display:none">Stop</button>
   </div>
 </div>
 
@@ -100,6 +116,18 @@
 </div>
 
 </div>
+
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal" id="modal-content">
+    <div class="modal-header">
+      <h3 id="modal-title">Details</h3>
+      <button class="modal-close" id="modal-close">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<div id="toast-container" class="toast-container"></div>
 
 <script src="script.js"></script>
 </body>

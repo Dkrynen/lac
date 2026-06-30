@@ -17,8 +17,8 @@ try:
     from .version import __version__ as APP_VERSION, __github_url__, __download_url__
 except ImportError:
     APP_VERSION = "0.0.0"
-    __github_url__ = "https://github.com/anomalyco/model-hub"
-    __download_url__ = "https://github.com/anomalyco/model-hub/releases"
+    __github_url__ = "https://github.com/Dkrynen/model-hub"
+    __download_url__ = "https://github.com/Dkrynen/model-hub/releases"
 
 app = Flask(__name__, static_folder="../frontend", static_url_path="", template_folder="../frontend")
 
@@ -179,9 +179,9 @@ def ollama_pull():
                 if decoded:
                     yield f"data: {decoded}\n\n"
         except urllib.error.HTTPError as e:
-            yield f"data: {json.dumps({'error': str(e)} )}\n\n"
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)} )}\n\n"
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
         yield "data: [DONE]\n\n"
 
     return Response(
@@ -274,7 +274,7 @@ def api_check_update():
         import urllib.request
         import urllib.error
         import json as _json
-        url = "https://api.github.com/repos/anomalyco/model-hub/releases/latest"
+        url = "https://api.github.com/repos/Dkrynen/model-hub/releases/latest"
         req = urllib.request.Request(url, method="GET")
         req.add_header("Accept", "application/json")
         req.add_header("User-Agent", "model-hub/1.0")

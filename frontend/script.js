@@ -1,7 +1,53 @@
-let activeDownloads = {};
 let systemInfo = null;
 let chatAbort = null;
 let chatHistory = [];
+let ollamaPoll = null;
+
+function escHtml(s) {
+  if (typeof s !== "string") return "";
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function mdToHtml(text) {
+  return escHtml(text)
+    .replace(/```(\w*)\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/^- (.+)$/gm, "&bull; $1<br>")
+    .replace(/\n/g, "<br>");
+}
+
+function toast(msg, type) {
+  const container = document.getElementById("toast-container");
+  const el = document.createElement("div");
+  el.className = `toast ${type || "info"}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; setTimeout(() => el.remove(), 300); }, 3500);
+}
+
+function openModal(title, bodyHtml) {
+  document.getElementById("modal-title").textContent = title;
+  document.getElementById("modal-body").innerHTML = bodyHtml;
+  document.getElementById("modal-overlay").classList.remove("hidden");
+}
+
+function closeModal() {
+  document.getElementById("modal-overlay").classList.add("hidden");
+}
+
+function getRecsSortFn(key) {
+  const fns = {
+    score: (a, b) => b.score - a.score,
+    vram: (a, b) => a.vram_gb - b.vram_gb,
+    context: (a, b) => b.context - a.context,
+    name: (a, b) => a.name.localeCompare(b.name),
+  };
+  return fns[key] || fns.score;
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   initNav();
@@ -9,14 +55,45 @@ document.addEventListener("DOMContentLoaded", () => {
   loadDashboard();
   checkFirstRun();
   checkForUpdates();
+  ollamaPoll = setInterval(checkOllama, 10000);
 
-  const sel = document.getElementById("chat-model");
-  sel.addEventListener("change", selectChatModel);
-  const input = document.getElementById("chat-input");
-  input.addEventListener("keydown", e => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  document.getElementById("chat-input").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendChat(); }
+  });
+  document.getElementById("chat-model").addEventListener("change", selectChatModel);
+  document.getElementById("sort-recs").addEventListener("change", sortRecommendations);
+  document.getElementById("model-search").addEventListener("input", filterInstalledModels);
+
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape") closeModal();
+  });
+
+  document.addEventListener("click", e => {
+    const pullBtn = e.target.closest("[data-pull]");
+    if (pullBtn) { pullModel(decodeURIComponent(pullBtn.dataset.pull)); return; }
+    const detailBtn = e.target.closest("[data-details]");
+    if (detailBtn) { showDetails(detailBtn.dataset.details); return; }
+    const runBtn = e.target.closest("[data-run]");
+    if (runBtn) { runModel(decodeURIComponent(runBtn.dataset.run)); return; }
+    const delBtn = e.target.closest("[data-delete]");
+    if (delBtn) { deleteModel(decodeURIComponent(delBtn.dataset.delete)); return; }
+    const copyBtn = e.target.closest("[data-copy]");
+    if (copyBtn) { copyText(copyBtn.dataset.copy); return; }
+
+    if (e.target.id === "modal-overlay" || e.target.closest("#modal-close")) closeModal();
+    if (e.target.id === "btn-scan") runScan();
+    if (e.target.id === "btn-recommend") runScanAndRecommend();
+    if (e.target.id === "btn-refresh-models") loadInstalledModels();
+    if (e.target.id === "btn-refresh-chat-models") loadChatModels();
+    if (e.target.id === "btn-clear-chat") clearChat();
+    if (e.target.id === "btn-export-csv") exportRecsCSV();
+    if (e.target.id === "sidebar-toggle") toggleSidebar();
   });
 });
+
+function toggleSidebar() {
+  document.getElementById("sidebar").classList.toggle("open");
+}
 
 function initNav() {
   document.querySelectorAll(".sidebar nav a").forEach(a => {
@@ -27,8 +104,10 @@ function initNav() {
       a.classList.add("active");
       document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
       document.getElementById(`page-${page}`).classList.add("active");
+      document.getElementById("sidebar").classList.remove("open");
       if (page === "models") loadInstalledModels();
       if (page === "dashboard") loadDashboard();
+      if (page === "chat") loadChatModels();
     });
   });
 }
@@ -68,7 +147,7 @@ async function checkFirstRun() {
           <h3>Ollama Not Found</h3>
           <p>Model Hub requires <strong>Ollama</strong> to download and run models.</p>
           <p style="margin:16px 0">
-            <a href="${r.download_url}" target="_blank" class="btn" style="text-decoration:none">Download Ollama</a>
+            <a href="${escHtml(r.download_url)}" target="_blank" class="btn" style="text-decoration:none">Download Ollama</a>
           </p>
           <p style="font-size:0.85rem;color:var(--muted)">Install Ollama, then restart Model Hub. You can still browse recommendations without it.</p>
         </div>
@@ -86,7 +165,7 @@ async function checkForUpdates() {
     const update = await api("GET", `/api/system/check-update?current=${v.version}`);
     if (update.update_available) {
       const badge = document.getElementById("ollama-badge");
-      badge.innerHTML = `<a href="${update.download_url}" target="_blank" style="color:var(--accent);text-decoration:none">Update v${update.latest_version}</a>`;
+      badge.innerHTML = `<a href="${escHtml(update.download_url)}" target="_blank" style="color:var(--accent);text-decoration:none">Update v${update.latest_version}</a>`;
     }
   } catch {
     document.getElementById("version-badge").textContent = "";
@@ -98,37 +177,40 @@ async function loadDashboard() {
     const info = await api("GET", "/api/scan");
     systemInfo = info;
     renderSystemCard(info);
-  } catch { document.getElementById("card-system").querySelector(".card-body").innerHTML = '<span class="empty-state">Failed to scan</span>'; }
+  } catch { document.getElementById("card-system").querySelector(".card-body").textContent = "Failed to scan"; }
 
   try {
     const r = await api("GET", "/api/ollama/status");
-    document.getElementById("card-ollama").querySelector(".card-body").innerHTML = r.running
-      ? `<span class="badge badge-gpu">Running</span> version ${r.version || "?"}`
-      : '<span class="badge badge-offload">Not running</span> - <a href="https://ollama.com/download" target="_blank" style="color:var(--accent)">Install Ollama</a>';
+    const body = document.getElementById("card-ollama").querySelector(".card-body");
+    body.innerHTML = r.running
+      ? `<span class="badge badge-gpu">Running</span> version ${escHtml(r.version || "?")}`
+      : '<span class="badge badge-offload">Not running</span>';
   } catch { document.getElementById("card-ollama").querySelector(".card-body").textContent = "Error checking"; }
 
   try {
     const models = await api("GET", "/api/ollama/models");
     const card = document.getElementById("card-models").querySelector(".card-body");
-    if (models.length === 0) { card.innerHTML = '<span class="empty-state">No models installed</span>'; }
-    else { card.innerHTML = models.map(m => `<div>${m.name} <span class="badge badge-gpu">${m.size_gb} GB</span></div>`).join(""); }
+    if (models.length === 0) { card.textContent = "No models installed"; }
+    else { card.innerHTML = models.map(m => `<div>${escHtml(m.name)} <span class="badge badge-gpu">${m.size_gb} GB</span></div>`).join(""); }
   } catch { document.getElementById("card-models").querySelector(".card-body").textContent = "Ollama not running"; }
 }
 
 function renderSystemCard(info) {
   const sys = document.getElementById("card-system").querySelector(".card-body");
   sys.innerHTML = `
-    <div><span class="label">OS:</span> <span class="value">${info.os}</span></div>
-    <div><span class="label">CPU:</span> <span class="value">${info.cpu}</span></div>
+    <div><span class="label">OS:</span> <span class="value">${escHtml(info.os)}</span></div>
+    <div><span class="label">CPU:</span> <span class="value">${escHtml(info.cpu)}</span></div>
     <div><span class="label">Cores:</span> <span class="value">${info.cores}</span></div>
     <div><span class="label">RAM:</span> <span class="value">${info.ram_gb} GB</span></div>
   `;
   const gpu = document.getElementById("card-gpu").querySelector(".card-body");
   if (info.gpus && info.gpus.length) {
-    gpu.innerHTML = info.gpus.map(g => `<div><span class="value">${g.name}</span> — ${g.vram_gb} GB <span class="label">(${g.backend})</span></div>`).join("");
+    gpu.innerHTML = info.gpus.map(g =>
+      `<div><span class="value">${escHtml(g.name)}</span> &mdash; ${g.vram_gb} GB <span class="label">(${escHtml(g.backend)})</span></div>`
+    ).join("");
     loadQuickPicks(info.total_vram_gb || info.gpus[0].vram_gb);
   } else {
-    gpu.innerHTML = '<span class="empty-state">No GPU detected</span>';
+    gpu.textContent = "No GPU detected";
   }
 }
 
@@ -139,42 +221,46 @@ async function loadQuickPicks(vram) {
     const r = await api("GET", `/api/recommend?vram=${vram}&use_case=coding&top_k=3`);
     const recs = r.recommendations || [];
     if (!recs.length) { div.innerHTML = '<span class="empty-state">No recommendations</span>'; return; }
-    div.innerHTML = recs.map((m, i) =>
-      `<div class="result-box" style="margin-bottom:8px">
+    div.innerHTML = recs.map((m, i) => {
+      const tag = encodeURIComponent(m.model_id);
+      return `<div class="result-box" style="margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <div><strong>${i+1}.</strong> ${m.name} <span class="badge badge-${m.run_mode === 'gpu' ? 'gpu' : 'offload'}">${m.quant}</span></div>
-          <button class="btn btn-sm" onclick="pullModel('${m.ollama_cmd.replace('ollama run ', '')}')">Install</button>
+          <div><strong>${i+1}.</strong> ${escHtml(m.name)} <span class="badge badge-${m.run_mode === 'gpu' ? 'gpu' : 'offload'}">${escHtml(m.quant)}</span></div>
+          <button class="btn btn-sm" data-pull="${tag}">Install</button>
         </div>
         <div style="font-size:0.8rem;color:var(--muted);margin-top:4px">
-          ${m.vram_gb} GB VRAM · ${m.context} ctx · Score ${m.score}
+          ${m.vram_gb} GB VRAM &middot; ${m.context} ctx &middot; Score ${m.score}
         </div>
-      </div>`
-    ).join("");
+      </div>`;
+    }).join("");
   } catch { div.innerHTML = '<span class="empty-state">Error loading picks</span>'; }
 }
 
+let lastRecs = [];
+
 async function runScan() {
-  document.getElementById("scan-result").innerHTML = '<p><em>Scanning...</em></p>';
+  const div = document.getElementById("scan-result");
+  div.innerHTML = '<div class="result-box"><div class="spinner"></div> Scanning...</div>';
   const info = await api("GET", "/api/scan");
   systemInfo = info;
   let html = '<div class="result-box"><h3>System</h3><table>';
-  html += `<tr><td>OS</td><td>${info.os}</td></tr>`;
-  html += `<tr><td>CPU</td><td>${info.cpu}</td></tr>`;
+  html += `<tr><td>OS</td><td>${escHtml(info.os)}</td></tr>`;
+  html += `<tr><td>CPU</td><td>${escHtml(info.cpu)}</td></tr>`;
   html += `<tr><td>Cores</td><td>${info.cores}</td></tr>`;
   html += `<tr><td>RAM</td><td>${info.ram_gb} GB</td></tr>`;
   if (info.gpus && info.gpus.length) {
     info.gpus.forEach(g => {
-      html += `<tr><td>GPU</td><td>${g.name} — ${g.vram_gb} GB (${g.backend})</td></tr>`;
+      html += `<tr><td>GPU</td><td>${escHtml(g.name)} &mdash; ${g.vram_gb} GB (${escHtml(g.backend)})</td></tr>`;
     });
   } else {
     html += `<tr><td>GPU</td><td>None detected</td></tr>`;
   }
   html += '</table></div>';
-  document.getElementById("scan-result").innerHTML = html;
+  div.innerHTML = html;
 }
 
 async function runScanAndRecommend() {
-  document.getElementById("scan-result").innerHTML = '<p><em>Scanning...</em></p>';
+  document.getElementById("scan-result").innerHTML = '<div class="result-box"><div class="spinner"></div> Scanning...</div>';
   document.getElementById("recs-result").innerHTML = '';
   const vramOverride = parseFloat(document.getElementById("vram-override").value) || 0;
   const useCase = document.getElementById("use-case").value;
@@ -183,44 +269,52 @@ async function runScanAndRecommend() {
   const info = await api("GET", "/api/scan");
   systemInfo = info;
   let html = '<div class="result-box"><h3>System</h3><table>';
-  html += `<tr><td>OS</td><td>${info.os}</td></tr>`;
-  html += `<tr><td>CPU</td><td>${info.cpu}</td></tr>`;
+  html += `<tr><td>OS</td><td>${escHtml(info.os)}</td></tr>`;
+  html += `<tr><td>CPU</td><td>${escHtml(info.cpu)}</td></tr>`;
   html += `<tr><td>RAM</td><td>${info.ram_gb} GB</td></tr>`;
   if (info.gpus && info.gpus.length) {
     info.gpus.forEach(g => {
-      html += `<tr><td>GPU</td><td>${g.name} — ${g.vram_gb} GB (${g.backend})</td></tr>`;
+      html += `<tr><td>GPU</td><td>${escHtml(g.name)} &mdash; ${g.vram_gb} GB (${escHtml(g.backend)})</td></tr>`;
     });
   }
   html += '</table></div>';
   document.getElementById("scan-result").innerHTML = html;
 
-  document.getElementById("recs-result").innerHTML = '<p><em>Generating recommendations...</em></p>';
+  document.getElementById("recs-result").innerHTML = '<div class="result-box"><div class="spinner"></div> Generating recommendations...</div>';
   const effectiveVram = vram || info.total_vram_gb || (info.gpus && info.gpus.length ? info.gpus[0].vram_gb : 0);
-  const r = await api("GET", `/api/recommend?vram=${effectiveVram}&use_case=${useCase}&top_k=8`);
-  const recs = r.recommendations || [];
+  const r = await api("GET", `/api/recommend?vram=${effectiveVram}&use_case=${useCase}&top_k=50`);
+  lastRecs = r.recommendations || [];
 
-  if (!recs.length) {
+  if (!lastRecs.length) {
     document.getElementById("recs-result").innerHTML = '<div class="result-box"><span class="empty-state">No models fit your hardware. Try a lower VRAM override or different use case.</span></div>';
     return;
   }
 
-  let rh = `<div class="result-box"><h3>Recommended Models (VRAM: ${r.vram_gb} GB | RAM: ${r.ram_gb} GB)</h3><table>`;
+  renderRecommendations();
+}
+
+function renderRecommendations() {
+  const sortKey = document.getElementById("sort-recs").value;
+  const sorted = [...lastRecs].sort(getRecsSortFn(sortKey));
+
+  let rh = `<div class="result-box"><h3>Recommended Models (${lastRecs.length} found)</h3><table>`;
   rh += `<tr><th>#</th><th>Model</th><th>Quant</th><th>Score</th><th>VRAM</th><th>Context</th><th>Mode</th><th>Actions</th></tr>`;
-  recs.forEach((m, i) => {
+  sorted.forEach((m, i) => {
     const modeClass = m.run_mode === "gpu" ? "badge-gpu" : "badge-offload";
     const modeLabel = m.run_mode === "gpu" ? "GPU" : "Offload";
-    const modelTag = m.ollama_cmd.replace("ollama run ", "");
+    const tag = encodeURIComponent(m.model_id);
+    const details = JSON.stringify(m).replace(/"/g, "&quot;");
     rh += `<tr>
       <td>${i+1}</td>
-      <td><strong>${m.name}</strong></td>
-      <td><span class="badge badge-gpu">${m.quant}</span></td>
+      <td><strong>${escHtml(m.name)}</strong></td>
+      <td><span class="badge badge-gpu">${escHtml(m.quant)}</span></td>
       <td>${m.score}</td>
       <td>${m.vram_gb}</td>
       <td>${m.context}</td>
       <td><span class="badge ${modeClass}">${modeLabel}</span></td>
       <td class="model-actions">
-        <button class="btn btn-sm" onclick="pullModel('${modelTag}')">Install</button>
-        <button class="btn btn-sm btn-secondary" onclick="showDetails('${encodeURIComponent(JSON.stringify(m))}')">Details</button>
+        <button class="btn btn-sm" data-pull="${tag}">Install</button>
+        <button class="btn btn-sm btn-secondary" data-details="${details}">Details</button>
       </td>
     </tr>`;
   });
@@ -228,28 +322,49 @@ async function runScanAndRecommend() {
   document.getElementById("recs-result").innerHTML = rh;
 }
 
-function showDetails(encoded) {
-  const m = JSON.parse(decodeURIComponent(encoded));
-  const body = document.getElementById("recs-result");
-  body.innerHTML += `
-    <div class="result-box">
-      <h3>${m.name}</h3>
-      <table>
-        <tr><td>Provider</td><td>${m.provider || "?"}</td></tr>
-        <tr><td>Parameters</td><td>${m.params_b}B</td></tr>
-        <tr><td>Quantization</td><td>${m.quant}</td></tr>
-        <tr><td>VRAM needed</td><td>${m.vram_gb} GB</td></tr>
-        <tr><td>Context window</td><td>${m.context} tokens</td></tr>
-        <tr><td>Run mode</td><td>${m.run_mode}</td></tr>
-        <tr><td>Quality score</td><td>${m.scores.quality}</td></tr>
-        <tr><td>Speed score</td><td>${m.scores.speed}</td></tr>
-        <tr><td>Fit score</td><td>${m.scores.fit}</td></tr>
-        <tr><td>Context score</td><td>${m.scores.context}</td></tr>
-        <tr><td>Ollama command</td><td><code>${m.ollama_cmd}</code></td></tr>
-      </table>
-    </div>
+function sortRecommendations() {
+  if (lastRecs.length) renderRecommendations();
+}
+
+function exportRecsCSV() {
+  if (!lastRecs.length) { toast("No recommendations to export.", "error"); return; }
+  const headers = ["Name", "Quant", "Score", "VRAM GB", "Context", "Mode", "Provider", "Params B"];
+  const rows = lastRecs.map(m => [
+    m.name, m.quant, m.score, m.vram_gb, m.context, m.run_mode, m.provider || "", m.params_b
+  ]);
+  const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "model-recommendations.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast("Exported recommendations as CSV.", "success");
+}
+
+function showDetails(raw) {
+  const m = JSON.parse(raw);
+  const bodyHtml = `
+    <table>
+      <tr><td>Provider</td><td>${escHtml(m.provider || "?")}</td></tr>
+      <tr><td>Parameters</td><td>${m.params_b}B</td></tr>
+      <tr><td>Quantization</td><td>${escHtml(m.quant)}</td></tr>
+      <tr><td>VRAM needed</td><td>${m.vram_gb} GB</td></tr>
+      <tr><td>Context window</td><td>${m.context} tokens</td></tr>
+      <tr><td>Run mode</td><td>${escHtml(m.run_mode)}</td></tr>
+      <tr><td>Quality score</td><td>${m.scores.quality}</td></tr>
+      <tr><td>Speed score</td><td>${m.scores.speed}</td></tr>
+      <tr><td>Fit score</td><td>${m.scores.fit}</td></tr>
+      <tr><td>Context score</td><td>${m.scores.context}</td></tr>
+      <tr><td>Ollama command</td><td><code>${escHtml(m.ollama_cmd)}</code></td></tr>
+    </table>
+    <div style="margin-top:12px"><button class="btn btn-sm btn-secondary" data-copy="${escHtml(m.ollama_cmd)}">Copy Command</button></div>
   `;
-  body.scrollIntoView({ behavior: "smooth", block: "end" });
+  openModal(escHtml(m.name), bodyHtml);
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => toast("Copied to clipboard!", "success")).catch(() => {});
 }
 
 async function pullModel(modelName) {
@@ -259,7 +374,7 @@ async function pullModel(modelName) {
   const el = document.createElement("div");
   el.className = "download-item";
   el.id = id;
-  el.innerHTML = `<div class="title">Installing ${modelName}...</div>
+  el.innerHTML = `<div class="title">Installing ${escHtml(modelName)}...</div>
     <div class="progress-bar"><div class="progress-fill" id="${id}-progress"></div></div>
     <div class="status" id="${id}-status">Starting download...</div>`;
   dlDiv.prepend(el);
@@ -289,9 +404,10 @@ async function pullModel(modelName) {
           const p = JSON.parse(s);
           const progress = document.getElementById(`${id}-progress`);
           const status = document.getElementById(`${id}-status`);
+          const title = el.querySelector(".title");
           if (p.error) {
             status.textContent = `Error: ${p.error}`;
-            status.className = "status";
+            status.className = "status error";
             break;
           }
           if (p.status) status.textContent = p.status;
@@ -304,20 +420,30 @@ async function pullModel(modelName) {
             if (progress) progress.style.width = "100%";
             status.textContent = "Installed successfully!";
             status.className = "status done";
-            document.querySelector(".download-item .title").textContent = `${modelName} — Installed`;
+            if (title) title.textContent = `${modelName} &mdash; Installed`;
+            toast(`Installed ${modelName}`, "success");
           }
         } catch {}
       }
     }
   } catch (err) {
     const status = document.getElementById(`${id}-status`);
-    if (status) { status.textContent = `Failed: ${err.message}`; }
+    if (status) { status.textContent = `Failed: ${err.message}`; status.className = "status error"; }
+    toast(`Download failed: ${err.message}`, "error");
   }
+}
+
+function filterInstalledModels() {
+  const query = document.getElementById("model-search").value.toLowerCase();
+  document.querySelectorAll("#installed-models table tr").forEach((tr, i) => {
+    if (i === 0) return;
+    tr.style.display = tr.textContent.toLowerCase().includes(query) ? "" : "none";
+  });
 }
 
 async function loadInstalledModels() {
   const div = document.getElementById("installed-models");
-  div.innerHTML = '<em>Loading...</em>';
+  div.innerHTML = '<div class="spinner"></div>';
   try {
     const models = await api("GET", "/api/ollama/models");
     if (!models.length) {
@@ -326,18 +452,20 @@ async function loadInstalledModels() {
     }
     let html = '<div class="result-box"><table><tr><th>Model</th><th>Size</th><th>Modified</th><th>Actions</th></tr>';
     models.forEach(m => {
+      const safeName = escHtml(m.name);
       html += `<tr>
-        <td><strong>${m.name}</strong></td>
+        <td><strong>${safeName}</strong></td>
         <td>${m.size_gb} GB</td>
         <td>${new Date(m.modified).toLocaleDateString()}</td>
         <td class="model-actions">
-          <button class="btn btn-sm btn-secondary" onclick="runModel('${m.name}')">Run</button>
-          <button class="btn btn-sm btn-danger" onclick="deleteModel('${m.name}')">Delete</button>
+          <button class="btn btn-sm btn-secondary" data-run="${encodeURIComponent(m.name)}">Run</button>
+          <button class="btn btn-sm btn-danger" data-delete="${encodeURIComponent(m.name)}">Delete</button>
         </td>
       </tr>`;
     });
     html += '</table></div>';
     div.innerHTML = html;
+    document.getElementById("model-search").value = "";
   } catch {
     div.innerHTML = '<div class="result-box"><span class="empty-state">Could not connect to Ollama.</span><p style="margin-top:12px">Make sure <a href="https://ollama.com/download" target="_blank" style="color:var(--accent)">Ollama</a> is installed and running.</p></div>';
   }
@@ -347,18 +475,20 @@ async function deleteModel(name) {
   if (!confirm(`Delete ${name}?`)) return;
   await api("POST", "/api/ollama/delete", { model: name });
   loadInstalledModels();
+  toast(`Deleted ${name}`, "info");
 }
 
 function runModel(name) {
-  const encoded = encodeURIComponent(name);
-  window.open(`ollama://run/${encoded}`, "_blank");
+  const cmd = `ollama run ${name}`;
+  copyText(cmd);
+  toast(`Copied "${cmd}" to clipboard. Paste in your terminal to run!`, "info");
 }
 
 async function loadChatModels() {
   const sel = document.getElementById("chat-model");
   try {
     const models = await api("GET", "/api/ollama/models");
-    sel.innerHTML = '<option value="">— Select a model —</option>';
+    sel.innerHTML = '<option value="">&mdash; Select a model &mdash;</option>';
     models.forEach(m => {
       const opt = document.createElement("option");
       opt.value = m.name;
@@ -376,6 +506,14 @@ function selectChatModel() {
   document.getElementById("chat-input").disabled = !hasModel;
   document.getElementById("chat-send").disabled = !hasModel;
   if (hasModel) document.getElementById("chat-input").focus();
+}
+
+function clearChat() {
+  if (!chatHistory.length && !document.getElementById("chat-box").querySelector(".chat-msg")) return;
+  if (!confirm("Clear the chat history?")) return;
+  chatHistory = [];
+  document.getElementById("chat-box").innerHTML = '<div class="chat-welcome">Select a model above and start chatting.</div>';
+  toast("Chat cleared.", "info");
 }
 
 async function sendChat() {
@@ -428,7 +566,7 @@ async function sendChat() {
           }
           if (p.message && p.message.content) {
             fullContent += p.message.content;
-            msgDiv.querySelector(".bubble").textContent = fullContent;
+            msgDiv.querySelector(".bubble").innerHTML = mdToHtml(fullContent);
             box.scrollTop = box.scrollHeight;
           }
         } catch {}
@@ -457,10 +595,16 @@ function stopChat() {
 
 function appendChatMessage(role, text, thinking) {
   const box = document.getElementById("chat-box");
+  const welcome = box.querySelector(".chat-welcome");
+  if (welcome) welcome.remove();
+
   const div = document.createElement("div");
   div.className = `chat-msg ${role}`;
   if (thinking) div.classList.add("thinking");
-  div.innerHTML = `<div class="label">${role === "user" ? "You" : "Assistant"}</div><div class="bubble">${text}</div>`;
+
+  const ts = new Date().toLocaleTimeString();
+  const content = role === "user" ? escHtml(text) : (thinking ? escHtml(text) : mdToHtml(text));
+  div.innerHTML = `<div class="label">${role === "user" ? "You" : "Assistant"}</div><div class="bubble">${content}</div><span class="timestamp">${ts}</span>`;
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
   return div;
