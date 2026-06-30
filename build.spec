@@ -6,85 +6,62 @@ Produces a single portable .exe with embedded frontend.
 
 Usage:
     pyinstaller build.spec
-
-Or with UPX compression:
-    pyinstaller build.spec --upx-dir=C:/path/to/upx
 """
 
-import sys
-import os
 from pathlib import Path
 
 block_cipher = None
+PROJECT_ROOT = Path.cwd()
 
-# -- Collect all backend Python files --
-backend_src = [
-    ("backend", "backend"),
-    ("backend/cookbook", "backend/cookbook"),
-    ("backend/cookbook/data", "backend/cookbook/data"),
+# -- Collect backend Python files --
+backend_dirs = [
+    "backend",
+    "backend/cookbook",
+    "backend/cookbook/data",
 ]
 
 # -- Collect frontend static files --
-frontend_src = [
-    ("frontend/index.html", "frontend"),
-    ("frontend/style.css", "frontend"),
-    ("frontend/script.js", "frontend"),
+frontend_files = [
+    "frontend/index.html",
+    "frontend/style.css",
+    "frontend/script.js",
 ]
 
 datas = []
-for src, dst in backend_src:
-    p = Path(__file__).parent / src
+for d in backend_dirs:
+    p = PROJECT_ROOT / d
     if p.is_dir():
         for f in p.rglob("*"):
             if f.suffix in (".py", ".json", ".txt") and "__pycache__" not in f.parts:
-                datas.append((str(f), dst))
-    elif p.is_file():
-        datas.append((str(p), dst))
+                datas.append((str(f), d))
 
-for src, dst in frontend_src:
-    p = Path(__file__).parent / src
-    datas.append((str(p), dst))
+for f in frontend_files:
+    p = PROJECT_ROOT / f
+    if p.exists():
+        datas.append((str(p), "frontend"))
 
-# Also include requirements.txt and version info
 for extra in ["requirements.txt", "CHANGELOG.md", "LICENSE"]:
-    p = Path(__file__).parent / extra
+    p = PROJECT_ROOT / extra
     if p.exists():
         datas.append((str(p), "."))
 
 a = Analysis(
     ["server.py"],
-    pathex=[Path(__file__).parent],
+    pathex=[str(PROJECT_ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=[
         "flask",
-        "json",
-        "os",
-        "platform",
-        "subprocess",
-        "threading",
-        "time",
-        "webbrowser",
-        "urllib",
-        "shutil",
-        "pathlib",
-        "dataclasses",
-        "re",
-        "typing",
+        "json", "os", "platform", "subprocess",
+        "threading", "time", "webbrowser", "urllib",
+        "shutil", "pathlib", "dataclasses", "re", "typing",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        "tkinter",
-        "unittest",
-        "pytest",
-        "numpy",
-        "matplotlib",
-        "PIL",
-        "cv2",
-        "pandas",
-        "scipy",
+        "tkinter", "unittest", "pytest",
+        "numpy", "matplotlib", "PIL", "cv2", "pandas", "scipy",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -117,7 +94,6 @@ exe = EXE(
     icon=None,
 )
 
-# Also create a console-enabled exe for debugging
 exe_debug = EXE(
     pyz,
     a.scripts,
