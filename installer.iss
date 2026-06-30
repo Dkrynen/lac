@@ -54,6 +54,9 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
 Filename: "taskkill"; Parameters: "/f /im {#MyAppExeName}"; Flags: runhidden
 
 [Code]
+var
+  ProcessResult: Cardinal;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
@@ -62,7 +65,7 @@ begin
     begin
       if MsgBox('Ollama was not detected on your system. Would you like to download it?', mbConfirmation, MB_YESNO) = IDYES then
       begin
-        ShellExec('open', 'https://ollama.com/download', '', '', SW_SHOW, ewNoWait, nil);
+        ShellExec('open', 'https://ollama.com/download', '', '', SW_SHOW, ewNoWait, ProcessResult);
       end;
     end;
   end;
