@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0 (2026-06-30)
+
+- Full CLI client (`model-hub chat|list|pull|delete|ps|inspect|scan|recommend|browse`)
+- Interactive chat shell with streaming, history, system prompts, and slash commands
+- Cross-platform batch launcher (`model-hub.bat`)
+- Colorized terminal output with ANSI throughout
+- Direct Ollama API integration (no web server needed for CLI commands)
+
 ## 1.3.0 (2026-06-30)
 
 - Per-variant model browser (420 entries, one per size/quant family)

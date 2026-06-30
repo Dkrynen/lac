@@ -1,0 +1,602 @@
+#!/usr/bin/env python3
+"""
+Model Hub CLI — chat with and manage local LLMs via Ollama.
+
+Usage:
+  model-hub chat [model]          Start interactive chat
+  model-hub list                   List installed models
+  model-hub pull <model>           Download a model
+  model-hub delete <model>         Delete a model
+  model-hub ps                     Show running models
+  model-hub inspect <model>        Show model details
+  model-hub scan                   Scan hardware
+  model-hub recommend              Get recommendations
+  model-hub browse [query]         Browse model library
+  model-hub help                   Show this help
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+C = {
+    "reset": "\033[0m",
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+    "red": "\033[91m",
+    "green": "\033[92m",
+    "yellow": "\033[93m",
+    "blue": "\033[94m",
+    "magenta": "\033[95m",
+    "cyan": "\033[96m",
+    "gray": "\033[90m",
+    "bg_blue": "\033[44m",
+    "bg_green": "\033[42m",
+    "bg_red": "\033[41m",
+}
+
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def get_host():
+    return os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+def ollama(method, path, body=None, timeout=30):
+    url = f"{get_host()}{path}"
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}: {e.read().decode()[:200]}"}
+    except urllib.error.URLError:
+        return {"error": f"Cannot connect to Ollama at {OLLAMA_HOST}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def ollama_stream(path, body, timeout=300):
+    url = f"{get_host()}{path}"
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        for line in resp:
+            decoded = line.decode().strip()
+            if decoded:
+                yield json.loads(decoded)
+    except urllib.error.HTTPError as e:
+        yield {"error": f"HTTP {e.code}: {e.read().decode()[:200]}"}
+    except urllib.error.URLError:
+        yield {"error": f"Cannot connect to Ollama at {OLLAMA_HOST}"}
+    except Exception as e:
+        yield {"error": str(e)}
+
+
+def print_header(text):
+    print(f"\n{C['bold']}{C['blue']}{'='*60}{C['reset']}")
+    print(f"{C['bold']}{C['cyan']}  {text}{C['reset']}")
+    print(f"{C['bold']}{C['blue']}{'='*60}{C['reset']}\n")
+
+
+def print_table(headers, rows):
+    cols = len(headers)
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(cell)))
+    sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
+    print(sep)
+    hdr = "| " + " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers)) + " |"
+    print(f"{C['bold']}{hdr}{C['reset']}")
+    print(sep)
+    for row in rows:
+        cells = "| " + " | ".join(
+            str(c).ljust(col_widths[i]) for i, c in enumerate(row)
+        ) + " |"
+        print(cells)
+    print(sep)
+
+
+def cmd_chat(args):
+    models = ollama("GET", "/api/tags")
+    if "error" in models:
+        eprint(f"{C['red']}Error: {models['error']}{C['reset']}")
+        sys.exit(1)
+
+    model_list = [m["name"] for m in models.get("models", [])]
+    if not model_list:
+        eprint(f"{C['yellow']}No models installed. Pull one first: model-hub pull <model>{C['reset']}")
+        sys.exit(1)
+
+    model = args.model or model_list[0]
+    if model not in model_list:
+        eprint(f"{C['red']}Model '{model}' not installed. Available: {', '.join(model_list)}{C['reset']}")
+        sys.exit(1)
+
+    system_prompt = args.system or ""
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+        print(f"{C['dim']}System: {system_prompt[:80]}{'...' if len(system_prompt) > 80 else ''}{C['reset']}")
+
+    print(f"{C['green']}Chatting with {C['bold']}{model}{C['reset']}")
+    print(f"{C['gray']}Type /help for commands, Ctrl+C or /exit to quit.{C['reset']}\n")
+
+    try:
+        import readline
+    except ImportError:
+        pass
+
+    while True:
+        try:
+            prompt = f"{C['cyan']}You> {C['reset']}"
+            user_input = input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        except UnicodeDecodeError:
+            print(f"{C['red']}Input error. Try again.{C['reset']}")
+            continue
+
+        if not user_input:
+            continue
+
+        if user_input.startswith("/"):
+            handled = handle_slash_command(user_input, model, messages, system_prompt)
+            if handled == "exit":
+                break
+            elif handled == "continue":
+                continue
+            else:
+                continue
+
+        messages.append({"role": "user", "content": user_input})
+        print(f"{C['green']}{model}>{C['reset']} ", end="", flush=True)
+
+        full_response = ""
+        for chunk in ollama_stream("/api/chat", {
+            "model": model, "messages": messages, "stream": True
+        }, timeout=args.timeout):
+            if "error" in chunk:
+                print(f"\n{C['red']}Error: {chunk['error']}{C['reset']}")
+                break
+            if chunk.get("message", {}).get("content"):
+                content = chunk["message"]["content"]
+                full_response += content
+                print(content, end="", flush=True)
+            if chunk.get("done"):
+                break
+        print()
+
+        if full_response:
+            messages.append({"role": "assistant", "content": full_response})
+
+
+def handle_slash_command(cmd, model, messages, system_prompt):
+    cmd = cmd.strip().lower()
+
+    if cmd in ("/exit", "/quit"):
+        print(f"{C['yellow']}Goodbye!{C['reset']}")
+        return "exit"
+
+    if cmd in ("/help", "/h"):
+        print(f"\n{C['bold']}Commands:{C['reset']}")
+        cmds = [
+            ("/help", "Show this help"),
+            ("/clear", "Clear conversation"),
+            ("/model <name>", "Switch model"),
+            ("/system <prompt>", "Set system prompt"),
+            ("/info", "Show current model info"),
+            ("/tokens", "Estimate token usage"),
+            ("/save <name>", "Save conversation"),
+            ("/copy", "Copy last response"),
+            ("/exit", "Exit chat"),
+        ]
+        for c, desc in cmds:
+            print(f"  {C['cyan']}{c:<20}{C['reset']} {C['gray']}{desc}{C['reset']}")
+        return "continue"
+
+    if cmd == "/clear":
+        messages.clear()
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        print(f"{C['yellow']}Conversation cleared.{C['reset']}")
+        return "continue"
+
+    if cmd.startswith("/model "):
+        new_model = cmd[7:].strip()
+        info = ollama("GET", "/api/tags")
+        available = [m["name"] for m in info.get("models", [])]
+        if new_model in available:
+            messages.clear()
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            print(f"{C['green']}Switched to {new_model}{C['reset']}")
+            return new_model
+        else:
+            print(f"{C['red']}Model '{new_model}' not installed.{C['reset']}")
+            return "continue"
+
+    if cmd.startswith("/system "):
+        sp = cmd[8:].strip()
+        if sp:
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] = sp
+            else:
+                messages.insert(0, {"role": "system", "content": sp})
+            print(f"{C['yellow']}System prompt set.{C['reset']}")
+        else:
+            print(f"{C['yellow']}Current system prompt: {messages[0]['content'] if messages and messages[0]['role'] == 'system' else '(none)'}{C['reset']}")
+        return "continue"
+
+    if cmd == "/info":
+        info = ollama("GET", f"/api/show", {"name": model})
+        if "error" in info:
+            print(f"{C['red']}{info['error']}{C['reset']}")
+        else:
+            print(f"\n{C['bold']}Model: {model}{C['reset']}")
+            details = info.get("details", {})
+            print(f"  Parameters: {details.get('parameter_size', '?')}")
+            print(f"  Quantization: {details.get('quantization_level', '?')}")
+            print(f"  Family: {details.get('family', '?')}")
+            print(f"  Format: {details.get('format', '?')}")
+            modelfile = info.get("modelfile", "")
+            if "CONTEXT_LENGTH" in modelfile:
+                for line in modelfile.split("\n"):
+                    if "CONTEXT_LENGTH" in line:
+                        print(f"  Context: {line.split()[1]}")
+        return "continue"
+
+    if cmd == "/tokens":
+        total = sum(len(m["content"].split()) * 1.3 for m in messages)
+        print(f"{C['yellow']}Estimated: ~{int(total)} tokens ({len(messages)} messages){C['reset']}")
+        return "continue"
+
+    if cmd == "/copy":
+        for m in reversed(messages):
+            if m["role"] == "assistant":
+                try:
+                    import pyperclip
+                    pyperclip.copy(m["content"])
+                    print(f"{C['green']}Copied last response to clipboard.{C['reset']}")
+                except ImportError:
+                    print(f"{C['yellow']}pyperclip not installed. Response length: {len(m['content'])} chars{C['reset']}")
+                break
+        return "continue"
+
+    if cmd.startswith("/save "):
+        name = cmd[6:].strip()
+        path = Path.home() / ".model-hub" / "sessions" / f"{name}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"model": model, "messages": messages}, f, indent=2)
+        print(f"{C['green']}Saved session to {path}{C['reset']}")
+        return "continue"
+
+    print(f"{C['red']}Unknown command: {cmd}{C['reset']}")
+    return "continue"
+
+
+def cmd_list(args):
+    result = ollama("GET", "/api/tags")
+    if "error" in result:
+        eprint(f"{C['red']}{result['error']}{C['reset']}")
+        sys.exit(1)
+
+    models = result.get("models", [])
+    if not models:
+        print(f"{C['yellow']}No models installed. Pull one: model-hub pull <model>{C['reset']}")
+        return
+
+    print_header(f"Installed Models ({len(models)})")
+    headers = ["Name", "Size", "Modified"]
+    rows = []
+    for m in sorted(models, key=lambda x: x["name"]):
+        size_gb = round(m.get("size", 0) / (1024**3), 2)
+        modified = m.get("modified_at", "")[:10]
+        rows.append([m["name"], f"{size_gb} GB", modified])
+    print_table(headers, rows)
+
+
+def cmd_pull(args):
+    model = args.model
+    print(f"{C['yellow']}Pulling {C['bold']}{model}{C['reset']}...")
+    print(f"{C['gray']}(this may take a while depending on model size){C['reset']}\n")
+
+    for chunk in ollama_stream("/api/pull", {"name": model}, timeout=3600):
+        if "error" in chunk:
+            eprint(f"\n{C['red']}Error: {chunk['error']}{C['reset']}")
+            sys.exit(1)
+        status = chunk.get("status", "")
+        if status:
+            completed = chunk.get("completed", 0)
+            total = chunk.get("total", 0)
+            if total and completed:
+                pct = int(completed / total * 100)
+                bar = "█" * (pct // 2) + "░" * (50 - pct // 2)
+                print(f"\r{C['cyan']}[{bar}]{C['reset']} {pct}% - {status}", end="", flush=True)
+            else:
+                print(f"\r  {C['dim']}{status}{C['reset']}", end="", flush=True)
+        if chunk.get("status") == "success":
+            print(f"\n\n{C['green']}✓ {model} installed successfully!{C['reset']}")
+
+
+def cmd_delete(args):
+    model = args.model
+    if not args.yes:
+        print(f"{C['yellow']}Delete {C['bold']}{model}{C['reset']}? [y/N] ", end="", flush=True)
+        resp = input().strip().lower()
+        if resp != "y":
+            print(f"{C['gray']}Cancelled.{C['reset']}")
+            return
+    result = ollama("DELETE", f"/api/delete", {"name": model})
+    if "error" in result:
+        eprint(f"{C['red']}{result['error']}{C['reset']}")
+        sys.exit(1)
+    print(f"{C['green']}✓ {model} deleted.{C['reset']}")
+
+
+def cmd_ps(args):
+    result = ollama("GET", "/api/ps")
+    if "error" in result:
+        eprint(f"{C['red']}{result['error']}{C['reset']}")
+        sys.exit(1)
+
+    models = result.get("models", [])
+    if not models:
+        print(f"{C['yellow']}No models currently loaded in memory.{C['reset']}")
+        return
+
+    print_header(f"Running Models ({len(models)})")
+    headers = ["Name", "Size", "VRAM"]
+    rows = []
+    for m in models:
+        size_gb = round(m.get("size", 0) / (1024**3), 2)
+        vram = m.get("size_vram", 0)
+        vram_gb = round(vram / (1024**3), 2) if vram else 0
+        rows.append([m["name"], f"{size_gb} GB", f"{vram_gb} GB" if vram_gb else "?"])
+    print_table(headers, rows)
+
+
+def cmd_inspect(args):
+    model = args.model
+    result = ollama("GET", f"/api/show", {"name": model})
+    if "error" in result:
+        eprint(f"{C['red']}{result['error']}{C['reset']}")
+        sys.exit(1)
+
+    print_header(f"Model: {model}")
+    details = result.get("details", {})
+    info_rows = [
+        ["Parameters", details.get("parameter_size", "?")],
+        ["Quantization", details.get("quantization_level", "?")],
+        ["Family", details.get("family", "?")],
+        ["Format", details.get("format", "?")],
+        ["Size", f"{round(result.get('size', 0) / (1024**3), 2)} GB"],
+        ["Modified", result.get("modified_at", "?")],
+    ]
+    modelfile = result.get("modelfile", "")
+    for line in modelfile.split("\n"):
+        if line.startswith("FROM "):
+            info_rows.append(["Base", line[5:].strip()])
+        if "CONTEXT_LENGTH" in line:
+            try:
+                info_rows.append(["Context", line.split()[1]])
+            except IndexError:
+                pass
+
+    for label, value in info_rows:
+        print(f"  {C['bold']}{label}:{C['reset']} {value}")
+    print()
+
+
+def cmd_scan(args):
+    print(f"{C['yellow']}Scanning hardware...{C['reset']}")
+    script_dir = Path(__file__).parent
+    sys.path.insert(0, str(script_dir))
+    try:
+        from backend.cookbook.hardware import detect
+        info = detect()
+        print_header("System")
+
+        rows = [
+            ["OS", info.os],
+            ["CPU", info.cpu],
+            ["Cores", str(info.cpu_cores)],
+            ["RAM", f"{info.ram_gb} GB"],
+        ]
+        if info.gpus:
+            for i, gpu in enumerate(info.gpus):
+                rows.append([f"GPU {i+1}", f"{gpu.name} ({gpu.vram_gb} GB, {gpu.backend})"])
+        else:
+            rows.append(["GPU", "None detected"])
+        if info.is_apple_silicon:
+            rows.append(["Apple Silicon", "Yes"])
+
+        for label, value in rows:
+            print(f"  {C['bold']}{label}:{C['reset']} {value}")
+        print()
+
+        total_vram = info.total_vram_gb or (info.gpus[0].vram_gb if info.gpus else 0)
+        if total_vram:
+            print(f"  {C['bold']}Total VRAM:{C['reset']} {total_vram} GB")
+            print(f"  {C['bold']}Models that fit:{C['reset']} Up to ~{int(total_vram / 0.58 * 0.9)}B params at Q4_K_M")
+
+    except ImportError as e:
+        eprint(f"{C['red']}Error loading hardware scanner: {e}{C['reset']}")
+        eprint(f"{C['gray']}Run this from the Model Hub project directory.{C['reset']}")
+        sys.exit(1)
+
+
+def cmd_recommend(args):
+    script_dir = Path(__file__).parent
+    sys.path.insert(0, str(script_dir))
+    try:
+        from backend.cookbook.hardware import detect
+        from backend.cookbook.recommend import recommend
+
+        print(f"{C['yellow']}Scanning hardware and computing recommendations...{C['reset']}")
+        info = detect()
+        use_case = args.use_case or "coding"
+        recs = recommend(info, use_case=use_case, top_k=args.top_k or 10)
+
+        if not recs:
+            print(f"{C['yellow']}No models fit your hardware.{C['reset']}")
+            return
+
+        print_header(f"Top {len(recs)} Recommendations for '{use_case}'")
+        headers = ["#", "Model", "Quant", "Score", "VRAM", "Ctx", "Mode"]
+        rows = []
+        for i, r in enumerate(recs, 1):
+            mode = f"{C['green']}GPU{C['reset']}" if r.run_mode == "gpu" else f"{C['yellow']}Offload{C['reset']}"
+            rows.append([str(i), r.model.name, r.quant, str(r.score), f"{r.vram_gb} GB", str(r.context_used), mode])
+
+        for row in rows:
+            print(f"  {row[0]:<3} {C['bold']}{row[1]:<35}{C['reset']} {row[2]:<7} {row[3]:<7} {row[4]:<7} {row[5]:<7} {row[6]}")
+
+    except ImportError as e:
+        eprint(f"{C['red']}Error: {e}{C['reset']}")
+        eprint(f"{C['gray']}Run from the Model Hub project directory.{C['reset']}")
+        sys.exit(1)
+
+
+def cmd_browse(args):
+    query = args.query or ""
+    sort = args.sort or "pulls"
+
+    try:
+        cache_path = Path(__file__).parent / "backend" / "cookbook" / "data" / "library_cache.json"
+        if not cache_path.exists():
+            eprint(f"{C['red']}Library cache not found. Run the web server first to populate it.{C['reset']}")
+            sys.exit(1)
+        with open(cache_path) as f:
+            data = json.load(f)
+        models = data.get("models", [])
+    except Exception as e:
+        eprint(f"{C['red']}Error loading library: {e}{C['reset']}")
+        sys.exit(1)
+
+    if query:
+        q = query.lower()
+        models = [m for m in models if q in m.get("display", m.get("name", "")).lower() or q in m.get("description", "").lower()]
+
+    models = [m for m in models if m.get("vram_q4", 0) > 0]
+
+    if sort == "pulls":
+        def parse_pulls(p):
+            try:
+                p = p.replace("M", "e6").replace("B", "e9").replace("K", "e3")
+                return float(p)
+            except (ValueError, TypeError):
+                return 0
+        models.sort(key=lambda m: parse_pulls(m.get("pulls", "0")), reverse=True)
+    elif sort == "vram":
+        models.sort(key=lambda m: m.get("vram_q4", 999))
+    elif sort == "params":
+        models.sort(key=lambda m: m.get("params_b", 0), reverse=True)
+    elif sort == "name":
+        models.sort(key=lambda m: m.get("display", m.get("name", "")))
+
+    print_header(f"Model Library ({len(models)} variants)")
+    for m in models[:args.limit or 30]:
+        display = m.get("display", m.get("name", "?"))
+        params = m.get("params_b", 0)
+        vram_q4 = m.get("vram_q4", 0)
+        vram_q8 = m.get("vram_q8", 0)
+        pulls = m.get("pulls", "0")
+        ctx = m.get("context", 0)
+        if vram_q4:
+            color = C["green"] if vram_q4 <= 16 else (C["yellow"] if vram_q4 <= 32 else C["red"])
+            print(f"  {C['bold']}{display:<40}{C['reset']} {color}{vram_q4:>5.1f}GB{C['reset']} Q4  {C['dim']}{vram_q8:>5.1f}GB Q8  {params:>5.1f}B  ctx={ctx:<6}  pulls={pulls}{C['reset']}")
+        else:
+            print(f"  {C['gray']}{display:<40}  no VRAM data{C['reset']}")
+
+    remaining = len(models) - (args.limit or 30)
+    if remaining > 0:
+        print(f"\n  {C['dim']}... and {remaining} more. Use --limit to show more.{C['reset']}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=f"{C['bold']}Model Hub CLI{C['reset']} — Chat with and manage local LLMs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--host", default=None, help="Ollama host (default: OLLAMA_HOST env or localhost:11434)")
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_chat = sub.add_parser("chat", help="Interactive chat with a model")
+    p_chat.add_argument("model", nargs="?", help="Model to use (default: first installed)")
+    p_chat.add_argument("--system", help="System prompt")
+    p_chat.add_argument("--timeout", type=int, default=300, help="Request timeout in seconds")
+
+    p_list = sub.add_parser("list", aliases=["ls"], help="List installed models")
+    p_pull = sub.add_parser("pull", help="Download a model")
+    p_pull.add_argument("model", help="Model name (e.g. llama3.2:3b)")
+    p_delete = sub.add_parser("delete", aliases=["rm"], help="Delete a model")
+    p_delete.add_argument("model", help="Model name")
+    p_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+
+    p_ps = sub.add_parser("ps", help="Show running models")
+    p_inspect = sub.add_parser("inspect", help="Show model details")
+    p_inspect.add_argument("model", help="Model name")
+
+    p_scan = sub.add_parser("scan", help="Scan hardware")
+
+    p_rec = sub.add_parser("recommend", aliases=["rec"], help="Get model recommendations")
+    p_rec.add_argument("--use-case", default="coding", choices=["coding", "general", "reasoning", "chat"], help="Use case")
+    p_rec.add_argument("--top-k", type=int, default=10, help="Number of recommendations")
+
+    p_browse = sub.add_parser("browse", help="Browse model library")
+    p_browse.add_argument("query", nargs="?", help="Search query")
+    p_browse.add_argument("--sort", default="pulls", choices=["pulls", "vram", "params", "name"], help="Sort order")
+    p_browse.add_argument("--limit", type=int, default=30, help="Max results")
+
+    p_help = sub.add_parser("help", help="Show this help")
+
+    args = parser.parse_args()
+
+    if args.host:
+        os.environ["OLLAMA_HOST"] = args.host
+
+    if args.command == "help":
+        parser.print_help()
+        return
+
+    commands = {
+        "chat": cmd_chat,
+        "list": cmd_list,
+        "ls": cmd_list,
+        "pull": cmd_pull,
+        "delete": cmd_delete,
+        "rm": cmd_delete,
+        "ps": cmd_ps,
+        "inspect": cmd_inspect,
+        "scan": cmd_scan,
+        "recommend": cmd_recommend,
+        "rec": cmd_recommend,
+        "browse": cmd_browse,
+    }
+
+    cmd_fn = commands.get(args.command)
+    if cmd_fn:
+        cmd_fn(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
