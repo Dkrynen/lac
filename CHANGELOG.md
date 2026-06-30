@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 (2026-06-30)
+
+- Per-variant model browser (420 entries, one per size/quant family)
+- VRAM requirements at Q4_K_M, Q8_0, and F16 for every model
+- System compatibility badges on every card: ✅ Fits GPU / ⚠️ Offload / ❌ Too large
+- "Fits my GPU" filter — shows only models that fit your VRAM
+- Sort by VRAM (low-high) and parameters (high-low)
+- System specs bar showing your GPU VRAM with compatibility legend
+- Parameter counts, context windows, and architecture info on every model card
+- Smart VRAM estimation for non-curated models using quantization formulas
+
 ## 1.2.0 (2026-06-30)
 
 - Full Ollama library browser (235+ models with descriptions, capabilities, pull counts)

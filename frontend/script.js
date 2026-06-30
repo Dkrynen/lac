@@ -72,6 +72,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("browse-search").addEventListener("input", debounce(loadBrowse, 300));
   document.getElementById("browse-capability").addEventListener("change", loadBrowse);
   document.getElementById("browse-sort").addEventListener("change", loadBrowse);
+  document.getElementById("browse-compat").addEventListener("change", loadBrowse);
 
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") closeModal();
@@ -634,6 +635,7 @@ function appendChatMessage(role, text, thinking) {
 let allBrowseModels = [];
 let browsePageIdx = 0;
 const BROWSE_PAGE_SIZE = 24;
+let browseSystemVram = null;
 
 async function loadBrowse() {
   const grid = document.getElementById("browse-grid");
@@ -641,19 +643,43 @@ async function loadBrowse() {
   const q = document.getElementById("browse-search").value;
   const capability = document.getElementById("browse-capability").value;
   const sort = document.getElementById("browse-sort").value;
+  const compat = document.getElementById("browse-compat").value;
   try {
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (capability) params.set("capability", capability);
+    if (compat) params.set("compatible", compat);
     params.set("sort", sort);
     const r = await api("GET", "/api/library/browse?" + params.toString());
     allBrowseModels = r.models || [];
+    browseSystemVram = r.system_vram || null;
     browsePageIdx = 0;
-    document.getElementById("browse-count").textContent = `${allBrowseModels.length} models`;
+    document.getElementById("browse-count").textContent = `${allBrowseModels.length} model variants`;
+    updateBrowseSysSpecs();
     renderBrowsePage();
   } catch {
     grid.innerHTML = '<div class="result-box"><span class="empty-state">Failed to load model catalog.</span></div>';
   }
+}
+
+function updateBrowseSysSpecs() {
+  const div = document.getElementById("browse-sys-specs");
+  if (!browseSystemVram) {
+    div.innerHTML = '<span class="spec"><span class="value">Scan your hardware on the Dashboard for VRAM-based compatibility.</span></span>';
+    return;
+  }
+  div.innerHTML = `
+    <span class="spec"><span class="label">Your GPU VRAM:</span> <span class="value">${browseSystemVram} GB</span></span>
+    <span class="badge badge-fit-gpu">Fits GPU</span> = Q4 uses &le;90% VRAM
+    <span class="badge badge-fit-offload">Offload</span> = Q4 uses up to 2x VRAM
+    <span class="badge badge-fit-too-big">Too large</span> = Q4 needs &gt;2x VRAM
+  `;
+}
+
+function fitBadge(fit) {
+  const labels = { gpu: "Fits GPU", offload: "Offload", too_big: "Too large", unknown: "?", maybe: "Maybe" };
+  const cls = fit === "gpu" ? "badge-fit-gpu" : fit === "offload" ? "badge-fit-offload" : fit === "too_big" ? "badge-fit-too-big" : "badge-fit-maybe";
+  return fit && fit !== "unknown" ? `<span class="badge ${cls}">${labels[fit] || fit}</span>` : "";
 }
 
 function renderBrowsePage() {
@@ -666,16 +692,31 @@ function renderBrowsePage() {
     return;
   }
   grid.innerHTML = page.map(m => {
-    const tag = encodeURIComponent(m.name);
+    const display = m.display || m.name;
+    const tag = encodeURIComponent(m.display || m.name);
     const caps = (m.capabilities || []).map(c => `<span class="badge-sm cap">${escHtml(c)}</span>`).join("");
-    const sizes = (m.sizes || []).map(s => `<span class="badge-sm size">${escHtml(s)}</span>`).join("");
+    const fit = fitBadge(m.fit);
+    const vramLine = m.vram_q4 > 0
+      ? `<div style="font-size:0.75rem;color:var(--muted);margin-top:4px">
+          <span>${escHtml(m.variant || "")}</span>
+          <span style="margin:0 6px">&#8226;</span>
+          <span><strong>${m.params_b}B</strong> params</span>
+          <span style="margin:0 6px">&#8226;</span>
+          <span>Q4: <strong>${m.vram_q4}GB</strong></span>
+          <span style="margin:0 6px">&#8226;</span>
+          <span>Q8: ${m.vram_q8}GB</span>
+          <span style="margin:0 6px">&#8226;</span>
+          <span>ctx: ${m.context.toLocaleString()}</span>
+        </div>`
+      : "";
     return `<div class="browse-card">
-      <h3>${escHtml(m.name)}</h3>
-      <div class="desc">${escHtml(m.description || "No description available.")}</div>
+      <h3>${escHtml(display)}</h3>
+      <div class="desc">${escHtml(m.description || "No description.")}</div>
+      ${vramLine}
       <div class="meta">
         <span>${escHtml(m.pulls)} pulls</span>
-        ${caps ? ` ${caps}` : ""}
-        ${sizes ? ` ${sizes}` : ""}
+        ${fit}
+        ${caps}
       </div>
       <div class="actions">
         <button class="btn btn-sm" data-pull="${tag}">Install</button>

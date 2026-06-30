@@ -57,6 +57,7 @@
 
 <div id="page-browse" class="page">
   <h1>Browse Models</h1>
+  <div id="browse-sys-specs" class="browse-sys-specs"></div>
   <div class="browse-toolbar">
     <input type="text" id="browse-search" placeholder="Search 235+ models..." class="search-input">
     <select id="browse-capability" class="browse-select">
@@ -70,7 +71,13 @@
     <select id="browse-sort" class="browse-select">
       <option value="pulls">Most popular</option>
       <option value="name">Name A-Z</option>
-      <option value="newest">Newest</option>
+      <option value="vram">VRAM (low-high)</option>
+      <option value="params">Params (high-low)</option>
+    </select>
+    <select id="browse-compat" class="browse-select">
+      <option value="">All models</option>
+      <option value="gpu">Fits my GPU</option>
+      <option value="cpu">CPU only</option>
     </select>
     <span id="browse-count" class="browse-count"></span>
   </div>

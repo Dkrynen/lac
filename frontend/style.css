@@ -209,6 +209,20 @@ h3 { font-size: 0.9rem; font-weight: 600; color: var(--muted); text-transform: u
 .toast.error { border-color: var(--red); }
 .toast.info { border-color: var(--accent); }
 
+.browse-sys-specs {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 16px; margin-bottom: 12px; font-size: 0.82rem;
+  display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
+}
+.browse-sys-specs .spec { display: flex; align-items: center; gap: 4px; }
+.browse-sys-specs .spec .label { color: var(--muted); }
+.browse-sys-specs .spec .value { color: var(--text); font-weight: 600; }
+.browse-sys-specs .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; }
+.badge-fit-gpu { background: rgba(60, 207, 142, 0.15); color: var(--green); }
+.badge-fit-offload { background: rgba(240, 160, 64, 0.15); color: var(--orange); }
+.badge-fit-too-big { background: rgba(228, 84, 84, 0.15); color: var(--red); }
+.badge-fit-maybe { background: rgba(108, 140, 255, 0.15); color: var(--accent); }
+
 .browse-toolbar {
   display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap;
 }

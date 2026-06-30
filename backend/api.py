@@ -383,27 +383,71 @@ def api_library_browse():
     q = request.args.get("q", "").strip().lower()
     capability = request.args.get("capability", "").strip().lower()
     sort = request.args.get("sort", "pulls")
+    compatible = request.args.get("compatible", "").strip()
     result = _fetch_library()
     if isinstance(result, dict) and "error" in result:
         return jsonify(result)
     models = list(result)
     if q:
-        models = [m for m in models if q in m["name"].lower() or q in m["description"].lower()]
+        models = [m for m in models if q in m["name"].lower() or q in m.get("display", m["name"]).lower() or q in m.get("description", "").lower()]
     if capability:
         models = [m for m in models if any(capability in c.lower() for c in m.get("capabilities", []))]
+    
+    # Filter by system compatibility if user has VRAM
+    system_vram = None
+    if compatible and compatible != "false":
+        try:
+            from .cookbook.hardware import detect
+            sys_info = detect()
+            system_vram = sys_info.total_vram_gb or (sys_info.gpus[0].vram_gb if sys_info.gpus else 0)
+            if compatible == "gpu":
+                models = [m for m in models if m.get("vram_q4", 999) > 0 and m["vram_q4"] <= system_vram * 0.9]
+            elif compatible == "cpu":
+                models = [m for m in models if m.get("vram_q4", 999) > 0 and m["vram_q4"] > system_vram]
+            elif compatible == "any":
+                pass
+        except Exception:
+            pass
+    
     def parse_pulls(p):
         try:
             p = p.replace("M", "e6").replace("B", "e9").replace("K", "e3")
             return float(p)
         except (ValueError, TypeError):
             return 0
+    
+    def parse_vram(m):
+        return m.get("vram_q4", 0) or 0
+    
     if sort == "name":
-        models.sort(key=lambda m: m["name"])
+        models.sort(key=lambda m: m.get("display", m["name"]))
     elif sort == "pulls":
         models.sort(key=lambda m: parse_pulls(m.get("pulls", "0")), reverse=True)
     elif sort == "newest":
         models.sort(key=lambda m: m["name"], reverse=True)
-    return jsonify({"total": len(models), "models": models})
+    elif sort == "vram":
+        models.sort(key=parse_vram)
+    elif sort == "params":
+        models.sort(key=lambda m: m.get("params_b", 0), reverse=True)
+
+    # Annotate with compatibility if we have system info
+    if system_vram is not None:
+        for m in models:
+            vq4 = m.get("vram_q4", 0)
+            if vq4 and vq4 <= system_vram * 0.9:
+                m["fit"] = "gpu"
+            elif vq4 and vq4 <= system_vram * 2.0:
+                m["fit"] = "offload"
+            elif vq4:
+                m["fit"] = "too_big"
+            else:
+                m["fit"] = "unknown"
+    else:
+        for m in models:
+            vq4 = m.get("vram_q4", 0)
+            m["fit"] = "unknown" if not vq4 else ("cpu" if vq4 > 24 else "maybe")
+
+    return jsonify({"total": len(models), "system_vram": system_vram, "models": models})
 
 
 @app.route("/api/library/tags")
