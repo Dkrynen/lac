@@ -1,0 +1,1079 @@
+[
+  {
+    "id": "qwen3:0.6b",
+    "name": "Qwen3 0.6B",
+    "provider": "Alibaba",
+    "params_b": 0.6,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": true,
+    "active_params_b": 0.1,
+    "vram_q4": 0.9,
+    "vram_q8": 1.2,
+    "vram_f16": 1.7
+  },
+  {
+    "id": "qwen3:1.7b",
+    "name": "Qwen3 1.7B",
+    "provider": "Alibaba",
+    "params_b": 1.7,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": true,
+    "active_params_b": 0.4,
+    "vram_q4": 1.6,
+    "vram_q8": 2.4,
+    "vram_f16": 4.0
+  },
+  {
+    "id": "qwen3:4b",
+    "name": "Qwen3 4B",
+    "provider": "Alibaba",
+    "params_b": 4.0,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": true,
+    "active_params_b": 0.8,
+    "vram_q4": 3.1,
+    "vram_q8": 5.0,
+    "vram_f16": 8.8
+  },
+  {
+    "id": "qwen3:7b",
+    "name": "Qwen3 7B",
+    "provider": "Alibaba",
+    "params_b": 7.6,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 7.4,
+    "vram_q8": 11.0,
+    "vram_f16": 18.2
+  },
+  {
+    "id": "qwen3:14b",
+    "name": "Qwen3 14B",
+    "provider": "Alibaba",
+    "params_b": 14.8,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 13.9,
+    "vram_q8": 20.9,
+    "vram_f16": 34.9
+  },
+  {
+    "id": "qwen3:32b",
+    "name": "Qwen3 32B",
+    "provider": "Alibaba",
+    "params_b": 32.0,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 29.5,
+    "vram_q8": 44.6,
+    "vram_f16": 75.0
+  },
+  {
+    "id": "qwen3:72b",
+    "name": "Qwen3 72B",
+    "provider": "Alibaba",
+    "params_b": 72.0,
+    "arch": "qwen3",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 61.1,
+    "vram_q8": 95.0,
+    "vram_f16": 163.4
+  },
+  {
+    "id": "qwen3:235b",
+    "name": "Qwen3 235B",
+    "provider": "Alibaba",
+    "params_b": 235.0,
+    "arch": "qwen3",
+    "context": 262144,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 16.0,
+    "vram_q4": 170.4,
+    "vram_q8": 280.8,
+    "vram_f16": 504.1
+  },
+  {
+    "id": "qwen3-coder:7b",
+    "name": "Qwen3 Coder 7B",
+    "provider": "Alibaba",
+    "params_b": 7.6,
+    "arch": "qwen3",
+    "context": 131072,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 12.9,
+    "vram_q8": 16.4,
+    "vram_f16": 23.7
+  },
+  {
+    "id": "qwen3-coder:14b",
+    "name": "Qwen3 Coder 14B",
+    "provider": "Alibaba",
+    "params_b": 14.8,
+    "arch": "qwen3",
+    "context": 131072,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 24.6,
+    "vram_q8": 31.6,
+    "vram_f16": 45.6
+  },
+  {
+    "id": "qwen3-coder:30b",
+    "name": "Qwen3 Coder 30B",
+    "provider": "Alibaba",
+    "params_b": 30.0,
+    "arch": "qwen3",
+    "context": 131072,
+    "use_cases": [
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 3.0,
+    "vram_q4": 21.0,
+    "vram_q8": 35.1,
+    "vram_f16": 63.6
+  },
+  {
+    "id": "qwen2.5-coder:1.5b",
+    "name": "Qwen2.5 Coder 1.5B",
+    "provider": "Alibaba",
+    "params_b": 1.5,
+    "arch": "qwen",
+    "context": 32768,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 1.8,
+    "vram_q8": 2.5,
+    "vram_f16": 3.9
+  },
+  {
+    "id": "qwen2.5-coder:7b",
+    "name": "Qwen2.5 Coder 7B",
+    "provider": "Alibaba",
+    "params_b": 7.6,
+    "arch": "qwen",
+    "context": 131072,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 12.9,
+    "vram_q8": 16.4,
+    "vram_f16": 23.7
+  },
+  {
+    "id": "qwen2.5-coder:14b",
+    "name": "Qwen2.5 Coder 14B",
+    "provider": "Alibaba",
+    "params_b": 14.8,
+    "arch": "qwen",
+    "context": 131072,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 24.6,
+    "vram_q8": 31.6,
+    "vram_f16": 45.6
+  },
+  {
+    "id": "qwen2.5-coder:32b",
+    "name": "Qwen2.5 Coder 32B",
+    "provider": "Alibaba",
+    "params_b": 32.0,
+    "arch": "qwen",
+    "context": 131072,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 52.6,
+    "vram_q8": 67.7,
+    "vram_f16": 98.1
+  },
+  {
+    "id": "llama3.2:1b",
+    "name": "Llama 3.2 1B",
+    "provider": "Meta",
+    "params_b": 1.2,
+    "arch": "llama",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 2.4,
+    "vram_q8": 3.0,
+    "vram_f16": 4.1
+  },
+  {
+    "id": "llama3.2:3b",
+    "name": "Llama 3.2 3B",
+    "provider": "Meta",
+    "params_b": 3.2,
+    "arch": "llama",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 5.6,
+    "vram_q8": 7.1,
+    "vram_f16": 10.2
+  },
+  {
+    "id": "llama3.2:11b",
+    "name": "Llama 3.2 11B",
+    "provider": "Meta",
+    "params_b": 11.0,
+    "arch": "llama",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 18.1,
+    "vram_q8": 23.3,
+    "vram_f16": 33.8
+  },
+  {
+    "id": "llama3.1:8b",
+    "name": "Llama 3.1 8B",
+    "provider": "Meta",
+    "params_b": 8.0,
+    "arch": "llama",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 13.3,
+    "vram_q8": 17.1,
+    "vram_f16": 24.7
+  },
+  {
+    "id": "llama3.1:70b",
+    "name": "Llama 3.1 70B",
+    "provider": "Meta",
+    "params_b": 70.0,
+    "arch": "llama",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 112.8,
+    "vram_q8": 145.7,
+    "vram_f16": 212.2
+  },
+  {
+    "id": "llama3.1:405b",
+    "name": "Llama 3.1 405B",
+    "provider": "Meta",
+    "params_b": 405.0,
+    "arch": "llama",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 650.1,
+    "vram_q8": 840.5,
+    "vram_f16": 1225.2
+  },
+  {
+    "id": "llama3.3:70b",
+    "name": "Llama 3.3 70B",
+    "provider": "Meta",
+    "params_b": 70.0,
+    "arch": "llama",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 114.5,
+    "vram_q8": 147.4,
+    "vram_f16": 213.9
+  },
+  {
+    "id": "llama4:scout",
+    "name": "Llama 4 Scout",
+    "provider": "Meta",
+    "params_b": 109.0,
+    "arch": "llama",
+    "context": 1048576,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 17.0,
+    "vram_q4": 206.3,
+    "vram_q8": 257.6,
+    "vram_f16": 361.1
+  },
+  {
+    "id": "llama4:maverick",
+    "name": "Llama 4 Maverick",
+    "provider": "Meta",
+    "params_b": 402.0,
+    "arch": "llama",
+    "context": 1048576,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": true,
+    "active_params_b": 50.0,
+    "vram_q4": 653.1,
+    "vram_q8": 842.0,
+    "vram_f16": 1223.9
+  },
+  {
+    "id": "mistral:7b",
+    "name": "Mistral 7B",
+    "provider": "Mistral",
+    "params_b": 7.3,
+    "arch": "mistral",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 6.6,
+    "vram_q8": 10.1,
+    "vram_f16": 17.0
+  },
+  {
+    "id": "mistral:8x7b",
+    "name": "Mixtral 8x7B",
+    "provider": "Mistral",
+    "params_b": 46.7,
+    "arch": "mistral",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": true,
+    "active_params_b": 12.9,
+    "vram_q4": 31.0,
+    "vram_q8": 52.9,
+    "vram_f16": 97.3
+  },
+  {
+    "id": "mistral:12b",
+    "name": "Mistral 12B",
+    "provider": "Mistral",
+    "params_b": 12.2,
+    "arch": "mistral",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 10.8,
+    "vram_q8": 16.5,
+    "vram_f16": 28.1
+  },
+  {
+    "id": "codestral:22b",
+    "name": "Codestral 22B",
+    "provider": "Mistral",
+    "params_b": 22.0,
+    "arch": "mistral",
+    "context": 32768,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 19.0,
+    "vram_q8": 29.4,
+    "vram_f16": 50.3
+  },
+  {
+    "id": "deepseek-coder-v2:16b",
+    "name": "DeepSeek Coder V2 Lite",
+    "provider": "DeepSeek",
+    "params_b": 16.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 26.6,
+    "vram_q8": 34.1,
+    "vram_f16": 49.3
+  },
+  {
+    "id": "deepseek-r1:1.5b",
+    "name": "DeepSeek R1 1.5B",
+    "provider": "DeepSeek",
+    "params_b": 1.5,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 2.9,
+    "vram_q8": 3.6,
+    "vram_f16": 5.1
+  },
+  {
+    "id": "deepseek-r1:7b",
+    "name": "DeepSeek R1 7B",
+    "provider": "DeepSeek",
+    "params_b": 7.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 11.9,
+    "vram_q8": 15.2,
+    "vram_f16": 21.8
+  },
+  {
+    "id": "deepseek-r1:14b",
+    "name": "DeepSeek R1 14B",
+    "provider": "DeepSeek",
+    "params_b": 14.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 23.3,
+    "vram_q8": 29.9,
+    "vram_f16": 43.2
+  },
+  {
+    "id": "deepseek-r1:32b",
+    "name": "DeepSeek R1 32B",
+    "provider": "DeepSeek",
+    "params_b": 32.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 52.6,
+    "vram_q8": 67.7,
+    "vram_f16": 98.1
+  },
+  {
+    "id": "deepseek-r1:70b",
+    "name": "DeepSeek R1 70B",
+    "provider": "DeepSeek",
+    "params_b": 70.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 114.5,
+    "vram_q8": 147.4,
+    "vram_f16": 213.9
+  },
+  {
+    "id": "deepseek-r1:671b",
+    "name": "DeepSeek R1 671B",
+    "provider": "DeepSeek",
+    "params_b": 671.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": true,
+    "active_params_b": 37.0,
+    "vram_q4": 428.5,
+    "vram_q8": 743.8,
+    "vram_f16": 1381.3
+  },
+  {
+    "id": "deepseek-v4:flash",
+    "name": "DeepSeek V4 Flash",
+    "provider": "DeepSeek",
+    "params_b": 67.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 8.0,
+    "vram_q4": 47.7,
+    "vram_q8": 79.2,
+    "vram_f16": 142.9
+  },
+  {
+    "id": "deepseek-v4:pro",
+    "name": "DeepSeek V4 Pro",
+    "provider": "DeepSeek",
+    "params_b": 236.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 20.0,
+    "vram_q4": 158.4,
+    "vram_q8": 269.3,
+    "vram_f16": 493.5
+  },
+  {
+    "id": "phi3:mini",
+    "name": "Phi-3 Mini",
+    "provider": "Microsoft",
+    "params_b": 3.8,
+    "arch": "phi3",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 6.6,
+    "vram_q8": 8.4,
+    "vram_f16": 12.0
+  },
+  {
+    "id": "phi3:medium",
+    "name": "Phi-3 Medium",
+    "provider": "Microsoft",
+    "params_b": 14.0,
+    "arch": "phi3",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 23.0,
+    "vram_q8": 29.5,
+    "vram_f16": 42.8
+  },
+  {
+    "id": "phi4:14b",
+    "name": "Phi-4 14B",
+    "provider": "Microsoft",
+    "params_b": 14.7,
+    "arch": "phi4",
+    "context": 131072,
+    "use_cases": [
+      "reasoning",
+      "coding",
+      "general"
+    ],
+    "is_moe": false,
+    "vram_q4": 24.4,
+    "vram_q8": 31.3,
+    "vram_f16": 45.3
+  },
+  {
+    "id": "gemma3:2b",
+    "name": "Gemma 3 2B",
+    "provider": "Google",
+    "params_b": 2.1,
+    "arch": "gemma",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 2.3,
+    "vram_q8": 3.3,
+    "vram_f16": 5.3
+  },
+  {
+    "id": "gemma3:7b",
+    "name": "Gemma 3 7B",
+    "provider": "Google",
+    "params_b": 7.2,
+    "arch": "gemma",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 6.6,
+    "vram_q8": 9.9,
+    "vram_f16": 16.8
+  },
+  {
+    "id": "gemma3:12b",
+    "name": "Gemma 3 12B",
+    "provider": "Google",
+    "params_b": 12.0,
+    "arch": "gemma",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 10.6,
+    "vram_q8": 16.2,
+    "vram_f16": 27.6
+  },
+  {
+    "id": "gemma4:2b",
+    "name": "Gemma 4 2B",
+    "provider": "Google",
+    "params_b": 2.5,
+    "arch": "gemma",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 2.6,
+    "vram_q8": 3.8,
+    "vram_f16": 6.2
+  },
+  {
+    "id": "gemma4:4b",
+    "name": "Gemma 4 4B",
+    "provider": "Google",
+    "params_b": 4.0,
+    "arch": "gemma",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 3.9,
+    "vram_q8": 5.7,
+    "vram_f16": 9.5
+  },
+  {
+    "id": "gemma4:7b",
+    "name": "Gemma 4 7B",
+    "provider": "Google",
+    "params_b": 7.8,
+    "arch": "gemma",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 7.1,
+    "vram_q8": 10.7,
+    "vram_f16": 18.1
+  },
+  {
+    "id": "gemma4:12b",
+    "name": "Gemma 4 12B",
+    "provider": "Google",
+    "params_b": 12.0,
+    "arch": "gemma",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 10.6,
+    "vram_q8": 16.2,
+    "vram_f16": 27.6
+  },
+  {
+    "id": "gemma4:24b",
+    "name": "Gemma 4 24B",
+    "provider": "Google",
+    "params_b": 24.0,
+    "arch": "gemma",
+    "context": 262144,
+    "use_cases": [
+      "general",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 64.8,
+    "vram_q8": 76.0,
+    "vram_f16": 98.8
+  },
+  {
+    "id": "gemma4:26b",
+    "name": "Gemma 4 26B",
+    "provider": "Google",
+    "params_b": 26.0,
+    "arch": "gemma",
+    "context": 262144,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 4.0,
+    "vram_q4": 24.0,
+    "vram_q8": 36.2,
+    "vram_f16": 60.9
+  },
+  {
+    "id": "gemma4:31b",
+    "name": "Gemma 4 31B",
+    "provider": "Google",
+    "params_b": 31.0,
+    "arch": "gemma",
+    "context": 262144,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 83.5,
+    "vram_q8": 98.1,
+    "vram_f16": 127.5
+  },
+  {
+    "id": "mellum2:12b",
+    "name": "Mellum 2 12B",
+    "provider": "JetBrains",
+    "params_b": 12.0,
+    "arch": "mellum",
+    "context": 128000,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": true,
+    "active_params_b": 2.5,
+    "vram_q4": 10.0,
+    "vram_q8": 15.7,
+    "vram_f16": 27.1
+  },
+  {
+    "id": "codegemma:2b",
+    "name": "CodeGemma 2B",
+    "provider": "Google",
+    "params_b": 2.0,
+    "arch": "gemma",
+    "context": 16384,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 1.9,
+    "vram_q8": 2.9,
+    "vram_f16": 4.8
+  },
+  {
+    "id": "codegemma:7b",
+    "name": "CodeGemma 7B",
+    "provider": "Google",
+    "params_b": 7.0,
+    "arch": "gemma",
+    "context": 16384,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 5.5,
+    "vram_q8": 8.8,
+    "vram_f16": 15.4
+  },
+  {
+    "id": "codegemma:12b",
+    "name": "CodeGemma 12B",
+    "provider": "Google",
+    "params_b": 12.0,
+    "arch": "gemma",
+    "context": 16384,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 9.0,
+    "vram_q8": 14.7,
+    "vram_f16": 26.1
+  },
+  {
+    "id": "command-r:35b",
+    "name": "Command R 35B",
+    "provider": "Cohere",
+    "params_b": 35.0,
+    "arch": "cohere",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 56.6,
+    "vram_q8": 73.1,
+    "vram_f16": 106.3
+  },
+  {
+    "id": "command-r-plus:104b",
+    "name": "Command R+ 104B",
+    "provider": "Cohere",
+    "params_b": 104.0,
+    "arch": "cohere",
+    "context": 128000,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 167.3,
+    "vram_q8": 216.2,
+    "vram_f16": 315.0
+  },
+  {
+    "id": "yi:6b",
+    "name": "Yi 6B",
+    "provider": "01.AI",
+    "params_b": 6.0,
+    "arch": "yi",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 5.6,
+    "vram_q8": 8.4,
+    "vram_f16": 14.1
+  },
+  {
+    "id": "yi:9b",
+    "name": "Yi 9B",
+    "provider": "01.AI",
+    "params_b": 9.0,
+    "arch": "yi",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 8.1,
+    "vram_q8": 12.3,
+    "vram_f16": 20.9
+  },
+  {
+    "id": "yi:34b",
+    "name": "Yi 34B",
+    "provider": "01.AI",
+    "params_b": 34.0,
+    "arch": "yi",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 29.1,
+    "vram_q8": 45.1,
+    "vram_f16": 77.4
+  },
+  {
+    "id": "nemotron:4b",
+    "name": "Nemotron 4B",
+    "provider": "NVIDIA",
+    "params_b": 4.0,
+    "arch": "nemotron",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 3.9,
+    "vram_q8": 5.7,
+    "vram_f16": 9.5
+  },
+  {
+    "id": "nemotron:12b",
+    "name": "Nemotron 12B",
+    "provider": "NVIDIA",
+    "params_b": 12.0,
+    "arch": "nemotron",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 20.0,
+    "vram_q8": 25.7,
+    "vram_f16": 37.1
+  },
+  {
+    "id": "starcoder2:3b",
+    "name": "StarCoder2 3B",
+    "provider": "Hugging Face",
+    "params_b": 3.0,
+    "arch": "starcoder",
+    "context": 16384,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 2.6,
+    "vram_q8": 4.0,
+    "vram_f16": 6.9
+  },
+  {
+    "id": "starcoder2:7b",
+    "name": "StarCoder2 7B",
+    "provider": "Hugging Face",
+    "params_b": 7.0,
+    "arch": "starcoder",
+    "context": 16384,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 5.5,
+    "vram_q8": 8.8,
+    "vram_f16": 15.4
+  },
+  {
+    "id": "starcoder2:15b",
+    "name": "StarCoder2 15B",
+    "provider": "Hugging Face",
+    "params_b": 15.0,
+    "arch": "starcoder",
+    "context": 16384,
+    "use_cases": [
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 11.2,
+    "vram_q8": 18.2,
+    "vram_f16": 32.5
+  },
+  {
+    "id": "big-pickle:latest",
+    "name": "Big Pickle",
+    "provider": "OpenCode",
+    "params_b": 7.0,
+    "arch": "llama",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 6.4,
+    "vram_q8": 9.7,
+    "vram_f16": 16.3
+  }
+]

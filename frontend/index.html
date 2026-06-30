@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Hub</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="sidebar">
+  <div class="sidebar-brand">Model Hub</div>
+  <nav>
+    <a class="active" data-page="dashboard" href="#dashboard">Dashboard</a>
+    <a data-page="scan" href="#scan">Scan &amp; Recommend</a>
+    <a data-page="chat" href="#chat">Chat</a>
+    <a data-page="models" href="#models">Installed Models</a>
+    <a data-page="downloads" href="#downloads">Downloads</a>
+  </nav>
+  <div class="sidebar-footer">
+    <div id="ollama-badge" class="badge-offline">Ollama: checking...</div>
+    <div id="version-badge" style="font-size:0.7rem;color:var(--muted);margin-top:4px"></div>
+  </div>
+</div>
+
+<div class="main">
+
+<div id="page-dashboard" class="page active">
+  <h1>Dashboard</h1>
+  <div class="card-grid">
+    <div class="card" id="card-system">
+      <h3>System</h3>
+      <div class="card-body"><em>Scanning...</em></div>
+    </div>
+    <div class="card" id="card-gpu">
+      <h3>GPU</h3>
+      <div class="card-body"><em>Scanning...</em></div>
+    </div>
+    <div class="card" id="card-ollama">
+      <h3>Ollama</h3>
+      <div class="card-body"><em>Checking...</em></div>
+    </div>
+    <div class="card" id="card-models">
+      <h3>Installed Models</h3>
+      <div class="card-body"><em>Loading...</em></div>
+    </div>
+  </div>
+  <div class="quick-recs">
+    <h2>Quick Picks</h2>
+    <div id="quick-picks"><em>Scan your hardware first.</em></div>
+  </div>
+</div>
+
+<div id="page-scan" class="page">
+  <h1>Scan &amp; Recommend</h1>
+  <div class="scan-section">
+    <button class="btn" onclick="runScan()">Scan Hardware</button>
+    <button class="btn btn-secondary" onclick="runScanAndRecommend()">Scan + Recommend</button>
+  </div>
+  <div class="scan-vram">
+    <label>VRAM override (GB): <input type="number" id="vram-override" min="0" step="0.5" value="0" style="width:80px"></label>
+    <label>Use case:
+      <select id="use-case">
+        <option value="coding">Coding</option>
+        <option value="general">General</option>
+        <option value="reasoning">Reasoning</option>
+        <option value="chat">Chat</option>
+      </select>
+    </label>
+  </div>
+  <div id="scan-result"></div>
+  <div id="recs-result"></div>
+</div>
+
+<div id="page-models" class="page">
+  <h1>Installed Models</h1>
+  <button class="btn" onclick="loadInstalledModels()">Refresh</button>
+  <div id="installed-models"><em>Loading...</em></div>
+</div>
+
+<div id="page-chat" class="page">
+  <h1>Chat</h1>
+  <div class="chat-controls">
+    <select id="chat-model"><option value="">— Select a model —</option></select>
+    <button class="btn" onclick="loadChatModels()">Refresh</button>
+  </div>
+  <div class="chat-box" id="chat-box">
+    <div class="chat-welcome">Select a model above and start chatting.</div>
+  </div>
+  <div class="chat-input-row">
+    <textarea id="chat-input" rows="2" placeholder="Type a message..." disabled></textarea>
+    <button class="btn" id="chat-send" onclick="sendChat()" disabled>Send</button>
+    <button class="btn btn-secondary" id="chat-stop" onclick="stopChat()" style="display:none">Stop</button>
+  </div>
+</div>
+
+<div id="page-downloads" class="page">
+  <h1>Downloads</h1>
+  <p>Active and completed model pulls.</p>
+  <div id="downloads-list"><em>No downloads yet.</em></div>
+</div>
+
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
