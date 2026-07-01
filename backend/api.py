@@ -40,10 +40,15 @@ def _ollama_request(method: str, path: str, json_body: Optional[dict] = None, st
         if stream:
             return resp
         return json.loads(resp.read().decode())
-    except urllib.error.URLError:
-        return None
-    except Exception:
-        return None
+    except urllib.error.HTTPError as e:
+        try:
+            return {"error": f"Ollama HTTP {e.code}: {e.read().decode()[:200]}"}
+        except Exception:
+            return {"error": f"Ollama HTTP {e.code}"}
+    except urllib.error.URLError as e:
+        return {"error": f"Cannot connect to Ollama at {OLLAMA_HOST}: {e.reason}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.route("/")
@@ -134,8 +139,8 @@ def api_models():
 @app.route("/api/ollama/status")
 def ollama_status():
     resp = _ollama_request("GET", "/api/tags")
-    if resp is None:
-        return jsonify({"running": False, "version": None})
+    if resp is None or (isinstance(resp, dict) and "error" in resp):
+        return jsonify({"running": False, "version": None, "error": resp.get("error") if isinstance(resp, dict) else None})
     return jsonify({
         "running": True,
         "version": resp.get("version", "unknown"),
@@ -145,7 +150,7 @@ def ollama_status():
 @app.route("/api/ollama/models")
 def ollama_models():
     resp = _ollama_request("GET", "/api/tags")
-    if resp is None:
+    if resp is None or (isinstance(resp, dict) and "error" in resp):
         return jsonify([])
     models = []
     for m in resp.get("models", []):
@@ -244,11 +249,13 @@ def ollama_chat():
 
 @app.route("/api/ollama/check-install")
 def ollama_check_install():
+    import shutil
+    path = shutil.which("ollama")
+    if path:
+        return jsonify({"installed": True, "path": path})
     url = "https://ollama.com/download"
     system = platform.system().lower()
-    if system == "windows":
-        return jsonify({"installed": False, "download_url": url, "instructions": "Download and run the Ollama installer from ollama.com/download"})
-    return jsonify({"installed": False, "download_url": url})
+    return jsonify({"installed": False, "download_url": url, "instructions": f"Download Ollama from {url}"})
 
 
 @app.route("/api/system/ollama-path")
@@ -489,6 +496,53 @@ def ollama_ps():
             "digest_short": (m.get("digest") or "")[:12],
         })
     return jsonify({"running": True, "models": models})
+
+
+@app.route("/api/sessions", methods=["GET"])
+def api_list_sessions():
+    from .cookbook.persistence import list_sessions
+    return jsonify(list_sessions())
+
+
+@app.route("/api/sessions", methods=["POST"])
+def api_create_session():
+    from .cookbook.persistence import create_session
+    data = request.get_json() or {}
+    sid = create_session(
+        name=data.get("name", ""),
+        model=data.get("model", ""),
+        system_prompt=data.get("system_prompt", ""),
+    )
+    return jsonify({"id": sid}), 201
+
+
+@app.route("/api/sessions/<session_id>", methods=["GET"])
+def api_get_session(session_id):
+    from .cookbook.persistence import get_session
+    session = get_session(session_id)
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify(session)
+
+
+@app.route("/api/sessions/<session_id>", methods=["PUT"])
+def api_save_session(session_id):
+    from .cookbook.persistence import save_session
+    data = request.get_json() or {}
+    save_session(
+        session_id=session_id,
+        model=data.get("model", ""),
+        messages=data.get("messages", []),
+        name=data.get("name", ""),
+    )
+    return jsonify({"success": True})
+
+
+@app.route("/api/sessions/<session_id>", methods=["DELETE"])
+def api_delete_session(session_id):
+    from .cookbook.persistence import delete_session
+    delete_session(session_id)
+    return jsonify({"success": True})
 
 
 def run_server(host="127.0.0.1", port=5050, debug=False):

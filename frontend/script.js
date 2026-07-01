@@ -3,6 +3,53 @@ let chatAbort = null;
 let chatHistory = [];
 let ollamaPoll = null;
 
+const CHAT_STORAGE_KEY = "modelhub-chat";
+const CHAT_MODEL_KEY = "modelhub-chat-model";
+
+function saveChatState() {
+  try {
+    const model = document.getElementById("chat-model")?.value || "";
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatHistory));
+    localStorage.setItem(CHAT_MODEL_KEY, model);
+  } catch {}
+}
+
+function restoreChatState() {
+  try {
+    const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+    const model = localStorage.getItem(CHAT_MODEL_KEY);
+    if (saved) {
+      chatHistory = JSON.parse(saved);
+    }
+    if (model) {
+      const sel = document.getElementById("chat-model");
+      if (sel) {
+        const opt = Array.from(sel.options).find(o => o.value === model);
+        if (opt) {
+          sel.value = model;
+          selectChatModel();
+        }
+      }
+    }
+  } catch {}
+}
+
+function renderSavedChat() {
+  if (!chatHistory.length) return;
+  const box = document.getElementById("chat-box");
+  const welcome = box.querySelector(".chat-welcome");
+  if (welcome) welcome.remove();
+  chatHistory.forEach(m => {
+    const div = document.createElement("div");
+    div.className = `chat-msg ${m.role}`;
+    const ts = new Date().toLocaleTimeString();
+    const content = m.role === "user" ? escHtml(m.content) : mdToHtml(m.content);
+    div.innerHTML = `<div class="label">${m.role === "user" ? "You" : "Assistant"}</div><div class="bubble">${content}</div><span class="timestamp">${ts}</span>`;
+    box.appendChild(div);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+
 function escHtml(s) {
   if (typeof s !== "string") return "";
   const d = document.createElement("div");
@@ -93,6 +140,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (pageBtn) { browsePage(parseInt(pageBtn.dataset.pageBtn)); return; }
     const browseDetailBtn = e.target.closest("[data-browse-details]");
     if (browseDetailBtn) { showBrowseDetails(decodeURIComponent(browseDetailBtn.dataset.browseDetails)); return; }
+    const loadSessionBtn = e.target.closest("[data-load-session]");
+    if (loadSessionBtn) { loadSessionFromServer(loadSessionBtn.dataset.loadSession); return; }
 
     if (e.target.id === "modal-overlay" || e.target.closest("#modal-close")) closeModal();
     if (e.target.id === "btn-scan") runScan();
@@ -100,6 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target.id === "btn-refresh-models") { loadInstalledModels(); loadRunningModels(); }
     if (e.target.id === "btn-refresh-chat-models") loadChatModels();
     if (e.target.id === "btn-clear-chat") clearChat();
+    if (e.target.id === "btn-list-sessions") showSessionList();
     if (e.target.id === "btn-export-csv") exportRecsCSV();
     if (e.target.id === "sidebar-toggle") toggleSidebar();
     if (e.target.id === "btn-manual-install" || e.target.id === "btn-manual-install-dl") {
@@ -508,6 +558,7 @@ function runModel(name) {
 
 async function loadChatModels() {
   const sel = document.getElementById("chat-model");
+  const currentVal = sel.value;
   try {
     const models = await api("GET", "/api/ollama/models");
     sel.innerHTML = '<option value="">&mdash; Select a model &mdash;</option>';
@@ -517,6 +568,9 @@ async function loadChatModels() {
       opt.textContent = `${m.name} (${m.size_gb} GB)`;
       sel.appendChild(opt);
     });
+    if (currentVal) sel.value = currentVal;
+    restoreChatState();
+    renderSavedChat();
   } catch {
     sel.innerHTML = '<option value="">Ollama not running</option>';
   }
@@ -534,6 +588,7 @@ function clearChat() {
   if (!chatHistory.length && !document.getElementById("chat-box").querySelector(".chat-msg")) return;
   if (!confirm("Clear the chat history?")) return;
   chatHistory = [];
+  try { localStorage.removeItem(CHAT_STORAGE_KEY); localStorage.removeItem(CHAT_MODEL_KEY); } catch {}
   document.getElementById("chat-box").innerHTML = '<div class="chat-welcome">Select a model above and start chatting.</div>';
   toast("Chat cleared.", "info");
 }
@@ -547,6 +602,7 @@ async function sendChat() {
   const box = document.getElementById("chat-box");
   input.value = "";
   chatHistory.push({ role: "user", content: text });
+  saveChatState();
   appendChatMessage("user", text);
   const msgDiv = appendChatMessage("assistant", "Thinking...", true);
 
@@ -597,6 +653,7 @@ async function sendChat() {
 
     msgDiv.classList.remove("thinking");
     chatHistory.push({ role: "assistant", content: fullContent });
+    saveChatState();
 
   } catch (err) {
     msgDiv.querySelector(".bubble").textContent = `Error: ${err.message}`;
@@ -769,6 +826,61 @@ async function showBrowseDetails(name) {
     `);
   } catch {
     toast("Failed to load tags.", "error");
+  }
+}
+
+async function showSessionList() {
+  try {
+    const sessions = await api("GET", "/api/sessions");
+    if (!sessions.length) {
+      toast("No saved sessions.", "info");
+      return;
+    }
+    const html = sessions.map(s => {
+      const name = escHtml(s.name || s.id);
+      const model = escHtml(s.model || "?");
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+        <div><strong>${name}</strong> <span style="color:var(--muted);font-size:0.8rem">(${model})</span></div>
+        <button class="btn btn-sm btn-secondary" data-load-session="${s.id}" data-session-name="${name}">Load</button>
+      </div>`;
+    }).join("");
+    openModal("Saved Sessions", `<p style="margin-bottom:12px;color:var(--muted);font-size:0.85rem">${sessions.length} sessions</p>${html}`);
+  } catch {
+    toast("Failed to load sessions.", "error");
+  }
+}
+
+async function loadSessionFromServer(sessionId) {
+  try {
+    const session = await api("GET", `/api/sessions/${sessionId}`);
+    if (session.error) { toast(`Error: ${session.error}`, "error"); return; }
+    const model = session.model || "";
+    const sel = document.getElementById("chat-model");
+    const opt = Array.from(sel.options).find(o => o.value === model);
+    if (opt) {
+      sel.value = model;
+      selectChatModel();
+    }
+    chatHistory = (session.messages || []).map(m => ({ role: m.role, content: m.content }));
+    saveChatState();
+    const box = document.getElementById("chat-box");
+    const welcome = box.querySelector(".chat-welcome");
+    if (welcome) welcome.remove();
+    box.innerHTML = "";
+    chatHistory.forEach(m => {
+      const div = document.createElement("div");
+      div.className = `chat-msg ${m.role}`;
+      const ts = new Date().toLocaleTimeString();
+      const content = m.role === "user" ? escHtml(m.content) : mdToHtml(m.content);
+      div.innerHTML = `<div class="label">${m.role === "user" ? "You" : "Assistant"}</div><div class="bubble">${content}</div><span class="timestamp">${ts}</span>`;
+      box.appendChild(div);
+    });
+    box.scrollTop = box.scrollHeight;
+    closeModal();
+    document.querySelector('[data-page="chat"]').click();
+    toast(`Loaded session with ${chatHistory.length} messages.`, "success");
+  } catch {
+    toast("Failed to load session.", "error");
   }
 }
 

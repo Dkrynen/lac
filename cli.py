@@ -26,6 +26,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+try:
+    from backend.version import __version__
+except ImportError:
+    __version__ = "0.0.0"
+
 C = {
     "reset": "\033[0m",
     "bold": "\033[1m",
@@ -37,9 +42,6 @@ C = {
     "magenta": "\033[95m",
     "cyan": "\033[96m",
     "gray": "\033[90m",
-    "bg_blue": "\033[44m",
-    "bg_green": "\033[42m",
-    "bg_red": "\033[41m",
 }
 
 
@@ -61,7 +63,7 @@ def ollama(method, path, body=None, timeout=30):
     except urllib.error.HTTPError as e:
         return {"error": f"HTTP {e.code}: {e.read().decode()[:200]}"}
     except urllib.error.URLError:
-        return {"error": f"Cannot connect to Ollama at {OLLAMA_HOST}"}
+        return {"error": f"Cannot connect to Ollama at {get_host()}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -80,7 +82,7 @@ def ollama_stream(path, body, timeout=300):
     except urllib.error.HTTPError as e:
         yield {"error": f"HTTP {e.code}: {e.read().decode()[:200]}"}
     except urllib.error.URLError:
-        yield {"error": f"Cannot connect to Ollama at {OLLAMA_HOST}"}
+        yield {"error": f"Cannot connect to Ollama at {get_host()}"}
     except Exception as e:
         yield {"error": str(e)}
 
@@ -110,7 +112,26 @@ def print_table(headers, rows):
     print(sep)
 
 
+def _update_session(session_id, model, messages):
+    try:
+        from backend.cookbook.persistence import save_session
+        save_session(session_id, model, messages)
+    except Exception:
+        pass
+
+
+def _auto_save(session_id, model, messages):
+    if session_id and messages:
+        ts = time.time()
+        msgs = []
+        for m in messages:
+            msgs.append({**m, "timestamp": ts})
+        _update_session(session_id, model, msgs)
+
+
 def cmd_chat(args):
+    from backend.cookbook.persistence import create_session, get_session, list_sessions, save_session
+
     models = ollama("GET", "/api/tags")
     if "error" in models:
         eprint(f"{C['red']}Error: {models['error']}{C['reset']}")
@@ -126,6 +147,7 @@ def cmd_chat(args):
         eprint(f"{C['red']}Model '{model}' not installed. Available: {', '.join(model_list)}{C['reset']}")
         sys.exit(1)
 
+    session_id = create_session(model=model)
     system_prompt = args.system or ""
     messages = []
     if system_prompt:
@@ -133,6 +155,7 @@ def cmd_chat(args):
         print(f"{C['dim']}System: {system_prompt[:80]}{'...' if len(system_prompt) > 80 else ''}{C['reset']}")
 
     print(f"{C['green']}Chatting with {C['bold']}{model}{C['reset']}")
+    print(f"{C['gray']}Session: {session_id}{C['reset']}")
     print(f"{C['gray']}Type /help for commands, Ctrl+C or /exit to quit.{C['reset']}\n")
 
     try:
@@ -155,12 +178,45 @@ def cmd_chat(args):
             continue
 
         if user_input.startswith("/"):
-            handled = handle_slash_command(user_input, model, messages, system_prompt)
+            handled = handle_slash_command(user_input, model, messages, system_prompt, session_id)
             if handled == "exit":
                 break
             elif handled == "continue":
                 continue
-            else:
+            elif handled and handled.startswith("switch:"):
+                model = handled[7:]
+                print(f"{C['green']}Switched to {model}{C['reset']}")
+                continue
+            elif handled and handled.startswith("save:"):
+                name = handled[5:]
+                try:
+                    save_session(session_id, model, messages, name=name)
+                    print(f"{C['green']}Session saved as '{name}'.{C['reset']}")
+                except Exception as e:
+                    print(f"{C['red']}Failed to save session: {e}{C['reset']}")
+                continue
+            elif handled and handled.startswith("load:"):
+                name = handled[5:]
+                sessions = list_sessions()
+                found = None
+                for s in sessions:
+                    if s["name"] == name or s["id"] == name:
+                        found = s
+                        break
+                if found:
+                    loaded = get_session(found["id"])
+                    if loaded:
+                        model = loaded["model"] or model
+                        messages.clear()
+                        for m in loaded.get("messages", []):
+                            messages.append({"role": m["role"], "content": m["content"]})
+                        session_id = found["id"]
+                        print(f"{C['green']}Loaded session '{name}' with {len(messages)} messages.{C['reset']}")
+                        print(f"{C['green']}Continuing chat with {model}.{C['reset']}")
+                    else:
+                        print(f"{C['red']}Could not load session '{name}'.{C['reset']}")
+                else:
+                    print(f"{C['red']}Session '{name}' not found.{C['reset']}")
                 continue
 
         messages.append({"role": "user", "content": user_input})
@@ -184,15 +240,18 @@ def cmd_chat(args):
         if full_response:
             messages.append({"role": "assistant", "content": full_response})
 
+    _auto_save(session_id, model, messages)
 
-def handle_slash_command(cmd, model, messages, system_prompt):
-    cmd = cmd.strip().lower()
 
-    if cmd in ("/exit", "/quit"):
+def handle_slash_command(cmd, model, messages, system_prompt, session_id=None):
+    cmd_str = cmd.strip()
+    cmd_lower = cmd_str.strip().lower()
+
+    if cmd_lower in ("/exit", "/quit"):
         print(f"{C['yellow']}Goodbye!{C['reset']}")
         return "exit"
 
-    if cmd in ("/help", "/h"):
+    if cmd_lower in ("/help", "/h"):
         print(f"\n{C['bold']}Commands:{C['reset']}")
         cmds = [
             ("/help", "Show this help"),
@@ -202,6 +261,9 @@ def handle_slash_command(cmd, model, messages, system_prompt):
             ("/info", "Show current model info"),
             ("/tokens", "Estimate token usage"),
             ("/save <name>", "Save conversation"),
+            ("/load <name>", "Load saved session"),
+            ("/list", "List saved sessions"),
+            ("/delete <name>", "Delete saved session"),
             ("/copy", "Copy last response"),
             ("/exit", "Exit chat"),
         ]
@@ -209,29 +271,28 @@ def handle_slash_command(cmd, model, messages, system_prompt):
             print(f"  {C['cyan']}{c:<20}{C['reset']} {C['gray']}{desc}{C['reset']}")
         return "continue"
 
-    if cmd == "/clear":
+    if cmd_lower == "/clear":
         messages.clear()
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         print(f"{C['yellow']}Conversation cleared.{C['reset']}")
         return "continue"
 
-    if cmd.startswith("/model "):
-        new_model = cmd[7:].strip()
+    if cmd_lower.startswith("/model "):
+        new_model = cmd_lower[7:].strip()
         info = ollama("GET", "/api/tags")
         available = [m["name"] for m in info.get("models", [])]
         if new_model in available:
             messages.clear()
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
-            print(f"{C['green']}Switched to {new_model}{C['reset']}")
-            return new_model
+            return f"switch:{new_model}"
         else:
             print(f"{C['red']}Model '{new_model}' not installed.{C['reset']}")
             return "continue"
 
-    if cmd.startswith("/system "):
-        sp = cmd[8:].strip()
+    if cmd_lower.startswith("/system "):
+        sp = cmd_str[8:].strip()
         if sp:
             if messages and messages[0]["role"] == "system":
                 messages[0]["content"] = sp
@@ -242,8 +303,8 @@ def handle_slash_command(cmd, model, messages, system_prompt):
             print(f"{C['yellow']}Current system prompt: {messages[0]['content'] if messages and messages[0]['role'] == 'system' else '(none)'}{C['reset']}")
         return "continue"
 
-    if cmd == "/info":
-        info = ollama("GET", f"/api/show", {"name": model})
+    if cmd_lower == "/info":
+        info = ollama("POST", "/api/show", {"name": model})
         if "error" in info:
             print(f"{C['red']}{info['error']}{C['reset']}")
         else:
@@ -254,18 +315,17 @@ def handle_slash_command(cmd, model, messages, system_prompt):
             print(f"  Family: {details.get('family', '?')}")
             print(f"  Format: {details.get('format', '?')}")
             modelfile = info.get("modelfile", "")
-            if "CONTEXT_LENGTH" in modelfile:
-                for line in modelfile.split("\n"):
-                    if "CONTEXT_LENGTH" in line:
-                        print(f"  Context: {line.split()[1]}")
+            for line in modelfile.split("\n"):
+                if "CONTEXT_LENGTH" in line:
+                    print(f"  Context: {line.split()[1]}")
         return "continue"
 
-    if cmd == "/tokens":
+    if cmd_lower == "/tokens":
         total = sum(len(m["content"].split()) * 1.3 for m in messages)
         print(f"{C['yellow']}Estimated: ~{int(total)} tokens ({len(messages)} messages){C['reset']}")
         return "continue"
 
-    if cmd == "/copy":
+    if cmd_lower == "/copy":
         for m in reversed(messages):
             if m["role"] == "assistant":
                 try:
@@ -277,16 +337,47 @@ def handle_slash_command(cmd, model, messages, system_prompt):
                 break
         return "continue"
 
-    if cmd.startswith("/save "):
-        name = cmd[6:].strip()
-        path = Path.home() / ".model-hub" / "sessions" / f"{name}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump({"model": model, "messages": messages}, f, indent=2)
-        print(f"{C['green']}Saved session to {path}{C['reset']}")
+    if cmd_lower.startswith("/save "):
+        name = cmd_str[6:].strip()
+        return f"save:{name}"
+
+    if cmd_lower == "/list":
+        try:
+            from backend.cookbook.persistence import list_sessions
+            sessions = list_sessions()
+            if not sessions:
+                print(f"{C['yellow']}No saved sessions.{C['reset']}")
+            else:
+                print(f"\n{C['bold']}Saved Sessions:{C['reset']}")
+                for s in sessions:
+                    sname = s["name"] or s["id"]
+                    smodel = s["model"] or "?"
+                    print(f"  {C['cyan']}{sname:<24}{C['reset']}  model={smodel}")
+        except Exception as e:
+            print(f"{C['red']}Error listing sessions: {e}{C['reset']}")
         return "continue"
 
-    print(f"{C['red']}Unknown command: {cmd}{C['reset']}")
+    if cmd_lower.startswith("/load "):
+        name = cmd_str[6:].strip()
+        return f"load:{name}"
+
+    if cmd_lower.startswith("/delete "):
+        name = cmd_str[8:].strip()
+        try:
+            from backend.cookbook.persistence import list_sessions, delete_session
+            sessions = list_sessions()
+            for s in sessions:
+                if s["name"] == name or s["id"] == name:
+                    delete_session(s["id"])
+                    print(f"{C['green']}Deleted session '{name}'.{C['reset']}")
+                    break
+            else:
+                print(f"{C['red']}Session '{name}' not found.{C['reset']}")
+        except Exception as e:
+            print(f"{C['red']}Error: {e}{C['reset']}")
+        return "continue"
+
+    print(f"{C['red']}Unknown command: {cmd_lower}{C['reset']}")
     return "continue"
 
 
@@ -373,7 +464,7 @@ def cmd_ps(args):
 
 def cmd_inspect(args):
     model = args.model
-    result = ollama("GET", f"/api/show", {"name": model})
+    result = ollama("POST", f"/api/show", {"name": model})
     if "error" in result:
         eprint(f"{C['red']}{result['error']}{C['reset']}")
         sys.exit(1)
@@ -477,16 +568,27 @@ def cmd_browse(args):
     query = args.query or ""
     sort = args.sort or "pulls"
 
-    try:
-        cache_path = Path(__file__).parent / "backend" / "cookbook" / "data" / "library_cache.json"
-        if not cache_path.exists():
-            eprint(f"{C['red']}Library cache not found. Run the web server first to populate it.{C['reset']}")
-            sys.exit(1)
-        with open(cache_path) as f:
-            data = json.load(f)
-        models = data.get("models", [])
-    except Exception as e:
-        eprint(f"{C['red']}Error loading library: {e}{C['reset']}")
+    models = []
+    cache_path = Path(__file__).parent / "backend" / "cookbook" / "data" / "library_cache.json"
+    if cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                data = json.load(f)
+            models = data.get("models", [])
+        except Exception:
+            pass
+
+    if not models:
+        try:
+            resp = ollama("GET", "/api/tags")
+            if resp and "models" in resp:
+                local_models = resp["models"]
+                models = [{"name": m["name"], "display": m["name"], "params_b": 0, "vram_q4": 0, "vram_q8": 0, "context": 0, "pulls": "0", "description": "Installed locally"} for m in local_models]
+        except Exception:
+            pass
+
+    if not models:
+        eprint(f"{C['yellow']}No model catalog available. Start the web server once to populate the cache, or install some models first.{C['reset']}")
         sys.exit(1)
 
     if query:
@@ -529,9 +631,19 @@ def cmd_browse(args):
         print(f"\n  {C['dim']}... and {remaining} more. Use --limit to show more.{C['reset']}")
 
 
+def print_banner():
+    print()
+    print(f"  {C['bold']}{C['blue']}{'='*60}{C['reset']}")
+    print(f"  {C['bold']}{C['cyan']}  Model Hub v{__version__}{C['reset']}")
+    print(f"  {C['bold']}{C['blue']}{'='*60}{C['reset']}")
+    print(f"  {C['dim']}  Hardware scan + model recommender + chat for local LLMs{C['reset']}")
+    print()
+
+
 def main():
+    print_banner()
     parser = argparse.ArgumentParser(
-        description=f"{C['bold']}Model Hub CLI{C['reset']} — Chat with and manage local LLMs",
+        description=f"Model Hub CLI v{__version__} — Chat with and manage local LLMs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--host", default=None, help="Ollama host (default: OLLAMA_HOST env or localhost:11434)")

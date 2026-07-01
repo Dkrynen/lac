@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.0 (2026-07-01)
+
+- **Critical bugfix: `OLLAMA_HOST` NameError** — undefined variable in `ollama()` and `ollama_stream()` error handlers now correctly call `get_host()`
+- **Critical bugfix: `/api/show` HTTP method** — changed from GET to POST (Ollama requires POST for model info)
+- **Critical bugfix: `/model` slash command** — model switching now actually updates the active model variable
+- **Session persistence** — new SQLite-backed `cookbook.db` with `/save <name>`, `/load <name>`, `/list`, `/delete <name>` CLI slash commands; sessions auto-save on exit
+- **Web chat persistence** — chat history saved to localStorage and auto-restored on page load; session management UI (list/load sessions)
+- **CLI branding** — version banner on startup, clean ANSI, dead code removed
+- **Backend API** — `_ollama_request` now returns error context instead of bare `None`; `ollama_check_install` actually checks for Ollama; session CRUD endpoints (`/api/sessions`)
+- **`cmd_browse`** — falls back to listing installed models when library cache is unavailable
+- **Chore** — unused ANSI color constants removed, code cleanup
+
 ## 2.0.0 (2026-06-30)
 
 - Full CLI client (`model-hub chat|list|pull|delete|ps|inspect|scan|recommend|browse`)
