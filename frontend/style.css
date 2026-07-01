@@ -68,6 +68,12 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); disp
 .sidebar nav a:hover { background: var(--surface2); color: var(--text); }
 .sidebar nav a.active { background: var(--surface2); color: var(--accent); }
 .nav-icon { width: 18px; text-align: center; margin-right: 8px; display: inline-block; }
+.nav-divider {
+  font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;
+  padding: 12px 16px 4px;
+}
+.nav-sub { font-size: 0.82rem; padding: 6px 16px; }
+.nav-sub .nav-icon { width: 18px; text-align: center; margin-right: 8px; display: inline-block; }
 .sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 0.75rem; }
 .badge-offline { color: var(--red); }
 .badge-online { color: var(--green); }
@@ -324,6 +330,37 @@ h3 { font-size: 0.85rem; font-weight: 600; color: var(--muted); text-transform: 
 .dl-history-item .dl-status { font-size: 0.75rem; }
 .dl-history-item .dl-time { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
 .dl-history-item:last-child { border-bottom: none; }
+
+.docs-lede { font-size: 1rem; color: var(--muted); margin-bottom: 24px; line-height: 1.6; }
+.docs-toc { display: flex; gap: 4px 16px; flex-wrap: wrap; align-items: center; margin-bottom: 28px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85rem; }
+.docs-toc strong { color: var(--muted); margin-right: 4px; }
+.docs-toc a { color: var(--accent); text-decoration: none; }
+.docs-toc a:hover { text-decoration: underline; }
+.docs-section { max-width: 780px; line-height: 1.7; }
+.docs-section h3 { margin-top: 20px; text-transform: none; letter-spacing: 0; color: var(--text); font-size: 1rem; }
+.docs-section p, .docs-section li { margin-bottom: 8px; font-size: 0.92rem; color: var(--text); }
+.docs-section ol, .docs-section ul { padding-left: 20px; }
+.docs-section a { color: var(--accent); }
+.docs-section kbd { background: var(--surface2); border: 1px solid var(--border); border-radius: 3px; padding: 1px 6px; font-size: 0.8em; font-family: var(--font); }
+.docs-code { background: rgba(0,0,0,0.4); padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; line-height: 1.5; margin: 8px 0 16px; }
+.docs-endpoint { margin-bottom: 20px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.docs-endpoint-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 0.95rem; font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace; }
+.docs-endpoint-head code { font-size: 0.9rem; word-break: break-all; }
+.docs-endpoint p { color: var(--muted); font-size: 0.88rem; line-height: 1.5; }
+.docs-endpoint details { margin-top: 8px; }
+.docs-endpoint summary { cursor: pointer; color: var(--accent); font-size: 0.82rem; user-select: none; }
+.docs-endpoint pre { background: rgba(0,0,0,0.4); padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; line-height: 1.4; margin-top: 8px; max-height: 300px; overflow-y: auto; }
+.docs-params { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin: 8px 0 12px; }
+.docs-params th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--border); }
+.docs-params td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.docs-params tr:last-child td { border-bottom: none; }
+.docs-params code { font-size: 0.82em; }
+.method { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; min-width: 48px; text-align: center; }
+.method.get { background: rgba(60, 207, 142, 0.15); color: var(--green); }
+.method.post { background: rgba(108, 140, 255, 0.15); color: var(--accent); }
+.method.put { background: rgba(240, 160, 64, 0.15); color: var(--orange); }
+.method.delete { background: rgba(228, 84, 84, 0.15); color: var(--red); }
+.docs-footnote { margin-top: 32px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.82rem; color: var(--muted); line-height: 1.6; }
 
 @media (max-width: 768px) {
   .sidebar { position: fixed; z-index: 100; transform: translateX(-100%); }

@@ -182,6 +182,8 @@ function initNav() {
       if (page === "chat") loadChatModels();
       if (page === "browse") loadBrowse();
       if (page === "downloads") loadDownloadHistory();
+      if (page === "docs-api") renderDocsApi();
+      if (page === "docs-guide") renderDocsGuide();
     });
   });
 }

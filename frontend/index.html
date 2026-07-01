@@ -38,7 +38,11 @@
     <a data-page="models" href="#models"><span class="nav-icon">&#9881;</span>Installed</a>
     <a data-page="downloads" href="#downloads"><span class="nav-icon">&#9660;</span>Downloads</a>
     <a data-page="chat" href="#chat"><span class="nav-icon">&#9993;</span>Chat</a>
+    <div class="nav-divider">Documentation</div>
+    <a data-page="docs-api" href="#docs-api" class="nav-sub"><span class="nav-icon">&#63;</span>API Reference</a>
+    <a data-page="docs-guide" href="#docs-guide" class="nav-sub"><span class="nav-icon">&#9733;</span>User Guide</a>
   </nav>
+
 
   <div class="sidebar-footer">
     <div id="ollama-badge" class="badge-offline">Ollama: checking...</div>
@@ -184,6 +188,564 @@
   </div>
 </div>
 
+</div>
+
+<div id="page-docs-api" class="page">
+  <h1>API Reference</h1>
+  <p class="docs-lede">Complete reference for all Model Hub REST API endpoints. All responses are JSON unless otherwise noted. The server runs at <code>http://127.0.0.1:5050</code>.</p>
+
+  <div class="docs-toc">
+    <strong>Jump to:</strong>
+    <a href="#docs-sys">System</a>
+    <a href="#docs-ollama">Ollama</a>
+    <a href="#docs-library">Library</a>
+    <a href="#docs-sessions">Sessions</a>
+    <a href="#docs-workspaces">Workspaces</a>
+    <a href="#docs-config">Config</a>
+    <a href="#docs-chat">Chat</a>
+  </div>
+
+  <!-- ─── System ─── -->
+  <h2 id="docs-sys">System</h2>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/scan</code></div>
+    <p>Detect system hardware — OS, CPU, cores, RAM, GPU(s), VRAM, Apple Silicon status.</p>
+    <details><summary>Example response</summary><pre>{
+  "os": "Windows 10",
+  "cpu": "AMD64 Family 25 Model 33",
+  "cores": 16,
+  "ram_gb": 32.0,
+  "gpus": [{"name": "NVIDIA GeForce RTX 4090", "vram_gb": 24.0, "backend": "cuda"}],
+  "total_vram_gb": 24.0,
+  "is_apple_silicon": false,
+  "in_container": false
+}</pre></details>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/recommend?vram=24&amp;use_case=coding&amp;top_k=10</code></div>
+    <p>Get model recommendations based on VRAM, use case, and count. Uses live hardware scan if <code>vram</code> omitted.</p>
+    <table class="docs-params">
+      <tr><td><code>vram</code></td><td>float</td><td>VRAM in GB (optional, defaults to scanned value)</td></tr>
+      <tr><td><code>use_case</code></td><td>string</td><td>One of <code>coding</code>, <code>general</code>, <code>reasoning</code>, <code>chat</code></td></tr>
+      <tr><td><code>top_k</code></td><td>int</td><td>Max recommendations (default 5)</td></tr>
+    </table>
+    <details><summary>Example response</summary><pre>{
+  "vram_gb": 24.0,
+  "ram_gb": 32.0,
+  "recommendations": [{
+    "name": "Qwen3 14B",
+    "model_id": "qwen3:14b",
+    "provider": "ollama",
+    "params_b": 14.8,
+    "quant": "Q4_K_M",
+    "score": 92,
+    "vram_gb": 9.5,
+    "context": 32768,
+    "run_mode": "gpu",
+    "ollama_cmd": "ollama run qwen3:14b",
+    "scores": {"quality": 9, "speed": 8, "fit": 10, "context": 9}
+  }]
+}</pre></details>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/models</code></div>
+    <p>List all models in the curated database (65+ models). Returns id, name, provider, params, architecture, context, VRAM estimates.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/system/version</code></div>
+    <p>Returns app name, version, GitHub URL, and download URL.</p>
+    <details><summary>Example</summary><pre>{"version": "2.2.0", "app_name": "Model Hub", "github_url": "https://github.com/Dkrynen/model-hub", "download_url": "https://github.com/Dkrynen/model-hub/releases"}</pre></details>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/system/check-update?current=2.2.0</code></div>
+    <p>Check GitHub for newer releases. Returns <code>update_available</code>, <code>latest_version</code>, <code>download_url</code>, and preview <code>release_notes</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/system/ollama-path</code></div>
+    <p>Returns the filesystem path to the Ollama binary, or <code>null</code> if not found.</p>
+  </div>
+
+  <!-- ─── Ollama ─── -->
+  <h2 id="docs-ollama">Ollama</h2>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/ollama/status</code></div>
+    <p>Check if Ollama is running. Returns <code>{"running": true, "version": "0.5.0"}</code> or <code>{"running": false}</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/ollama/models</code></div>
+    <p>List locally installed Ollama models. Each entry has <code>name</code>, <code>size_gb</code>, <code>modified</code>, <code>digest_short</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/ollama/ps</code></div>
+    <p>Show models currently loaded in memory. Returns <code>{"running": true, "models": [...]}</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method post">POST</span> <code>/api/ollama/pull</code></div>
+    <p>Download a model from the Ollama library. Streams server-sent events (SSE) with progress. Request body: <code>{"model": "llama3.2:3b"}</code>.</p>
+    <details><summary>SSE stream example</summary><pre>data: {"status": "pulling manifest"}
+data: {"status": "downloading", "completed": 12345678, "total": 98765432}
+data: {"status": "verifying sha256 digest"}
+data: {"status": "writing manifest"}
+data: {"status": "success"}
+data: [DONE]</pre></details>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method post">POST</span> <code>/api/ollama/delete</code></div>
+    <p>Delete a locally installed model. Request body: <code>{"model": "llama3.2:3b"}</code>. Returns <code>{"success": true}</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/ollama/check-install</code></div>
+    <p>Simple check: is Ollama on the system PATH? Returns <code>{"installed": true, "path": "..."}</code> or a download URL with instructions.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/ollama/check-install-detailed</code></div>
+    <p>Like <code>check-install</code> but also returns the Ollama version string from <code>ollama --version</code>.</p>
+  </div>
+
+  <!-- ─── Library ─── -->
+  <h2 id="docs-library">Library</h2>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/library/browse?q=&amp;capability=&amp;sort=pulls&amp;compatible=</code></div>
+    <p>Browse the Ollama library with filtering and sorting. Returns paginated model cards with VRAM estimates and compatibility info.</p>
+    <table class="docs-params">
+      <tr><td><code>q</code></td><td>string</td><td>Search query (name, description)</td></tr>
+      <tr><td><code>capability</code></td><td>string</td><td>Filter by <code>tools</code>, <code>vision</code>, <code>thinking</code>, <code>embedding</code>, <code>audio</code></td></tr>
+      <tr><td><code>sort</code></td><td>string</td><td><code>pulls</code>, <code>name</code>, <code>vram</code>, <code>params</code></td></tr>
+      <tr><td><code>compatible</code></td><td>string</td><td>Filter by hardware fit: <code>gpu</code>, <code>cpu</code></td></tr>
+    </table>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/library/tags?name=qwen3</code></div>
+    <p>Fetch available tag variants for a library model (e.g., <code>:7b</code>, <code>:14b</code>, <code>:32b</code>). Returns <code>{"name": "qwen3", "tags": ["0.5b", "1.8b", "7b", "14b", "32b", "235b"], "count": 6}</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/ollama/library</code></div>
+    <p>Alias for <code>/api/library/browse</code> without parameters. Returns the full cached library.</p>
+  </div>
+
+  <!-- ─── Sessions ─── -->
+  <h2 id="docs-sessions">Sessions</h2>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/sessions?workspace=default</code></div>
+    <p>List all saved sessions for the given workspace. Returns id, name, model, timestamps. Omit <code>workspace</code> to use currently active workspace.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method post">POST</span> <code>/api/sessions</code></div>
+    <p>Create a new empty session. Body: <code>{"name": "", "model": "qwen3:14b", "workspace": "default"}</code>. Returns <code>{"id": "abc123def45678"}</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/sessions/&lt;session_id&gt;</code></div>
+    <p>Fetch a session with all messages. Returns session metadata plus <code>messages</code> array with <code>role</code>, <code>content</code>, <code>timestamp</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method put">PUT</span> <code>/api/sessions/&lt;session_id&gt;</code></div>
+    <p>Save messages to a session (replaces all existing messages). Body: <code>{"model": "...", "messages": [...], "name": "My Chat", "workspace": "default"}</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method delete">DELETE</span> <code>/api/sessions/&lt;session_id&gt;</code></div>
+    <p>Delete a session and all its messages.</p>
+  </div>
+
+  <!-- ─── Workspaces ─── -->
+  <h2 id="docs-workspaces">Workspaces</h2>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/workspaces</code></div>
+    <p>List all workspaces. Returns <code>[{"id": "default", "name": "Default Workspace", "description": ""}]</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method post">POST</span> <code>/api/workspaces</code></div>
+    <p>Create a workspace. Body: <code>{"name": "My Project", "description": "..."}</code>. The <code>id</code> is auto-generated from the name.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/workspaces/&lt;id&gt;</code></div>
+    <p>Get a single workspace by id.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method delete">DELETE</span> <code>/api/workspaces/&lt;id&gt;</code></div>
+    <p>Delete a workspace and all its sessions. Cannot delete the <code>default</code> workspace.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method post">POST</span> <code>/api/workspaces/&lt;id&gt;/switch</code></div>
+    <p>Switch the active workspace. Returns <code>{"success": true, "workspace": "&lt;id&gt;"}</code>.</p>
+  </div>
+
+  <!-- ─── Config ─── -->
+  <h2 id="docs-config">Config</h2>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/config</code></div>
+    <p>Get current configuration. Returns <code>{"workspace": "default", "ollama_host": "http://localhost:11434", "theme": "dark", "default_model": ""}</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method put">PUT</span> <code>/api/config</code></div>
+    <p>Update configuration. Send any subset of keys: <code>{"ollama_host": "http://192.168.1.100:11434", "default_model": "qwen3:14b"}</code>.</p>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/api/config/downloads</code></div>
+    <p>Get download history. Returns array of <code>{"model": "llama3.2:3b", "status": "completed", "size_gb": 2.0, "timestamp": 1234567890.0}</code>.</p>
+  </div>
+
+  <!-- ─── Chat ─── -->
+  <h2 id="docs-chat">Chat</h2>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method post">POST</span> <code>/api/ollama/chat</code></div>
+    <p>Streaming chat with an Ollama model. Body: <code>{"model": "qwen3:14b", "messages": [{"role": "user", "content": "Hello"}]}</code>. Returns SSE stream of response chunks. Ends with <code>data: [DONE]</code>.</p>
+    <details><summary>SSE stream example</summary><pre>data: {"model":"qwen3:14b","message":{"role":"assistant","content":"Hello"},"done":false}
+data: {"model":"qwen3:14b","message":{"role":"assistant","content":"! How"},"done":false}
+data: {"model":"qwen3:14b","message":{"role":"assistant","content":" can I help you today?"},"done":true,"total_duration":123456789}</pre></details>
+  </div>
+
+  <div class="docs-endpoint">
+    <div class="docs-endpoint-head"><span class="method get">GET</span> <code>/</code></div>
+    <p>Serves the SPA frontend (<code>frontend/index.html</code>).</p>
+  </div>
+
+  <div class="docs-footnote">
+    <p>All endpoints require Ollama to be running (except <code>/api/scan</code>, <code>/api/recommend</code>, <code>/api/models</code>, <code>/api/config</code>, <code>/api/workspaces</code>, <code>/api/sessions</code>, and system endpoints).</p>
+    <p>Base URL: <code>http://127.0.0.1:5050</code>. Set the <code>OLLAMA_HOST</code> environment variable to change the Ollama server address.</p>
+  </div>
+</div>
+
+<div id="page-docs-guide" class="page">
+  <h1>User Guide</h1>
+  <p class="docs-lede">Everything you need to know about using Model Hub — from first launch to advanced workspace management.</p>
+
+  <div class="docs-toc">
+    <strong>Sections:</strong>
+    <a href="#guide-quickstart">Quick Start</a>
+    <a href="#guide-hardware">Hardware Scan</a>
+    <a href="#guide-recommendations">Recommendations</a>
+    <a href="#guide-models">Model Management</a>
+    <a href="#guide-chat">Chat</a>
+    <a href="#guide-cli">CLI Reference</a>
+    <a href="#guide-workspaces">Workspaces</a>
+    <a href="#guide-config">Configuration</a>
+    <a href="#guide-troubleshooting">Troubleshooting</a>
+  </div>
+
+  <!-- ─── Quick Start ─── -->
+  <h2 id="guide-quickstart">Quick Start</h2>
+  <div class="docs-section">
+    <h3>Prerequisites</h3>
+    <ol>
+      <li><strong>Install Ollama</strong> &mdash; Download from <a href="https://ollama.com/download" target="_blank">ollama.com/download</a> and run the installer.</li>
+      <li><strong>Pull your first model</strong> &mdash; In a terminal, run <code>ollama pull qwen3:7b</code> (or any model from the library).</li>
+      <li><strong>Start Model Hub</strong> &mdash; Run <code>python server.py</code> from the project directory and open <a href="http://127.0.0.1:5050" target="_blank">http://127.0.0.1:5050</a>.</li>
+    </ol>
+
+    <h3>Starting the server</h3>
+    <pre class="docs-code">python server.py</pre>
+    <p>By default the server listens on <code>127.0.0.1:5050</code>. The web UI loads automatically.</p>
+
+    <h3>Using the CLI</h3>
+    <pre class="docs-code">python cli.py chat              # Start interactive chat
+python cli.py list               # List installed models
+python cli.py pull llama3.2:3b   # Install a model
+python cli.py help               # Full command list</pre>
+  </div>
+
+  <!-- ─── Hardware Scan ─── -->
+  <h2 id="guide-hardware">Hardware Scan</h2>
+  <div class="docs-section">
+    <p>The hardware scanner automatically detects your system's components to determine which models will run well.</p>
+
+    <h3>What gets detected</h3>
+    <ul>
+      <li><strong>OS</strong> &mdash; Windows, macOS, or Linux</li>
+      <li><strong>CPU</strong> &mdash; Architecture and core count</li>
+      <li><strong>RAM</strong> &mdash; Total system memory in GB</li>
+      <li><strong>GPU(s)</strong> &mdash; Name, VRAM, compute backend (CUDA, ROCm, Vulkan, Metal)</li>
+      <li><strong>Apple Silicon</strong> &mdash; Unified memory detection</li>
+      <li><strong>Container</strong> &mdash; Whether running in a container environment</li>
+    </ul>
+
+    <h3>Scan from the web UI</h3>
+    <p>Open the <strong>Dashboard</strong> to see a live overview. Go to <strong>Scan &amp; Recommend</strong> and click <kbd>Scan Hardware</kbd> for a detailed report.</p>
+
+    <h3>Scan from the CLI</h3>
+    <pre class="docs-code">python cli.py scan</pre>
+    <p>Output includes OS, CPU, cores, RAM, GPU details, VRAM total, and an estimate of the largest model that fits.</p>
+
+    <h3>VRAM override</h3>
+    <p>In the web UI, you can set a manual VRAM value in the <strong>Scan &amp; Recommend</strong> page. This is useful when:</p>
+    <ul>
+      <li>Your GPU isn't detected automatically</li>
+      <li>You want to test recommendations for different hardware</li>
+      <li>You're sharing VRAM with other processes</li>
+    </ul>
+  </div>
+
+  <!-- ─── Recommendations ─── -->
+  <h2 id="guide-recommendations">Recommendations</h2>
+  <div class="docs-section">
+    <p>Model Hub scores 65+ models across four dimensions to find the best fit for your hardware:</p>
+
+    <table class="docs-params">
+      <tr><th>Score</th><th>Weight</th><th>What it measures</th></tr>
+      <tr><td>Quality</td><td>40%</td><td>Benchmark performance, parameter count, architecture quality</td></tr>
+      <tr><td>Speed</td><td>25%</td><td>Tokens per second based on your hardware and model size</td></tr>
+      <tr><td>Fit</td><td>20%</td><td>How well the model's VRAM requirement matches your GPU</td></tr>
+      <tr><td>Context</td><td>15%</td><td>Available context window (larger is better for long documents)</td></tr>
+    </table>
+
+    <h3>How to use</h3>
+    <ol>
+      <li>Go to <strong>Scan &amp; Recommend</strong> in the web UI.</li>
+      <li>Optionally set a <strong>VRAM override</strong> and <strong>use case</strong>.</li>
+      <li>Click <kbd>Scan + Recommend</kbd>.</li>
+      <li>Browse the scored list. Click <kbd>Install</kbd> on any model to download it.</li>
+    </ol>
+
+    <h3>Run modes explained</h3>
+    <table class="docs-params">
+      <tr><th>Mode</th><th>Badge</th><th>Meaning</th></tr>
+      <tr><td>GPU</td><td><span class="badge badge-gpu">GPU</span></td><td>Model fits entirely in GPU VRAM (fastest)</td></tr>
+      <tr><td>Offload</td><td><span class="badge badge-offload">Offload</span></td><td>Partially fits in VRAM; some layers run on CPU</td></tr>
+    </table>
+
+    <h3>CLI recommendations</h3>
+    <pre class="docs-code">python cli.py recommend --use-case coding --top-k 10
+python cli.py rec                   # Shorthand
+python cli.py recommend --use-case reasoning</pre>
+  </div>
+
+  <!-- ─── Model Management ─── -->
+  <h2 id="guide-models">Model Management</h2>
+  <div class="docs-section">
+    <h3>Installing models</h3>
+    <p>From the web UI:</p>
+    <ul>
+      <li><strong>Browse Models</strong> &mdash; Search the library, filter by capability or hardware fit. Click <kbd>Install</kbd> on any model card.</li>
+      <li><strong>Scan &amp; Recommend</strong> &mdash; Click <kbd>Install</kbd> next to any recommendation.</li>
+      <li><strong>Quick Install</strong> &mdash; Type a full model name (e.g. <code>qwen3:14b-instruct-q4_K_M</code>) in the manual install box and click <kbd>Install</kbd>.</li>
+    </ul>
+    <p>From the CLI:</p>
+    <pre class="docs-code">python cli.py pull qwen3:14b          # Download a model
+python cli.py pull qwen3:14b-q4_K_M  # Specific quant</pre>
+    <p>Downloads show a live progress bar. On completion, the model appears in the <strong>Installed</strong> page.</p>
+
+    <h3>Viewing installed models</h3>
+    <p>The <strong>Installed</strong> page lists all local models with name, size, and last modified date. Use the search box to filter. The <strong>Currently Running</strong> section shows models loaded in GPU memory.</p>
+
+    <h3>Running a model</h3>
+    <p>Click <kbd>Run</kbd> next to any installed model to copy the <code>ollama run &lt;name&gt;</code> command to your clipboard. Paste it into a terminal to interact with the model directly.</p>
+
+    <h3>Deleting a model</h3>
+    <p>Click <kbd>Delete</kbd> next to any installed model and confirm. You can also use the CLI:</p>
+    <pre class="docs-code">python cli.py delete qwen3:14b
+python cli.py rm qwen3:14b           # Shorthand</pre>
+
+    <h3>Viewing model details</h3>
+    <p>In the <strong>Scan &amp; Recommend</strong> page, click <kbd>Details</kbd> on any recommendation to see architecture, quantization, scores, and the Ollama command.</p>
+    <p>From the CLI:</p>
+    <pre class="docs-code">python cli.py inspect qwen3:14b</pre>
+
+    <h3>Download history</h3>
+    <p>The <strong>Downloads</strong> page shows active downloads and a complete history of every model you've pulled, including timestamps, status, and file size. The CLI also tracks this:</p>
+    <pre class="docs-code">python cli.py config downloads</pre>
+  </div>
+
+  <!-- ─── Chat ─── -->
+  <h2 id="guide-chat">Chat</h2>
+  <div class="docs-section">
+    <p>The built-in chat provides a streaming conversational interface to any installed Ollama model.</p>
+
+    <h3>Web chat</h3>
+    <ol>
+      <li>Navigate to the <strong>Chat</strong> page.</li>
+      <li>Select a model from the dropdown.</li>
+      <li>Type your message and press <kbd>Ctrl+Enter</kbd> or click <kbd>Send</kbd>.</li>
+      <li>The response streams in real time. Click <kbd>Stop</kbd> to interrupt.</li>
+    </ol>
+    <p>Chat history is saved to your browser's localStorage and restored when you return.</p>
+
+    <h3>CLI chat</h3>
+    <pre class="docs-code">python cli.py chat                    # Use first installed model
+python cli.py chat qwen3:14b          # Specify a model
+python cli.py chat --system "You are a helpful coding assistant."</pre>
+
+    <h3>Chat slash commands</h3>
+    <table class="docs-params">
+      <tr><th>Command</th><th>Description</th></tr>
+      <tr><td><code>/help</code></td><td>Show available commands</td></tr>
+      <tr><td><code>/clear</code></td><td>Clear the conversation</td></tr>
+      <tr><td><code>/model &lt;name&gt;</code></td><td>Switch to a different model</td></tr>
+      <tr><td><code>/system &lt;prompt&gt;</code></td><td>Set or change the system prompt</td></tr>
+      <tr><td><code>/info</code></td><td>Show current model details</td></tr>
+      <tr><td><code>/tokens</code></td><td>Estimate token usage</td></tr>
+      <tr><td><code>/save &lt;name&gt;</code></td><td>Save the conversation to the server</td></tr>
+      <tr><td><code>/load &lt;name&gt;</code></td><td>Load a saved conversation</td></tr>
+      <tr><td><code>/list</code></td><td>List saved sessions</td></tr>
+      <tr><td><code>/delete &lt;name&gt;</code></td><td>Delete a saved session</td></tr>
+      <tr><td><code>/copy</code></td><td>Copy the last assistant response</td></tr>
+      <tr><td><code>/exit</code></td><td>Exit chat (also Ctrl+C)</td></tr>
+    </table>
+
+    <h3>Sessions</h3>
+    <p>Sessions let you save and resume conversations:</p>
+    <ul>
+      <li>In the web UI, click <kbd>Sessions</kbd> to see all saved conversations. Click <kbd>Load</kbd> to restore one.</li>
+      <li>In the CLI, use <code>/save my-conversation</code> and <code>/load my-conversation</code>.</li>
+      <li>Sessions are scoped to the current workspace.</li>
+      <li>The CLI auto-saves your session when you exit.</li>
+    </ul>
+  </div>
+
+  <!-- ─── CLI Reference ─── -->
+  <h2 id="guide-cli">CLI Reference</h2>
+  <div class="docs-section">
+    <table class="docs-params">
+      <tr><th>Command</th><th>Alias</th><th>Description</th></tr>
+      <tr><td><code>chat [model]</code></td><td></td><td>Start an interactive chat session</td></tr>
+      <tr><td><code>list</code></td><td><code>ls</code></td><td>List installed models with size and date</td></tr>
+      <tr><td><code>pull &lt;model&gt;</code></td><td></td><td>Download a model with live progress</td></tr>
+      <tr><td><code>delete &lt;model&gt;</code></td><td><code>rm</code></td><td>Delete a model (with confirmation)</td></tr>
+      <tr><td><code>ps</code></td><td></td><td>Show models loaded in memory</td></tr>
+      <tr><td><code>inspect &lt;model&gt;</code></td><td></td><td>Show detailed model information</td></tr>
+      <tr><td><code>scan</code></td><td></td><td>Detect and display hardware</td></tr>
+      <tr><td><code>recommend</code></td><td><code>rec</code></td><td>Get model recommendations</td></tr>
+      <tr><td><code>browse [query]</code></td><td></td><td>Browse the model library</td></tr>
+      <tr><td><code>workspace</code></td><td><code>ws</code></td><td>Manage workspaces (see below)</td></tr>
+      <tr><td><code>config</code></td><td></td><td>View or set configuration</td></tr>
+    </table>
+
+    <h3>Global flags</h3>
+    <table class="docs-params">
+      <tr><td><code>--host URL</code></td><td>Set Ollama host (overrides <code>OLLAMA_HOST</code> env)</td></tr>
+    </table>
+
+    <h3>Workspace subcommands</h3>
+    <table class="docs-params">
+      <tr><td><code>workspace list</code></td><td>List all workspaces (current one marked with <code>*</code>)</td></tr>
+      <tr><td><code>workspace show</code></td><td>Show currently active workspace</td></tr>
+      <tr><td><code>workspace create &lt;name&gt;</code></td><td>Create a new workspace</td></tr>
+      <tr><td><code>workspace delete &lt;name&gt;</code></td><td>Delete a workspace (cannot delete default)</td></tr>
+      <tr><td><code>workspace switch &lt;name&gt;</code></td><td>Switch active workspace</td></tr>
+    </table>
+
+    <h3>Config subcommands</h3>
+    <table class="docs-params">
+      <tr><td><code>config show</code></td><td>Display current configuration</td></tr>
+      <tr><td><code>config set &lt;key&gt; &lt;value&gt;</code></td><td>Set a config value (workspace, ollama_host, theme, default_model)</td></tr>
+      <tr><td><code>config downloads</code></td><td>Show download history</td></tr>
+    </table>
+  </div>
+
+  <!-- ─── Workspaces ─── -->
+  <h2 id="guide-workspaces">Workspaces</h2>
+  <div class="docs-section">
+    <p>Workspaces let you organize your work into separate environments. Each workspace has its own set of sessions and can be switched independently.</p>
+
+    <h3>Web UI</h3>
+    <ul>
+      <li>The workspace dropdown is in the sidebar, below the Model Hub logo.</li>
+      <li>Select a workspace from the dropdown to switch immediately.</li>
+      <li>Click the gear icon (<span style="font-size:1.2em">&#9881;</span>) to create, rename, or delete workspaces.</li>
+      <li>Only the currently active workspace's sessions are shown.</li>
+    </ul>
+
+    <h3>CLI</h3>
+    <pre class="docs-code">python cli.py ws list                    # List workspaces
+python cli.py ws create "Research"       # Create a workspace
+python cli.py ws switch "Research"       # Switch to it
+python cli.py ws show                    # See current workspace
+python cli.py ws delete "Research"       # Delete (with confirmation)</pre>
+
+    <h3>Use cases</h3>
+    <ul>
+      <li><strong>Work vs. personal</strong> &mdash; keep work chats and personal chats separate.</li>
+      <li><strong>Project-based</strong> &mdash; one workspace per project with relevant model notes.</li>
+      <li><strong>Testing</strong> &mdash; experiment with different models in a disposable workspace.</li>
+    </ul>
+  </div>
+
+  <!-- ─── Configuration ─── -->
+  <h2 id="guide-config">Configuration</h2>
+  <div class="docs-section">
+    <p>Configuration is persisted to <code>~/.model-hub/config.json</code>. The following settings are available:</p>
+
+    <table class="docs-params">
+      <tr><th>Key</th><th>Default</th><th>Description</th></tr>
+      <tr><td><code>workspace</code></td><td><code>default</code></td><td>Currently active workspace</td></tr>
+      <tr><td><code>ollama_host</code></td><td><code>http://localhost:11434</code></td><td>Ollama server URL</td></tr>
+      <tr><td><code>theme</code></td><td><code>dark</code></td><td>UI theme (dark only currently)</td></tr>
+      <tr><td><code>default_model</code></td><td><code>""</code></td><td>Default model for chat</td></tr>
+    </table>
+
+    <h3>CLI</h3>
+    <pre class="docs-code">python cli.py config show                  # View all settings
+python cli.py config set ollama_host http://192.168.1.5:11434
+python cli.py config set default_model qwen3:14b</pre>
+
+    <h3>Environment variable</h3>
+    <p>Set <code>OLLAMA_HOST</code> to override the Ollama server address without changing the config file:</p>
+    <pre class="docs-code">set OLLAMA_HOST=http://192.168.1.5:11434
+python server.py</pre>
+  </div>
+
+  <!-- ─── Troubleshooting ─── -->
+  <h2 id="guide-troubleshooting">Troubleshooting</h2>
+  <div class="docs-section">
+    <h3>Ollama not found</h3>
+    <p>If the dashboard shows "Ollama: not running":</p>
+    <ol>
+      <li>Make sure Ollama is installed from <a href="https://ollama.com/download" target="_blank">ollama.com/download</a>.</li>
+      <li>Start Ollama: look for the Ollama icon in your system tray (Windows/Mac) or run <code>ollama serve</code> in a terminal.</li>
+      <li>Verify it's running: <code>curl http://localhost:11434</code> should return <code>Ollama is running</code>.</li>
+    </ol>
+
+    <h3>No models installed</h3>
+    <p>Use the <strong>Browse Models</strong> page to find and install models, or run <code>ollama pull llama3.2:3b</code> from a terminal.</p>
+
+    <h3>Server won't start</h3>
+    <p>Make sure port 5050 isn't in use: <code>netstat -ano | findstr :5050</code>. Change the port by editing <code>server.py</code> or using a different interface.</p>
+
+    <h3>GPU not detected</h3>
+    <ul>
+      <li><strong>NVIDIA:</strong> Install the latest <a href="https://nvidia.com/drivers" target="_blank">NVIDIA drivers</a> (includes <code>nvidia-smi</code>).</li>
+      <li><strong>AMD:</strong> Install <a href="https://www.amd.com/en/technologies/software" target="_blank">AMD Software</a> for Vulkan support.</li>
+      <li><strong>Apple Silicon:</strong> Detection is automatic via <code>sysctl</code>.</li>
+      <li>Use the <strong>VRAM override</strong> field to manually enter your GPU memory.</li>
+    </ul>
+
+    <h3>Download fails</h3>
+    <p>Large model downloads can fail on unstable connections. Try again &mdash; Ollama resumes interrupted downloads automatically. Check the <strong>Downloads</strong> page for error details.</p>
+
+    <h3>Slow chat responses</h3>
+    <p>First response may be slow while the model loads into GPU memory. Subsequent responses are faster. If responses are consistently slow, try a smaller model or a lower quantization.</p>
+
+    <h3>Report an issue</h3>
+    <p>Found a bug? Open an issue at <a href="https://github.com/Dkrynen/model-hub/issues" target="_blank">github.com/Dkrynen/model-hub/issues</a>.</p>
+  </div>
 </div>
 
 <div id="modal-overlay" class="modal-overlay hidden">
