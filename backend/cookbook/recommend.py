@@ -516,5 +516,3 @@ def print_recommendations(recs: list[Recommendation], info: SystemInfo, use_case
     for i, rec in enumerate(recs[:3], 1):
         split_info = f"  split: {rec.split_plan.summary}" if rec.split_plan and rec.split_plan.run_mode != "gpu" else ""
         print(f"  {i}. {rec.model.name} ({rec.quant}) — Quality: {rec.quality_score:.0f} Speed: {rec.speed_score:.0f} Fit: {rec.fit_score:.0f} Ctx: {rec.context_score:.0f} = {rec.score}{split_info}")
-    for i, rec in enumerate(recs[:3], 1):
-        print(f"  {i}. {rec.model.name} ({rec.quant}) — Quality: {rec.quality_score:.0f} Speed: {rec.speed_score:.0f} Fit: {rec.fit_score:.0f} Ctx: {rec.context_score:.0f} = {rec.score}")
