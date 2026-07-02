@@ -3,6 +3,10 @@
 corrected recommendations. Pure/Ollama-free except detect_stack()."""
 from __future__ import annotations
 
+import hashlib
+import json
+import urllib.request
+
 from .recommend import load_models, QUANTS, SUB4BIT_QUANT
 
 # ollama quant-suffix (lowercased) -> catalog quant name. Most catalog quant
@@ -32,3 +36,25 @@ def parse_model_tag(tag: str):
             if base in ids:
                 return (base, qname)
     return None
+
+
+def machine_fingerprint(info, stack: dict) -> str:
+    gpus = sorted(f"{g.name}|{g.backend}|{round(g.vram_gb,1)}" for g in info.gpus)
+    parts = [
+        ";".join(gpus),
+        f"ram={round(info.ram_gb)}",
+        f"ollama={stack.get('ollama_version', 'unknown')}",
+        f"backend={stack.get('backend', 'unknown')}",
+    ]
+    return hashlib.sha1("::".join(parts).encode()).hexdigest()[:12]
+
+
+def detect_stack(base_url: str = "http://localhost:11434") -> dict:
+    """Best-effort software-stack probe. Never raises."""
+    version = "unknown"
+    try:
+        with urllib.request.urlopen(f"{base_url}/api/version", timeout=3) as r:
+            version = json.loads(r.read().decode()).get("version", "unknown")
+    except Exception:
+        pass
+    return {"ollama_version": version, "backend": "unknown"}  # backend: see spec §11
