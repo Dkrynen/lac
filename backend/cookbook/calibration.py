@@ -165,3 +165,26 @@ def _loo_band(ratios) -> float:
         resid.append(abs(ratios[i] - pred_factor) / pred_factor * 100)
     resid.sort()
     return round(resid[int(0.68 * (len(resid) - 1))], 1)
+
+
+_ESTIMATED_BAND = 50.0
+
+
+def apply_calibration(theoretical_tps, catalog_id, quant_name, regime, calibration):
+    """Turn a theoretical tok/s estimate into (tok_s, source, band_pct).
+
+    Precedence: exact measured (id,quant) > regime-level calibrated factor >
+    uncalibrated estimated. A None calibration always falls through to
+    "estimated".
+    """
+    if calibration is None:
+        return round(theoretical_tps, 1), "estimated", _ESTIMATED_BAND
+    stat = calibration.measured.get((catalog_id, quant_name))
+    if stat is not None:
+        band = stat.spread_pct if stat.n_runs > 1 else 25.0  # single-sample: flagged, not 0
+        return stat.median_tps, "measured", band
+    factor = calibration.regime_factor.get(regime)
+    if factor is not None:
+        band = calibration.regime_band_pct.get(regime, 35.0)
+        return round(theoretical_tps * factor, 1), "calibrated", band
+    return round(theoretical_tps, 1), "estimated", _ESTIMATED_BAND

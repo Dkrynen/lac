@@ -84,3 +84,25 @@ def test_load_calibration_ignores_foreign_fingerprint(tmp_path):
 def test_load_calibration_empty(tmp_path):
     cal = load_calibration(_info(), _STACK, str(tmp_path / "none.jsonl"))
     assert cal.n == 0 and cal.regime_factor == {}
+
+
+from backend.cookbook.calibration import apply_calibration, Calibration, MeasuredStat
+
+def test_apply_measured_wins():
+    cal = Calibration(measured={("m","Q4_K_M"): MeasuredStat(50.0, 3, 4.0)},
+                      regime_factor={"gpu": 0.5}, regime_band_pct={"gpu": 10.0}, n=3)
+    tps, src, band = apply_calibration(200.0, "m", "Q4_K_M", "gpu", cal)
+    assert (tps, src) == (50.0, "measured")
+
+def test_apply_calibrated_when_regime_has_factor():
+    cal = Calibration(regime_factor={"spilled": 0.25}, regime_band_pct={"spilled": 20.0}, n=2)
+    tps, src, band = apply_calibration(100.0, "m", "Q8", "spilled", cal)
+    assert (round(tps,1), src, band) == (25.0, "calibrated", 20.0)
+
+def test_apply_estimated_when_no_data():
+    tps, src, band = apply_calibration(100.0, "m", "Q8", "spilled", Calibration())
+    assert (tps, src) == (100.0, "estimated") and band >= 50.0
+
+def test_apply_none_calibration_is_estimated():
+    tps, src, band = apply_calibration(100.0, "m", "Q8", "spilled", None)
+    assert src == "estimated"
