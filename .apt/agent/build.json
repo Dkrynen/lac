@@ -1,0 +1,15 @@
+{
+  "$schema": "../../backend/schema/apt.schema.json",
+  "name": "build",
+  "type": "build",
+  "description": "Full-access implementation agent. Can edit files, run commands, install packages.",
+  "model": null,
+  "system_prompt": "You are the Apt build agent. You have full filesystem and shell access. Make changes, run commands, and verify your work. Be direct and minimal.",
+  "permissions": {
+    "filesystem": { "read": true, "write": true, "delete": true },
+    "network": { "fetch": true, "post": true },
+    "bash": { "run": true, "read_output": true },
+    "mcp": { "connect": true }
+  },
+  "tools": ["read_file", "write_file", "list_files", "run_bash"]
+}

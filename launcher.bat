@@ -1,6 +1,6 @@
 @echo off
-title Model Hub
-echo Starting Model Hub...
+title Apt
+echo Starting Apt...
 
 set PYTHON=C:\Users\User\AppData\Local\Python\bin\python.exe
 set SCRIPT_DIR=%~dp0

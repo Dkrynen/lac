@@ -10,11 +10,10 @@
       "general",
       "chat"
     ],
-    "is_moe": true,
-    "active_params_b": 0.1,
-    "vram_q4": 0.9,
-    "vram_q8": 1.2,
-    "vram_f16": 1.7
+    "is_moe": false,
+    "vram_q4": 0.6,
+    "vram_q8": 0.9,
+    "vram_f16": 1.5
   },
   {
     "id": "qwen3:1.7b",
@@ -27,11 +26,10 @@
       "general",
       "chat"
     ],
-    "is_moe": true,
-    "active_params_b": 0.4,
-    "vram_q4": 1.6,
-    "vram_q8": 2.4,
-    "vram_f16": 4.0
+    "is_moe": false,
+    "vram_q4": 1.3,
+    "vram_q8": 2.1,
+    "vram_f16": 3.7
   },
   {
     "id": "qwen3:4b",
@@ -45,17 +43,16 @@
       "chat",
       "coding"
     ],
-    "is_moe": true,
-    "active_params_b": 0.8,
-    "vram_q4": 3.1,
-    "vram_q8": 5.0,
-    "vram_f16": 8.8
+    "is_moe": false,
+    "vram_q4": 2.6,
+    "vram_q8": 4.5,
+    "vram_f16": 8.3
   },
   {
-    "id": "qwen3:7b",
-    "name": "Qwen3 7B",
+    "id": "qwen3:8b",
+    "name": "Qwen3 8B",
     "provider": "Alibaba",
-    "params_b": 7.6,
+    "params_b": 8.2,
     "arch": "qwen3",
     "context": 40960,
     "use_cases": [
@@ -65,9 +62,9 @@
       "reasoning"
     ],
     "is_moe": false,
-    "vram_q4": 7.4,
-    "vram_q8": 11.0,
-    "vram_f16": 18.2
+    "vram_q4": 5.1,
+    "vram_q8": 8.9,
+    "vram_f16": 16.7
   },
   {
     "id": "qwen3:14b",
@@ -83,15 +80,15 @@
       "reasoning"
     ],
     "is_moe": false,
-    "vram_q4": 13.9,
-    "vram_q8": 20.9,
-    "vram_f16": 34.9
+    "vram_q4": 8.9,
+    "vram_q8": 15.8,
+    "vram_f16": 29.9
   },
   {
     "id": "qwen3:32b",
     "name": "Qwen3 32B",
     "provider": "Alibaba",
-    "params_b": 32.0,
+    "params_b": 32.8,
     "arch": "qwen3",
     "context": 40960,
     "use_cases": [
@@ -101,30 +98,32 @@
       "reasoning"
     ],
     "is_moe": false,
-    "vram_q4": 29.5,
-    "vram_q8": 44.6,
-    "vram_f16": 75.0
+    "vram_q4": 19.3,
+    "vram_q8": 34.7,
+    "vram_f16": 65.9
   },
   {
-    "id": "qwen3:72b",
-    "name": "Qwen3 72B",
+    "id": "qwen3:30b-a3b",
+    "name": "Qwen3 30B A3B",
     "provider": "Alibaba",
-    "params_b": 72.0,
+    "params_b": 30.0,
     "arch": "qwen3",
-    "context": 32768,
+    "context": 131072,
     "use_cases": [
       "general",
+      "chat",
       "coding",
       "reasoning"
     ],
-    "is_moe": false,
-    "vram_q4": 61.1,
-    "vram_q8": 95.0,
-    "vram_f16": 163.4
+    "is_moe": true,
+    "active_params_b": 3.0,
+    "vram_q4": 17.7,
+    "vram_q8": 31.8,
+    "vram_f16": 60.3
   },
   {
     "id": "qwen3:235b",
-    "name": "Qwen3 235B",
+    "name": "Qwen3 235B A22B",
     "provider": "Alibaba",
     "params_b": 235.0,
     "arch": "qwen3",
@@ -135,40 +134,133 @@
       "reasoning"
     ],
     "is_moe": true,
-    "active_params_b": 16.0,
-    "vram_q4": 170.4,
-    "vram_q8": 280.8,
-    "vram_f16": 504.1
+    "active_params_b": 22.0,
+    "vram_q4": 136.6,
+    "vram_q8": 247.1,
+    "vram_f16": 470.3
   },
   {
-    "id": "qwen3-coder:7b",
-    "name": "Qwen3 Coder 7B",
+    "id": "qwen3.5:0.8b",
+    "name": "Qwen3.5 0.8B",
     "provider": "Alibaba",
-    "params_b": 7.6,
+    "params_b": 0.8,
     "arch": "qwen3",
-    "context": 131072,
+    "context": 40960,
     "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 0.8,
+    "vram_q8": 1.1,
+    "vram_f16": 1.9
+  },
+  {
+    "id": "qwen3.5:2b",
+    "name": "Qwen3.5 2B",
+    "provider": "Alibaba",
+    "params_b": 2.0,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat",
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 12.9,
-    "vram_q8": 16.4,
-    "vram_f16": 23.7
+    "vram_q4": 1.5,
+    "vram_q8": 2.4,
+    "vram_f16": 4.3
   },
   {
-    "id": "qwen3-coder:14b",
-    "name": "Qwen3 Coder 14B",
+    "id": "qwen3.5:4b",
+    "name": "Qwen3.5 4B",
     "provider": "Alibaba",
-    "params_b": 14.8,
+    "params_b": 4.0,
     "arch": "qwen3",
-    "context": 131072,
+    "context": 40960,
     "use_cases": [
+      "general",
+      "chat",
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 24.6,
-    "vram_q8": 31.6,
-    "vram_f16": 45.6
+    "vram_q4": 2.6,
+    "vram_q8": 4.5,
+    "vram_f16": 8.3
+  },
+  {
+    "id": "qwen3.5:9b",
+    "name": "Qwen3.5 9B",
+    "provider": "Alibaba",
+    "params_b": 9.0,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 5.5,
+    "vram_q8": 9.8,
+    "vram_f16": 18.3
+  },
+  {
+    "id": "qwen3.5:27b",
+    "name": "Qwen3.5 27B",
+    "provider": "Alibaba",
+    "params_b": 27.0,
+    "arch": "qwen3",
+    "context": 40960,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 16.0,
+    "vram_q8": 28.7,
+    "vram_f16": 54.3
+  },
+  {
+    "id": "qwen3.5:35b",
+    "name": "Qwen3.5 35B A4B",
+    "provider": "Alibaba",
+    "params_b": 35.0,
+    "arch": "qwen3",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 4.0,
+    "vram_q4": 20.6,
+    "vram_q8": 37.0,
+    "vram_f16": 70.3
+  },
+  {
+    "id": "qwen3.5:122b",
+    "name": "Qwen3.5 122B A8B",
+    "provider": "Alibaba",
+    "params_b": 122.0,
+    "arch": "qwen3",
+    "context": 262144,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 8.0,
+    "vram_q4": 71.1,
+    "vram_q8": 128.4,
+    "vram_f16": 244.3
   },
   {
     "id": "qwen3-coder:30b",
@@ -183,9 +275,127 @@
     ],
     "is_moe": true,
     "active_params_b": 3.0,
-    "vram_q4": 21.0,
-    "vram_q8": 35.1,
-    "vram_f16": 63.6
+    "vram_q4": 17.7,
+    "vram_q8": 31.8,
+    "vram_f16": 60.3
+  },
+  {
+    "id": "qwen2.5:0.5b",
+    "name": "Qwen2.5 0.5B",
+    "provider": "Alibaba",
+    "params_b": 0.5,
+    "arch": "qwen",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 0.6,
+    "vram_q8": 0.8,
+    "vram_f16": 1.3
+  },
+  {
+    "id": "qwen2.5:1.5b",
+    "name": "Qwen2.5 1.5B",
+    "provider": "Alibaba",
+    "params_b": 1.5,
+    "arch": "qwen",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 1.2,
+    "vram_q8": 1.9,
+    "vram_f16": 3.3
+  },
+  {
+    "id": "qwen2.5:3b",
+    "name": "Qwen2.5 3B",
+    "provider": "Alibaba",
+    "params_b": 3.0,
+    "arch": "qwen",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 2.0,
+    "vram_q8": 3.5,
+    "vram_f16": 6.3
+  },
+  {
+    "id": "qwen2.5:7b",
+    "name": "Qwen2.5 7B",
+    "provider": "Alibaba",
+    "params_b": 7.6,
+    "arch": "qwen",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 4.7,
+    "vram_q8": 8.3,
+    "vram_f16": 15.5
+  },
+  {
+    "id": "qwen2.5:14b",
+    "name": "Qwen2.5 14B",
+    "provider": "Alibaba",
+    "params_b": 14.8,
+    "arch": "qwen",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 8.9,
+    "vram_q8": 15.8,
+    "vram_f16": 29.9
+  },
+  {
+    "id": "qwen2.5:32b",
+    "name": "Qwen2.5 32B",
+    "provider": "Alibaba",
+    "params_b": 32.8,
+    "arch": "qwen",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 19.3,
+    "vram_q8": 34.7,
+    "vram_f16": 65.9
+  },
+  {
+    "id": "qwen2.5:72b",
+    "name": "Qwen2.5 72B",
+    "provider": "Alibaba",
+    "params_b": 72.8,
+    "arch": "qwen",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 42.5,
+    "vram_q8": 76.7,
+    "vram_f16": 145.9
   },
   {
     "id": "qwen2.5-coder:1.5b",
@@ -198,9 +408,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 1.8,
-    "vram_q8": 2.5,
-    "vram_f16": 3.9
+    "vram_q4": 1.2,
+    "vram_q8": 1.9,
+    "vram_f16": 3.3
   },
   {
     "id": "qwen2.5-coder:7b",
@@ -213,9 +423,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 12.9,
-    "vram_q8": 16.4,
-    "vram_f16": 23.7
+    "vram_q4": 4.7,
+    "vram_q8": 8.3,
+    "vram_f16": 15.5
   },
   {
     "id": "qwen2.5-coder:14b",
@@ -228,24 +438,24 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 24.6,
-    "vram_q8": 31.6,
-    "vram_f16": 45.6
+    "vram_q4": 8.9,
+    "vram_q8": 15.8,
+    "vram_f16": 29.9
   },
   {
     "id": "qwen2.5-coder:32b",
     "name": "Qwen2.5 Coder 32B",
     "provider": "Alibaba",
-    "params_b": 32.0,
+    "params_b": 32.8,
     "arch": "qwen",
     "context": 131072,
     "use_cases": [
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 52.6,
-    "vram_q8": 67.7,
-    "vram_f16": 98.1
+    "vram_q4": 19.3,
+    "vram_q8": 34.7,
+    "vram_f16": 65.9
   },
   {
     "id": "llama3.2:1b",
@@ -259,9 +469,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 2.4,
-    "vram_q8": 3.0,
-    "vram_f16": 4.1
+    "vram_q4": 1.0,
+    "vram_q8": 1.6,
+    "vram_f16": 2.7
   },
   {
     "id": "llama3.2:3b",
@@ -275,26 +485,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 5.6,
-    "vram_q8": 7.1,
-    "vram_f16": 10.2
-  },
-  {
-    "id": "llama3.2:11b",
-    "name": "Llama 3.2 11B",
-    "provider": "Meta",
-    "params_b": 11.0,
-    "arch": "llama",
-    "context": 128000,
-    "use_cases": [
-      "general",
-      "chat",
-      "coding"
-    ],
-    "is_moe": false,
-    "vram_q4": 18.1,
-    "vram_q8": 23.3,
-    "vram_f16": 33.8
+    "vram_q4": 2.2,
+    "vram_q8": 3.7,
+    "vram_f16": 6.7
   },
   {
     "id": "llama3.1:8b",
@@ -309,9 +502,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 13.3,
-    "vram_q8": 17.1,
-    "vram_f16": 24.7
+    "vram_q4": 4.9,
+    "vram_q8": 8.7,
+    "vram_f16": 16.3
   },
   {
     "id": "llama3.1:70b",
@@ -327,9 +520,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 112.8,
-    "vram_q8": 145.7,
-    "vram_f16": 212.2
+    "vram_q4": 40.9,
+    "vram_q8": 73.8,
+    "vram_f16": 140.3
   },
   {
     "id": "llama3.1:405b",
@@ -344,9 +537,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 650.1,
-    "vram_q8": 840.5,
-    "vram_f16": 1225.2
+    "vram_q4": 235.2,
+    "vram_q8": 425.6,
+    "vram_f16": 810.3
   },
   {
     "id": "llama3.3:70b",
@@ -362,9 +555,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 114.5,
-    "vram_q8": 147.4,
-    "vram_f16": 213.9
+    "vram_q4": 40.9,
+    "vram_q8": 73.8,
+    "vram_f16": 140.3
   },
   {
     "id": "llama4:scout",
@@ -380,9 +573,9 @@
     ],
     "is_moe": true,
     "active_params_b": 17.0,
-    "vram_q4": 206.3,
-    "vram_q8": 257.6,
-    "vram_f16": 361.1
+    "vram_q4": 63.5,
+    "vram_q8": 114.8,
+    "vram_f16": 218.3
   },
   {
     "id": "llama4:maverick",
@@ -397,10 +590,10 @@
       "coding"
     ],
     "is_moe": true,
-    "active_params_b": 50.0,
-    "vram_q4": 653.1,
-    "vram_q8": 842.0,
-    "vram_f16": 1223.9
+    "active_params_b": 17.0,
+    "vram_q4": 233.5,
+    "vram_q8": 422.4,
+    "vram_f16": 804.3
   },
   {
     "id": "mistral:7b",
@@ -415,12 +608,30 @@
       "reasoning"
     ],
     "is_moe": false,
-    "vram_q4": 6.6,
-    "vram_q8": 10.1,
-    "vram_f16": 17.0
+    "vram_q4": 4.5,
+    "vram_q8": 8.0,
+    "vram_f16": 14.9
   },
   {
-    "id": "mistral:8x7b",
+    "id": "mistral-nemo:12b",
+    "name": "Mistral Nemo 12B",
+    "provider": "Mistral",
+    "params_b": 12.2,
+    "arch": "mistral",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 7.4,
+    "vram_q8": 13.1,
+    "vram_f16": 24.7
+  },
+  {
+    "id": "mixtral:8x7b",
     "name": "Mixtral 8x7B",
     "provider": "Mistral",
     "params_b": 46.7,
@@ -433,27 +644,27 @@
     ],
     "is_moe": true,
     "active_params_b": 12.9,
-    "vram_q4": 31.0,
-    "vram_q8": 52.9,
-    "vram_f16": 97.3
+    "vram_q4": 27.4,
+    "vram_q8": 49.3,
+    "vram_f16": 93.7
   },
   {
-    "id": "mistral:12b",
-    "name": "Mistral 12B",
+    "id": "mixtral:8x22b",
+    "name": "Mixtral 8x22B",
     "provider": "Mistral",
-    "params_b": 12.2,
+    "params_b": 141.0,
     "arch": "mistral",
-    "context": 32768,
+    "context": 65536,
     "use_cases": [
       "general",
-      "coding",
       "reasoning",
-      "chat"
+      "coding"
     ],
-    "is_moe": false,
-    "vram_q4": 10.8,
-    "vram_q8": 16.5,
-    "vram_f16": 28.1
+    "is_moe": true,
+    "active_params_b": 39.0,
+    "vram_q4": 82.1,
+    "vram_q8": 148.4,
+    "vram_f16": 282.3
   },
   {
     "id": "codestral:22b",
@@ -466,25 +677,27 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 19.0,
-    "vram_q8": 29.4,
-    "vram_f16": 50.3
+    "vram_q4": 13.1,
+    "vram_q8": 23.4,
+    "vram_f16": 44.3
   },
   {
-    "id": "deepseek-coder-v2:16b",
-    "name": "DeepSeek Coder V2 Lite",
-    "provider": "DeepSeek",
-    "params_b": 16.0,
-    "arch": "deepseek",
+    "id": "mistral-small3.2:24b",
+    "name": "Mistral Small 3.2 24B",
+    "provider": "Mistral",
+    "params_b": 24.0,
+    "arch": "mistral",
     "context": 131072,
     "use_cases": [
+      "general",
       "coding",
-      "reasoning"
+      "reasoning",
+      "chat"
     ],
     "is_moe": false,
-    "vram_q4": 26.6,
-    "vram_q8": 34.1,
-    "vram_f16": 49.3
+    "vram_q4": 14.2,
+    "vram_q8": 25.5,
+    "vram_f16": 48.3
   },
   {
     "id": "deepseek-r1:1.5b",
@@ -497,15 +710,15 @@
       "reasoning"
     ],
     "is_moe": false,
-    "vram_q4": 2.9,
-    "vram_q8": 3.6,
-    "vram_f16": 5.1
+    "vram_q4": 1.2,
+    "vram_q8": 1.9,
+    "vram_f16": 3.3
   },
   {
     "id": "deepseek-r1:7b",
     "name": "DeepSeek R1 7B",
     "provider": "DeepSeek",
-    "params_b": 7.0,
+    "params_b": 7.6,
     "arch": "deepseek",
     "context": 131072,
     "use_cases": [
@@ -513,15 +726,31 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 11.9,
-    "vram_q8": 15.2,
-    "vram_f16": 21.8
+    "vram_q4": 4.7,
+    "vram_q8": 8.3,
+    "vram_f16": 15.5
+  },
+  {
+    "id": "deepseek-r1:8b",
+    "name": "DeepSeek R1 8B",
+    "provider": "DeepSeek",
+    "params_b": 8.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "reasoning",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 4.9,
+    "vram_q8": 8.7,
+    "vram_f16": 16.3
   },
   {
     "id": "deepseek-r1:14b",
     "name": "DeepSeek R1 14B",
     "provider": "DeepSeek",
-    "params_b": 14.0,
+    "params_b": 14.8,
     "arch": "deepseek",
     "context": 131072,
     "use_cases": [
@@ -529,15 +758,15 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 23.3,
-    "vram_q8": 29.9,
-    "vram_f16": 43.2
+    "vram_q4": 8.9,
+    "vram_q8": 15.8,
+    "vram_f16": 29.9
   },
   {
     "id": "deepseek-r1:32b",
     "name": "DeepSeek R1 32B",
     "provider": "DeepSeek",
-    "params_b": 32.0,
+    "params_b": 32.8,
     "arch": "deepseek",
     "context": 131072,
     "use_cases": [
@@ -545,9 +774,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 52.6,
-    "vram_q8": 67.7,
-    "vram_f16": 98.1
+    "vram_q4": 19.3,
+    "vram_q8": 34.7,
+    "vram_f16": 65.9
   },
   {
     "id": "deepseek-r1:70b",
@@ -561,9 +790,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 114.5,
-    "vram_q8": 147.4,
-    "vram_f16": 213.9
+    "vram_q4": 40.9,
+    "vram_q8": 73.8,
+    "vram_f16": 140.3
   },
   {
     "id": "deepseek-r1:671b",
@@ -578,12 +807,30 @@
     ],
     "is_moe": true,
     "active_params_b": 37.0,
-    "vram_q4": 428.5,
-    "vram_q8": 743.8,
-    "vram_f16": 1381.3
+    "vram_q4": 389.5,
+    "vram_q8": 704.9,
+    "vram_f16": 1342.3
   },
   {
-    "id": "deepseek-v4:flash",
+    "id": "deepseek-v3:671b",
+    "name": "DeepSeek V3 671B",
+    "provider": "DeepSeek",
+    "params_b": 671.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 37.0,
+    "vram_q4": 389.5,
+    "vram_q8": 704.9,
+    "vram_f16": 1342.3
+  },
+  {
+    "id": "deepseek-v4-flash",
     "name": "DeepSeek V4 Flash",
     "provider": "DeepSeek",
     "params_b": 67.0,
@@ -596,12 +843,12 @@
     ],
     "is_moe": true,
     "active_params_b": 8.0,
-    "vram_q4": 47.7,
-    "vram_q8": 79.2,
-    "vram_f16": 142.9
+    "vram_q4": 39.2,
+    "vram_q8": 70.7,
+    "vram_f16": 134.3
   },
   {
-    "id": "deepseek-v4:pro",
+    "id": "deepseek-v4-pro",
     "name": "DeepSeek V4 Pro",
     "provider": "DeepSeek",
     "params_b": 236.0,
@@ -614,9 +861,26 @@
     ],
     "is_moe": true,
     "active_params_b": 20.0,
-    "vram_q4": 158.4,
-    "vram_q8": 269.3,
-    "vram_f16": 493.5
+    "vram_q4": 137.2,
+    "vram_q8": 248.1,
+    "vram_f16": 472.3
+  },
+  {
+    "id": "deepseek-coder-v2:16b",
+    "name": "DeepSeek Coder V2 Lite",
+    "provider": "DeepSeek",
+    "params_b": 16.0,
+    "arch": "deepseek",
+    "context": 131072,
+    "use_cases": [
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 2.4,
+    "vram_q4": 9.6,
+    "vram_q8": 17.1,
+    "vram_f16": 32.3
   },
   {
     "id": "phi3:mini",
@@ -630,9 +894,9 @@
       "reasoning"
     ],
     "is_moe": false,
-    "vram_q4": 6.6,
-    "vram_q8": 8.4,
-    "vram_f16": 12.0
+    "vram_q4": 2.5,
+    "vram_q8": 4.3,
+    "vram_f16": 7.9
   },
   {
     "id": "phi3:medium",
@@ -647,9 +911,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 23.0,
-    "vram_q8": 29.5,
-    "vram_f16": 42.8
+    "vram_q4": 8.4,
+    "vram_q8": 15.0,
+    "vram_f16": 28.3
   },
   {
     "id": "phi4:14b",
@@ -664,15 +928,33 @@
       "general"
     ],
     "is_moe": false,
-    "vram_q4": 24.4,
-    "vram_q8": 31.3,
-    "vram_f16": 45.3
+    "vram_q4": 8.8,
+    "vram_q8": 15.7,
+    "vram_f16": 29.7
   },
   {
-    "id": "gemma3:2b",
-    "name": "Gemma 3 2B",
+    "id": "phi4-mini:3.8b",
+    "name": "Phi-4 Mini",
+    "provider": "Microsoft",
+    "params_b": 3.8,
+    "arch": "phi4",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 2.5,
+    "vram_q8": 4.3,
+    "vram_f16": 7.9
+  },
+  {
+    "id": "gemma3:1b",
+    "name": "Gemma 3 1B",
     "provider": "Google",
-    "params_b": 2.1,
+    "params_b": 1.0,
     "arch": "gemma",
     "context": 32768,
     "use_cases": [
@@ -680,15 +962,15 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 2.3,
-    "vram_q8": 3.3,
-    "vram_f16": 5.3
+    "vram_q4": 0.9,
+    "vram_q8": 1.4,
+    "vram_f16": 2.3
   },
   {
-    "id": "gemma3:7b",
-    "name": "Gemma 3 7B",
+    "id": "gemma3:4b",
+    "name": "Gemma 3 4B",
     "provider": "Google",
-    "params_b": 7.2,
+    "params_b": 4.0,
     "arch": "gemma",
     "context": 32768,
     "use_cases": [
@@ -697,9 +979,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 6.6,
-    "vram_q8": 9.9,
-    "vram_f16": 16.8
+    "vram_q4": 2.6,
+    "vram_q8": 4.5,
+    "vram_f16": 8.3
   },
   {
     "id": "gemma3:12b",
@@ -714,15 +996,32 @@
       "reasoning"
     ],
     "is_moe": false,
-    "vram_q4": 10.6,
-    "vram_q8": 16.2,
-    "vram_f16": 27.6
+    "vram_q4": 7.3,
+    "vram_q8": 12.9,
+    "vram_f16": 24.3
+  },
+  {
+    "id": "gemma3:27b",
+    "name": "Gemma 3 27B",
+    "provider": "Google",
+    "params_b": 27.0,
+    "arch": "gemma",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 16.0,
+    "vram_q8": 28.7,
+    "vram_f16": 54.3
   },
   {
     "id": "gemma4:2b",
     "name": "Gemma 4 2B",
     "provider": "Google",
-    "params_b": 2.5,
+    "params_b": 2.6,
     "arch": "gemma",
     "context": 32768,
     "use_cases": [
@@ -730,9 +1029,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 2.6,
-    "vram_q8": 3.8,
-    "vram_f16": 6.2
+    "vram_q4": 1.8,
+    "vram_q8": 3.0,
+    "vram_f16": 5.5
   },
   {
     "id": "gemma4:4b",
@@ -747,26 +1046,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 3.9,
-    "vram_q8": 5.7,
-    "vram_f16": 9.5
-  },
-  {
-    "id": "gemma4:7b",
-    "name": "Gemma 4 7B",
-    "provider": "Google",
-    "params_b": 7.8,
-    "arch": "gemma",
-    "context": 32768,
-    "use_cases": [
-      "general",
-      "coding",
-      "reasoning"
-    ],
-    "is_moe": false,
-    "vram_q4": 7.1,
-    "vram_q8": 10.7,
-    "vram_f16": 18.1
+    "vram_q4": 2.6,
+    "vram_q8": 4.5,
+    "vram_f16": 8.3
   },
   {
     "id": "gemma4:12b",
@@ -782,25 +1064,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 10.6,
-    "vram_q8": 16.2,
-    "vram_f16": 27.6
-  },
-  {
-    "id": "gemma4:24b",
-    "name": "Gemma 4 24B",
-    "provider": "Google",
-    "params_b": 24.0,
-    "arch": "gemma",
-    "context": 262144,
-    "use_cases": [
-      "general",
-      "reasoning"
-    ],
-    "is_moe": false,
-    "vram_q4": 64.8,
-    "vram_q8": 76.0,
-    "vram_f16": 98.8
+    "vram_q4": 7.3,
+    "vram_q8": 12.9,
+    "vram_f16": 24.3
   },
   {
     "id": "gemma4:26b",
@@ -808,17 +1074,16 @@
     "provider": "Google",
     "params_b": 26.0,
     "arch": "gemma",
-    "context": 262144,
+    "context": 131072,
     "use_cases": [
       "general",
       "coding",
       "reasoning"
     ],
-    "is_moe": true,
-    "active_params_b": 4.0,
-    "vram_q4": 24.0,
-    "vram_q8": 36.2,
-    "vram_f16": 60.9
+    "is_moe": false,
+    "vram_q4": 15.4,
+    "vram_q8": 27.6,
+    "vram_f16": 52.3
   },
   {
     "id": "gemma4:31b",
@@ -826,32 +1091,16 @@
     "provider": "Google",
     "params_b": 31.0,
     "arch": "gemma",
-    "context": 262144,
+    "context": 131072,
     "use_cases": [
       "general",
       "reasoning",
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 83.5,
-    "vram_q8": 98.1,
-    "vram_f16": 127.5
-  },
-  {
-    "id": "mellum2:12b",
-    "name": "Mellum 2 12B",
-    "provider": "JetBrains",
-    "params_b": 12.0,
-    "arch": "mellum",
-    "context": 128000,
-    "use_cases": [
-      "coding"
-    ],
-    "is_moe": true,
-    "active_params_b": 2.5,
-    "vram_q4": 10.0,
-    "vram_q8": 15.7,
-    "vram_f16": 27.1
+    "vram_q4": 18.3,
+    "vram_q8": 32.9,
+    "vram_f16": 62.3
   },
   {
     "id": "codegemma:2b",
@@ -864,9 +1113,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 1.9,
-    "vram_q8": 2.9,
-    "vram_f16": 4.8
+    "vram_q4": 1.5,
+    "vram_q8": 2.4,
+    "vram_f16": 4.3
   },
   {
     "id": "codegemma:7b",
@@ -879,9 +1128,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 5.5,
-    "vram_q8": 8.8,
-    "vram_f16": 15.4
+    "vram_q4": 4.4,
+    "vram_q8": 7.7,
+    "vram_f16": 14.3
   },
   {
     "id": "codegemma:12b",
@@ -894,9 +1143,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 9.0,
-    "vram_q8": 14.7,
-    "vram_f16": 26.1
+    "vram_q4": 7.3,
+    "vram_q8": 12.9,
+    "vram_f16": 24.3
   },
   {
     "id": "command-r:35b",
@@ -911,9 +1160,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 56.6,
-    "vram_q8": 73.1,
-    "vram_f16": 106.3
+    "vram_q4": 20.6,
+    "vram_q8": 37.0,
+    "vram_f16": 70.3
   },
   {
     "id": "command-r-plus:104b",
@@ -928,9 +1177,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 167.3,
-    "vram_q8": 216.2,
-    "vram_f16": 315.0
+    "vram_q4": 60.6,
+    "vram_q8": 109.5,
+    "vram_f16": 208.3
   },
   {
     "id": "yi:6b",
@@ -944,9 +1193,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 5.6,
-    "vram_q8": 8.4,
-    "vram_f16": 14.1
+    "vram_q4": 3.8,
+    "vram_q8": 6.6,
+    "vram_f16": 12.3
   },
   {
     "id": "yi:9b",
@@ -961,9 +1210,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 8.1,
-    "vram_q8": 12.3,
-    "vram_f16": 20.9
+    "vram_q4": 5.5,
+    "vram_q8": 9.8,
+    "vram_f16": 18.3
   },
   {
     "id": "yi:34b",
@@ -978,13 +1227,31 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 29.1,
-    "vram_q8": 45.1,
-    "vram_f16": 77.4
+    "vram_q4": 20.0,
+    "vram_q8": 36.0,
+    "vram_f16": 68.3
   },
   {
-    "id": "nemotron:4b",
-    "name": "Nemotron 4B",
+    "id": "nemotron:70b",
+    "name": "Nemotron 70B",
+    "provider": "NVIDIA",
+    "params_b": 70.0,
+    "arch": "nemotron",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "reasoning",
+      "coding",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 40.9,
+    "vram_q8": 73.8,
+    "vram_f16": 140.3
+  },
+  {
+    "id": "nemotron-mini:4b",
+    "name": "Nemotron Mini 4B",
     "provider": "NVIDIA",
     "params_b": 4.0,
     "arch": "nemotron",
@@ -994,26 +1261,9 @@
       "chat"
     ],
     "is_moe": false,
-    "vram_q4": 3.9,
-    "vram_q8": 5.7,
-    "vram_f16": 9.5
-  },
-  {
-    "id": "nemotron:12b",
-    "name": "Nemotron 12B",
-    "provider": "NVIDIA",
-    "params_b": 12.0,
-    "arch": "nemotron",
-    "context": 131072,
-    "use_cases": [
-      "general",
-      "coding",
-      "reasoning"
-    ],
-    "is_moe": false,
-    "vram_q4": 20.0,
-    "vram_q8": 25.7,
-    "vram_f16": 37.1
+    "vram_q4": 2.6,
+    "vram_q8": 4.5,
+    "vram_f16": 8.3
   },
   {
     "id": "starcoder2:3b",
@@ -1026,9 +1276,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 2.6,
-    "vram_q8": 4.0,
-    "vram_f16": 6.9
+    "vram_q4": 2.0,
+    "vram_q8": 3.5,
+    "vram_f16": 6.3
   },
   {
     "id": "starcoder2:7b",
@@ -1041,9 +1291,9 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 5.5,
-    "vram_q8": 8.8,
-    "vram_f16": 15.4
+    "vram_q4": 4.4,
+    "vram_q8": 7.7,
+    "vram_f16": 14.3
   },
   {
     "id": "starcoder2:15b",
@@ -1056,9 +1306,218 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 11.2,
-    "vram_q8": 18.2,
-    "vram_f16": 32.5
+    "vram_q4": 9.0,
+    "vram_q8": 16.1,
+    "vram_f16": 30.3
+  },
+  {
+    "id": "dbrx:132b",
+    "name": "DBRX 132B",
+    "provider": "Databricks",
+    "params_b": 132.0,
+    "arch": "dbrx",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 36.0,
+    "vram_q4": 76.9,
+    "vram_q8": 138.9,
+    "vram_f16": 264.3
+  },
+  {
+    "id": "gpt-oss:20b",
+    "name": "GPT-OSS 20B",
+    "provider": "OpenAI",
+    "params_b": 20.0,
+    "arch": "gpt-oss",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 3.6,
+    "vram_q4": 11.9,
+    "vram_q8": 21.3,
+    "vram_f16": 40.3
+  },
+  {
+    "id": "gpt-oss:120b",
+    "name": "GPT-OSS 120B",
+    "provider": "OpenAI",
+    "params_b": 120.0,
+    "arch": "gpt-oss",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 5.1,
+    "vram_q4": 69.9,
+    "vram_q8": 126.3,
+    "vram_f16": 240.3
+  },
+  {
+    "id": "smollm2:360m",
+    "name": "SmolLM2 360M",
+    "provider": "Hugging Face",
+    "params_b": 0.36,
+    "arch": "smollm",
+    "context": 8192,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 0.5,
+    "vram_q8": 0.7,
+    "vram_f16": 1.0
+  },
+  {
+    "id": "smollm2:1.7b",
+    "name": "SmolLM2 1.7B",
+    "provider": "Hugging Face",
+    "params_b": 1.7,
+    "arch": "smollm",
+    "context": 8192,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 1.3,
+    "vram_q8": 2.1,
+    "vram_f16": 3.7
+  },
+  {
+    "id": "falcon3:1b",
+    "name": "Falcon 3 1B",
+    "provider": "TII",
+    "params_b": 1.0,
+    "arch": "falcon",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "vram_q4": 0.9,
+    "vram_q8": 1.4,
+    "vram_f16": 2.3
+  },
+  {
+    "id": "falcon3:3b",
+    "name": "Falcon 3 3B",
+    "provider": "TII",
+    "params_b": 3.0,
+    "arch": "falcon",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "vram_q4": 2.0,
+    "vram_q8": 3.5,
+    "vram_f16": 6.3
+  },
+  {
+    "id": "falcon3:7b",
+    "name": "Falcon 3 7B",
+    "provider": "TII",
+    "params_b": 7.0,
+    "arch": "falcon",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 4.4,
+    "vram_q8": 7.7,
+    "vram_f16": 14.3
+  },
+  {
+    "id": "falcon3:10b",
+    "name": "Falcon 3 10B",
+    "provider": "TII",
+    "params_b": 10.0,
+    "arch": "falcon",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "vram_q4": 6.1,
+    "vram_q8": 10.8,
+    "vram_f16": 20.3
+  },
+  {
+    "id": "hf.co/tiiuae/Falcon3-3B-Instruct-1.58bit",
+    "name": "Falcon 3 3B 1.58-bit",
+    "provider": "TII",
+    "params_b": 3.0,
+    "arch": "falcon",
+    "context": 32768,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "sub4bit": true,
+    "vram_q4": 0.9,
+    "vram_q8": 3.5,
+    "vram_f16": 6.3
+  },
+  {
+    "id": "hf.co/microsoft/BitNet-b1.58-2B-4T",
+    "name": "BitNet b1.58 2B",
+    "provider": "Microsoft",
+    "params_b": 2.0,
+    "arch": "bitnet",
+    "context": 4096,
+    "use_cases": [
+      "general",
+      "chat"
+    ],
+    "is_moe": false,
+    "sub4bit": true,
+    "vram_q4": 0.7,
+    "vram_q8": 2.4,
+    "vram_f16": 4.3
+  },
+  {
+    "id": "hf.co/allenai/OLMoE-1B-7B-0924-Instruct",
+    "name": "OLMoE 1B-7B",
+    "provider": "AI2",
+    "params_b": 7.0,
+    "arch": "olmoe",
+    "context": 4096,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": true,
+    "active_params_b": 1.0,
+    "vram_q4": 4.4,
+    "vram_q8": 7.7,
+    "vram_f16": 14.3
   },
   {
     "id": "big-pickle:latest",
@@ -1072,8 +1531,8 @@
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 6.4,
-    "vram_q8": 9.7,
-    "vram_f16": 16.3
+    "vram_q4": 4.4,
+    "vram_q8": 7.7,
+    "vram_f16": 14.3
   }
 ]

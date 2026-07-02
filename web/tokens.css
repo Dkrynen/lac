@@ -1,0 +1,94 @@
+/* Apt — Design Tokens
+   Dark-first. Consumed by the web app (Tailwind + shadcn) and mirrored in the
+   TUI/CLI where possible. Keep these as the single source of truth. */
+
+:root,
+[data-theme="dark"] {
+  /* Neutral */
+  --bg: #09090B;
+  --surface: #0F0F13;
+  --surface-2: #15151A;
+  --surface-3: #1B1B22;
+  --overlay: rgba(4, 4, 7, 0.60);
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --text: #ECECEE;
+  --text-muted: #A1A1AA;
+  --text-faint: #71717A;
+
+  /* Accent — Iris */
+  --accent: #6E7BF2;
+  --accent-hover: #8B96F5;
+  --accent-pressed: #5A67E0;
+  --accent-soft: rgba(110, 123, 242, 0.14);
+  --accent-fg: #FFFFFF;
+
+  /* Semantic */
+  --success: #3DD68C;
+  --success-soft: rgba(61, 214, 140, 0.14);
+  --warning: #F5A524;
+  --warning-soft: rgba(245, 165, 36, 0.16);
+  --danger: #F6465D;
+  --danger-soft: rgba(246, 70, 93, 0.14);
+  --info: #38BDF8;
+  --info-soft: rgba(56, 189, 248, 0.14);
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 9999px;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-soft);
+
+  /* Typography */
+  --font-sans: "Geist", "Inter", system-ui, -apple-system, Segoe UI, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
+
+  /* Motion */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur: 160ms;
+  --dur-slow: 220ms;
+}
+
+[data-theme="light"] {
+  --bg: #FAFAFA;
+  --surface: #FFFFFF;
+  --surface-2: #F4F4F5;
+  --surface-3: #E9E9EC;
+  --overlay: rgba(15, 15, 20, 0.45);
+
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+
+  --text: #18181B;
+  --text-muted: #52525B;
+  --text-faint: #8A8A93;
+
+  /* Iris stays; slightly deepen for contrast on white */
+  --accent: #5A67E0;
+  --accent-hover: #6E7BF2;
+  --accent-pressed: #4F52D6;
+  --accent-soft: rgba(90, 103, 224, 0.12);
+  --accent-fg: #FFFFFF;
+
+  --success: #1FAE6A;
+  --success-soft: rgba(31, 174, 106, 0.12);
+  --warning: #D98324;
+  --warning-soft: rgba(217, 131, 36, 0.14);
+  --danger: #E11D48;
+  --danger-soft: rgba(225, 29, 72, 0.12);
+  --info: #0EA5E9;
+  --info-soft: rgba(14, 165, 233, 0.12);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12);
+}

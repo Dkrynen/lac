@@ -1,5 +1,5 @@
 # DMG settings for macOS build
-title = "Model Hub"
+title = "Apt"
 volume_icon = None
 background = None
 icon_size = 64

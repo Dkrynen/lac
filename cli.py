@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Model Hub CLI — chat with and manage local LLMs via Ollama.
+Apt CLI — chat with and manage local LLMs via Ollama.
 
 Subcommands:
   chat [model]          Interactive chat with a model
@@ -14,6 +14,7 @@ Subcommands:
   recommend             Get model recommendations
   browse [query]        Browse model library
   workspace             Manage workspaces
+  benchmark [model]     Benchmark a model's tok/s via Ollama
   config                View/set configuration
   help                  Show this help
 """
@@ -92,9 +93,8 @@ def ollama_stream(path, body, timeout=300):
 
 
 def print_header(text):
-    print(f"\n{C['bold']}{C['blue']}{'='*60}{C['reset']}")
-    print(f"{C['bold']}{C['cyan']}  {text}{C['reset']}")
-    print(f"{C['bold']}{C['blue']}{'='*60}{C['reset']}\n")
+    print(f"\n{C['bold']}{C['blue']}{text}{C['reset']}")
+    print(f"{C['blue']}{'-' * 48}{C['reset']}\n")
 
 
 def print_table(headers, rows):
@@ -181,7 +181,7 @@ def cmd_chat(args):
 
     model_list = [m["name"] for m in models.get("models", [])]
     if not model_list:
-        eprint(f"{C['yellow']}No models installed. Pull one first: model-hub pull <model>{C['reset']}")
+        eprint(f"{C['yellow']}No models installed. Pull one first: apt pull <model>{C['reset']}")
         sys.exit(1)
 
     model = args.model or model_list[0]
@@ -431,7 +431,7 @@ def cmd_list(args):
 
     models = result.get("models", [])
     if not models:
-        print(f"{C['yellow']}No models installed. Pull one: model-hub pull <model>{C['reset']}")
+        print(f"{C['yellow']}No models installed. Pull one: apt pull <model>{C['reset']}")
         return
 
     print_header(f"Installed Models ({len(models)})")
@@ -474,7 +474,7 @@ def cmd_pull(args):
             _log_download(model, "completed", size_gb)
 
     if not success:
-        print(f"\n{C['yellow']}Pull may still be in progress. Check 'model-hub list'.{C['reset']}")
+        print(f"\n{C['yellow']}Pull may still be in progress. Check 'apt list'.{C['reset']}")
         _log_download(model, "incomplete")
 
 
@@ -547,6 +547,194 @@ def cmd_inspect(args):
     print()
 
 
+def cmd_agents(args):
+    from backend.agent import list_agents, get_agent
+
+    agents = list_agents()
+    print_header(f"Apt Agents ({len(agents)})")
+    for a in agents:
+        p = a.permissions
+        flags = []
+        flags.append("R" if p.can_read() else "-")
+        flags.append("W" if p.can_write() else "-")
+        flags.append("D" if p.can_delete() else "-")
+        flags.append("$" if p.can_run_bash() else "-")
+        flags.append("N" if p.can_fetch() else "-")
+        flags.append("M" if p.can_mcp() else "-")
+        print(f"  {C['bold']}{a.name:9}{C['reset']} [{a.type:7}] perms=[{''.join(flags)}]  {C['dim']}{a.description[:60]}{C['reset']}")
+        if a.tools:
+            print(f"            tools: {', '.join(a.tools)}")
+    print()
+    print(f"{C['dim']}Switch in TUI with: /agent <name>{C['reset']}")
+
+
+def cmd_providers(args):
+    from backend.provider import list_providers, create_provider, default_provider
+    from backend.provider.base import ProviderError
+
+    provs = list_providers()
+    print_header(f"LLM Providers ({len(provs)})")
+    headers = ["Name", "Type", "Configured"]
+    rows = []
+    for p in provs:
+        rows.append([p["name"], p["type"], "yes" if p["configured"] else "no"])
+    print_table(headers, rows)
+    print()
+    try:
+        default = default_provider()
+        models = default.list_models()
+        names = ", ".join(m.name for m in models)
+        print(f"{C['dim']}Default provider: {default.name} ({default.display_name}){C['reset']}")
+        print(f"{C['dim']}Models ({len(models)}): {names}{C['reset']}")
+    except ProviderError as e:
+        eprint(f"{C['red']}{e}{C['reset']}")
+
+
+def cmd_mcp(args):
+    import asyncio
+    from backend.config import resolve_config
+    from backend.mcp import create_manager
+
+    cfg = resolve_config()
+    servers = cfg.mcp_servers
+    print_header(f"MCP Servers ({len(servers)})")
+    if not servers:
+        print(f"{C['dim']}No MCP servers configured in .apt/apt.jsonc{C['reset']}")
+        return
+    if args.action == "list":
+        for name, sc in servers.items():
+            print(f"  {C['bold']}{name:14}{C['reset']} {sc.transport:6} {sc.command or sc.url}")
+        return
+
+    if args.action == "tools":
+        mgr = create_manager()
+
+        async def _go():
+            try:
+                await mgr.connect_all()
+                for name in servers:
+                    st = mgr.state(name)
+                    if not st or not st.connected:
+                        print(f"  {name}: {C['red']}not connected: {st.error if st else '?'}{C['reset']}")
+                        continue
+                    tools = await mgr.list_tools(name)
+                    print(f"  {C['bold']}{name}{C['reset']} ({len(tools)} tools):")
+                    for t in tools:
+                        print(f"      - {t['name']:24} {C['dim']}{t['description'][:50]}{C['reset']}")
+            finally:
+                await mgr.close_all()
+
+        asyncio.run(_go())
+
+
+def cmd_openapi(args):
+    from backend.api import app
+    from backend.openapi_gen import write_openapi
+
+    out = args.output or "openapi.json"
+    path = write_openapi(app, out)
+    import json
+
+    with open(path, encoding="utf-8") as f:
+        spec = json.load(f)
+    n_paths = len(spec.get("paths", {}))
+    n_ops = sum(len(v) for v in spec.get("paths", {}).values())
+    print(f"{C['green']}Wrote {path}{C['reset']}  {C['dim']}({n_paths} paths, {n_ops} operations, openapi {spec['openapi']}){C['reset']}")
+
+
+def cmd_session(args):
+    from backend.cookbook.persistence import get_session, list_sessions, create_session, save_session
+    from backend.cookbook.export import export_session_file, export_all, import_session
+
+    action = args.action
+    if action == "list":
+        sessions = list_sessions()
+        print_header(f"Sessions ({len(sessions)})")
+        if not sessions:
+            print(f"{C['dim']}no saved sessions{C['reset']}")
+            return
+        for s in sessions:
+            print(f"  {C['bold']}{s['id'][:12]}{C['reset']}  {s.get('model',''):18}  {_ts(s.get('updated_at'))}  {s.get('name','')}")
+        return
+
+    if action == "export":
+        fmt = (args.format or "md").lower()
+        if args.all:
+            out = args.out or "./exports"
+            written = export_all(out, fmt)
+            print(f"{C['green']}Exported {len(written)} file(s) to {out}{C['reset']}")
+            return
+        if not args.id:
+            eprint(f"{C['red']}session export requires <id> or --all{C['reset']}")
+            sys.exit(1)
+        session = get_session(args.id)
+        if not session:
+            eprint(f"{C['red']}session not found: {args.id}{C['reset']}")
+            sys.exit(1)
+        path = export_session_file(session, fmt, args.out)
+        print(f"{C['green']}Wrote {path}{C['reset']}  {C['dim']}({fmt}, {len(session.get('messages', []))} messages){C['reset']}")
+        return
+
+    if action == "import":
+        if not args.path:
+            eprint(f"{C['red']}session import requires <path>{C['reset']}")
+            sys.exit(1)
+        data = import_session(args.path)
+        sid = data.get("id") or create_session(model=data.get("model", ""))
+        save_session(sid, model=data.get("model", ""), messages=data.get("messages", []))
+        print(f"{C['green']}Imported session {sid[:12]}{C['reset']}  {C['dim']}({len(data.get('messages', []))} messages, model={data.get('model','')}){C['reset']}")
+        return
+
+
+def _ts(epoch):
+    import datetime as _dt
+    if not epoch:
+        return ""
+    try:
+        return _dt.datetime.fromtimestamp(float(epoch)).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
+def cmd_update(args):
+    from backend.update import UpdateMode, check_update, detect_install_method, do_update, configured_mode
+
+    method = detect_install_method()
+    mode = UpdateMode.parse(args.mode) if args.mode else configured_mode()
+    print_header(f"Apt Update  [dim]({method}, {mode.value})[/dim]")
+
+    if args.action == "install":
+        result = do_update(UpdateMode.ENABLE)
+    else:
+        info = check_update()
+        if info is None:
+            print(f"{C['green']}Apt is up to date.{C['reset']}  {C['dim']}v{_ver()}{C['reset']}")
+            return
+        print(f"{C['yellow']}Update available: v{info['latest_version']}{C['reset']}  {C['dim']}(current v{info['current_version']}){C['reset']}")
+        if info.get("changelog"):
+            print(f"\n{C['dim']}{info['changelog'][:600]}{C['reset']}\n")
+        print(f"{C['dim']}Apply with: apt update install{C['reset']}")
+        return
+
+    if result.get("update_available") is False and not args.action == "install":
+        print(f"{C['green']}Up to date.{C['reset']}")
+        return
+    if result.get("applied"):
+        print(f"{C['green']}Updated to latest.{C['reset']}")
+    elif result.get("error"):
+        print(f"{C['red']}{result['error']}{C['reset']}")
+    else:
+        print(f"{C['yellow']}No update applied.{C['reset']}")
+
+
+def _ver():
+    try:
+        from backend.version import __version__
+        return __version__
+    except Exception:
+        return "0.0.0"
+
+
 def cmd_scan(args):
     print(f"{C['yellow']}Scanning hardware...{C['reset']}")
     script_dir = Path(__file__).parent
@@ -564,7 +752,7 @@ def cmd_scan(args):
         ]
         if info.gpus:
             for i, gpu in enumerate(info.gpus):
-                rows.append([f"GPU {i+1}", f"{gpu.name} ({gpu.vram_gb} GB, {gpu.backend})"])
+                rows.append([f"GPU {i+1}", f"{gpu.name} ({gpu.vram_gb} GB, {gpu.backend}, {gpu.tier})"])
         else:
             rows.append(["GPU", "None detected"])
         if info.is_apple_silicon:
@@ -579,9 +767,17 @@ def cmd_scan(args):
             print(f"  {C['bold']}Total VRAM:{C['reset']} {total_vram} GB")
             print(f"  {C['bold']}Models that fit:{C['reset']} Up to ~{int(total_vram / 0.58 * 0.9)}B params at Q4_K_M")
 
+        # Hand-off: show combined GPU VRAM and tier breakdown.
+        if info.combined_vram_gb > info.total_vram_gb + 0.1:
+            extra = info.combined_vram_gb - info.total_vram_gb
+            print(f"\n  {C['bold']}Hand-off (multi-GPU):{C['reset']} {info.combined_vram_gb} GB combined GPU VRAM (+{extra:.1f} GB)")
+            for t in info.compute_tiers:
+                tag = {"discrete": "dGPU", "integrated": "iGPU", "ram": "RAM"}.get(t.kind, t.kind)
+                print(f"    {C['gray']}{tag:<6} {t.name} ({t.memory_gb} GB, {t.backend}){C['reset']}")
+
     except ImportError as e:
         eprint(f"{C['red']}Error loading hardware scanner: {e}{C['reset']}")
-        eprint(f"{C['gray']}Run from the Model Hub project directory.{C['reset']}")
+        eprint(f"{C['gray']}Run from the Apt project directory.{C['reset']}")
         sys.exit(1)
 
 
@@ -605,16 +801,190 @@ def cmd_recommend(args):
         headers = ["#", "Model", "Quant", "Score", "VRAM", "Ctx", "Mode"]
         rows = []
         for i, r in enumerate(recs, 1):
-            mode = f"{C['green']}GPU{C['reset']}" if r.run_mode == "gpu" else f"{C['yellow']}Offload{C['reset']}"
+            if r.run_mode == "gpu":
+                mode = f"{C['green']}GPU{C['reset']}"
+            elif r.run_mode == "multi_gpu":
+                mode = f"{C['blue']}Multi-GPU{C['reset']}"
+            else:
+                mode = f"{C['yellow']}Offload{C['reset']}"
             rows.append([str(i), r.model.name, r.quant, str(r.score), f"{r.vram_gb} GB", str(r.context_used), mode])
 
         for row in rows:
             print(f"  {row[0]:<3} {C['bold']}{row[1]:<35}{C['reset']} {row[2]:<7} {row[3]:<7} {row[4]:<7} {row[5]:<7} {row[6]}")
 
+        # Show split-plan detail for top 3 multi-GPU / offload picks.
+        print()
+        for i, r in enumerate(recs[:3], 1):
+            if r.split_plan and r.run_mode != "gpu":
+                env = ""
+                if r.split_plan.env_vars:
+                    env = "  " + " ".join(f"{k}={v}" for k, v in r.split_plan.env_vars.items())
+                print(f"  {C['gray']}{i}. {r.split_plan.summary}{env}{C['reset']}")
+
     except ImportError as e:
         eprint(f"{C['red']}Error: {e}{C['reset']}")
-        eprint(f"{C['gray']}Run from the Model Hub project directory.{C['reset']}")
+        eprint(f"{C['gray']}Run from the Apt project directory.{C['reset']}")
         sys.exit(1)
+
+
+def _benchmark_log(entry: dict):
+    """Append a benchmark result to the jsonl log."""
+    try:
+        log_dir = Path.home() / ".model-hub" / "benchmarks"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "results.jsonl"
+        entry["timestamp"] = time.time()
+        with open(log_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        return log_file
+    except Exception:
+        return None
+
+
+def _benchmark_metrics(result: dict, model: str, prompt: str,
+                       num_predict: int, temperature: float) -> dict:
+    """Turn an Ollama /api/generate response into a benchmark log entry.
+
+    tokens_per_second = generated tokens / generation (eval) time.
+    time_to_first_token = model load + prompt prefill (the time before the
+    first generated token) — NOT the generation duration.
+    """
+    eval_count = result.get("eval_count", 0)
+    eval_duration_ns = result.get("eval_duration", 0)  # nanoseconds
+    total_duration_ns = result.get("total_duration", 0)
+    load_duration_ns = result.get("load_duration", 0)
+    prompt_eval_duration_ns = result.get("prompt_eval_duration", 0)
+    ttft_ms = (load_duration_ns + prompt_eval_duration_ns) / 1_000_000
+    tokens_per_second = eval_count / (eval_duration_ns / 1e9) if eval_duration_ns > 0 else 0
+    return {
+        "model": model,
+        "prompt": prompt,
+        "prompt_len": len(prompt),
+        "num_predict": num_predict,
+        "temperature": temperature,
+        "eval_count": eval_count,
+        "eval_duration_ns": eval_duration_ns,
+        "eval_duration_ms": round(eval_duration_ns / 1_000_000, 1),
+        "total_duration_ns": total_duration_ns,
+        "total_duration_ms": round(total_duration_ns / 1_000_000, 1),
+        "tokens_per_second": round(tokens_per_second, 2),
+        "time_to_first_token_ms": round(ttft_ms, 1),
+        "response": result.get("response", ""),
+    }
+
+
+def _benchmark_history() -> list[dict]:
+    log_file = Path.home() / ".model-hub" / "benchmarks" / "results.jsonl"
+    if not log_file.exists():
+        return []
+    history = []
+    try:
+        with open(log_file) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        history.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+    except Exception:
+        pass
+    return history
+
+
+def cmd_benchmark(args):
+    """Run a model benchmark via Ollama /api/generate and report tok/s."""
+
+    if args.list:
+        history = _benchmark_history()
+        if not history:
+            print(f"{C['yellow']}No benchmark results yet.{C['reset']}")
+            return
+        print_header(f"Benchmark History ({len(history)} runs)")
+        headers = ["Model", "Tok/s", "Eval Count", "Duration", "Prompt"]
+        rows = []
+        for e in reversed(history[-30:]):
+            ts = time.strftime("%H:%M", time.localtime(e.get("timestamp", 0)))
+            prompt_preview = e.get("prompt", "")[:40]
+            rows.append([
+                e.get("model", "?"),
+                f"{e.get('tokens_per_second', 0):.1f}",
+                str(e.get("eval_count", 0)),
+                f"{e.get('eval_duration_ms', 0):.0f}ms",
+                prompt_preview,
+            ])
+        print_table(headers, rows)
+        print(f"\n{C['dim']}Results logged to ~/.model-hub/benchmarks/results.jsonl{C['reset']}")
+        return
+
+    if args.export:
+        history = _benchmark_history()
+        if not history:
+            print(f"{C['yellow']}No benchmark results to export.{C['reset']}")
+            return
+        path = Path(args.export)
+        ext = path.suffix.lower()
+        if ext == ".csv":
+            with open(path, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=history[0].keys())
+                w.writeheader()
+                w.writerows(history)
+        elif ext == ".json":
+            with open(path, "w") as f:
+                json.dump(history, f, indent=2)
+        else:
+            # Default: enhanced JSONL.
+            path = path.with_suffix(".jsonl") if not path.suffix else path
+            with open(path, "w") as f:
+                for e in history:
+                    f.write(json.dumps(e) + "\n")
+        print(f"{C['green']}Exported {len(history)} results to {path}{C['reset']}")
+        return
+
+    model = args.model
+    prompt = args.prompt or "Write a short function in Python that calculates fibonacci numbers."
+    num_predict = args.num_predict or 128
+    temperature = args.temperature or 0.0
+
+    print(f"{C['yellow']}Benchmarking {C['bold']}{model}{C['reset']}...")
+    print(f"{C['gray']}  prompt: {prompt[:60]}...{C['reset']}")
+    print(f"{C['gray']}  num_predict: {num_predict}, temperature: {temperature}{C['reset']}\n")
+
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "num_predict": num_predict,
+            "temperature": temperature,
+        },
+    }
+
+    if args.no_cache:
+        body["options"]["prompt_cache_disable"] = True  # type: ignore
+
+    start = time.time()
+    result = ollama("POST", "/api/generate", body, timeout=args.timeout or 300)
+    elapsed = time.time() - start
+
+    if "error" in result:
+        eprint(f"{C['red']}Error: {result['error']}{C['reset']}")
+        sys.exit(1)
+
+    entry = _benchmark_metrics(result, model, prompt, num_predict, temperature)
+    log_path = _benchmark_log(entry)
+
+    print_header("Results")
+    print(f"  {C['bold']}Model:{C['reset']}             {model}")
+    print(f"  {C['bold']}Eval count:{C['reset']}         {entry['eval_count']} tokens")
+    print(f"  {C['bold']}Eval duration:{C['reset']}      {entry['eval_duration_ms']:.0f} ms")
+    print(f"  {C['bold']}Total duration:{C['reset']}     {entry['total_duration_ms']:.0f} ms")
+    print(f"  {C['bold']}Tokens/second:{C['reset']}      {C['green']}{entry['tokens_per_second']:.1f}{C['reset']}")
+    print(f"  {C['bold']}Time to first token:{C['reset']} {entry['time_to_first_token_ms']:.0f} ms")
+    print(f"  {C['bold']}Response length:{C['reset']}    {len(entry['response'])} chars")
+
+    if log_path:
+        print(f"\n{C['dim']}Logged to {log_path}{C['reset']}")
 
 
 def cmd_browse(args):
@@ -785,27 +1155,25 @@ def cmd_config(args):
 
 def print_banner():
     print()
-    print(f"  {C['bold']}{C['blue']}{'='*60}{C['reset']}")
-    print(f"  {C['bold']}{C['cyan']}  Model Hub v{__version__}{C['reset']}")
-    print(f"  {C['bold']}{C['blue']}{'='*60}{C['reset']}")
-    print(f"  {C['dim']}  Hardware scan + model recommender + chat for local LLMs{C['reset']}")
+    print(f"  {C['bold']}{C['blue']}apt{C['reset']} {C['dim']}v{__version__}  ·  Local AI, sorted.{C['reset']}")
     print()
 
 
 def main():
     print_banner()
     parser = argparse.ArgumentParser(
-        description=f"Model Hub CLI v{__version__} — Chat with and manage local LLMs",
+        prog="apt",
+        description=f"Apt CLI v{__version__} — Find your perfect local LLM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--host", default=None, help="Ollama host (default: OLLAMA_HOST env or localhost:11434)")
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
-    p_chat = sub.add_parser("chat", help="Interactive chat with a model")
+    p_chat = sub.add_parser("chat", aliases=["tui"], help="Launch Apt TUI — full terminal chat interface")
     p_chat.add_argument("model", nargs="?", help="Model to use (default: first installed)")
     p_chat.add_argument("--system", help="System prompt")
-    p_chat.add_argument("--timeout", type=int, default=300, help="Request timeout in seconds")
+    p_chat.add_argument("--timeout", type=int, default=300, help="Request timeout in seconds (legacy only)")
 
     p_list = sub.add_parser("list", aliases=["ls"], help="List installed models")
     p_pull = sub.add_parser("pull", help="Download a model")
@@ -820,9 +1188,42 @@ def main():
 
     p_scan = sub.add_parser("scan", help="Scan hardware")
 
+    p_agents = sub.add_parser("agents", help="List configured agents and permissions")
+    p_providers = sub.add_parser("providers", help="List LLM providers")
+    p_mcp = sub.add_parser("mcp", help="Inspect MCP servers")
+    p_mcp.add_argument("action", nargs="?", choices=["list", "tools"], default="list", help="list or tools")
+
+    p_openapi = sub.add_parser("openapi", help="Generate OpenAPI 3.1 spec from Flask routes")
+    p_openapi.add_argument("-o", "--output", default="openapi.json", help="Output file path")
+
+    p_session = sub.add_parser("session", help="Export/import chat sessions")
+    p_session_sub = p_session.add_subparsers(dest="action", required=True)
+    p_slist = p_session_sub.add_parser("list", help="List saved sessions")
+    p_sexport = p_session_sub.add_parser("export", help="Export a session")
+    p_sexport.add_argument("id", nargs="?", help="Session id (or use --all)")
+    p_sexport.add_argument("--format", "-f", default="md", choices=["md", "json", "yaml", "html", "opencode-json"], help="Output format")
+    p_sexport.add_argument("--out", "-o", help="Output dir (default cwd)")
+    p_sexport.add_argument("--all", action="store_true", help="Export all sessions")
+    p_simport = p_session_sub.add_parser("import", help="Import a session")
+    p_simport.add_argument("path", help="Path to session json/yaml")
+
+    p_update = sub.add_parser("update", help="Check for or apply Apt updates")
+    p_update.add_argument("action", nargs="?", choices=["check", "install"], default="check", help="check or install")
+    p_update.add_argument("--mode", choices=["enable", "disable", "check-only"], help="Override update mode")
+
     p_rec = sub.add_parser("recommend", aliases=["rec"], help="Get model recommendations")
     p_rec.add_argument("--use-case", default="coding", choices=["coding", "general", "reasoning", "chat"], help="Use case")
     p_rec.add_argument("--top-k", type=int, default=10, help="Number of recommendations")
+
+    p_bench = sub.add_parser("benchmark", help="Benchmark model tok/s via Ollama")
+    p_bench.add_argument("model", nargs="?", help="Model name to benchmark")
+    p_bench.add_argument("--prompt", default=None, help="Prompt text (default: fibonacci function)")
+    p_bench.add_argument("--num-predict", type=int, default=128, help="Tokens to generate (default: 128)")
+    p_bench.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature (default: 0)")
+    p_bench.add_argument("--timeout", type=int, default=300, help="Request timeout in seconds (default: 300)")
+    p_bench.add_argument("--no-cache", action="store_true", help="Disable prompt cache for fresh eval")
+    p_bench.add_argument("--list", action="store_true", help="Show benchmark history")
+    p_bench.add_argument("--export", metavar="FILE", help="Export results to CSV/JSON/JSONL")
 
     p_browse = sub.add_parser("browse", help="Browse model library")
     p_browse.add_argument("query", nargs="?", help="Search query")
@@ -861,8 +1262,12 @@ def main():
         parser.print_help()
         return
 
+    if args.command in ("chat", "tui") or args.command is None:
+        from backend.tui.app import run_tui
+        run_tui()
+        return
+
     commands = {
-        "chat": cmd_chat,
         "list": cmd_list,
         "ls": cmd_list,
         "pull": cmd_pull,
@@ -874,9 +1279,16 @@ def main():
         "recommend": cmd_recommend,
         "rec": cmd_recommend,
         "browse": cmd_browse,
+        "benchmark": cmd_benchmark,
         "workspace": cmd_workspace,
         "ws": cmd_workspace,
         "config": cmd_config,
+        "agents": cmd_agents,
+        "providers": cmd_providers,
+        "mcp": cmd_mcp,
+        "openapi": cmd_openapi,
+        "session": cmd_session,
+        "update": cmd_update,
     }
 
     cmd_fn = commands.get(args.command)

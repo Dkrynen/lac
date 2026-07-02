@@ -49,14 +49,90 @@ def ollama_is_installed() -> bool:
     return shutil.which("ollama") is not None
 
 
+def find_port_pids(port: int) -> list[str]:
+    import subprocess
+    pids = set()
+    try:
+        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return []
+    for line in out.splitlines():
+        s = line.strip()
+        if "LISTENING" not in s.upper():
+            continue
+        parts = s.split()
+        if len(parts) < 5:
+            continue
+        local = parts[1]
+        if local.rsplit(":", 1)[-1] != str(port):
+            continue
+        pid = parts[-1]
+        if pid and pid != "0":
+            pids.add(pid)
+    return sorted(pids)
+
+
+def kill_pids(pids: list[str]) -> list[str]:
+    import subprocess
+    killed = []
+    for pid in pids:
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True, timeout=10)
+            else:
+                os.kill(int(pid), 9)
+            killed.append(pid)
+        except Exception:
+            pass
+    return killed
+
+
+def clear_port(port: int, force: bool) -> bool:
+    pids = find_port_pids(port)
+    if not pids:
+        return True
+    print(f"  ! Port {port} is already in use by PID(s): {', '.join(pids)}")
+    if not force:
+        print(f"  ! This is likely a stale Apt server. Re-run with --force to kill it,")
+        print(f"  ! or stop it manually:  taskkill /F /PID {pids[0]}")
+        print(f"  ! (Refusing to start to avoid serving stale code.)")
+        return False
+    killed = kill_pids(pids)
+    print(f"  ! Killed stale process(es): {', '.join(killed)}")
+    time.sleep(0.5)
+    return not find_port_pids(port)
+
+
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Apt web UI server")
+    parser.add_argument("--host", default=HOST, help="Bind host")
+    parser.add_argument("--port", type=int, default=PORT, help="Bind port")
+    parser.add_argument("--force", action="store_true", help="Kill any process already using the port, then start")
+    parser.add_argument("--kill-port", action="store_true", help="Kill whatever holds the port and exit")
+    parser.add_argument("--no-browser", action="store_true", help="Do not open a browser")
+    args = parser.parse_args()
+
+    host = args.host
+    port = args.port
+
+    if args.kill_port:
+        pids = find_port_pids(port)
+        if not pids:
+            print(f"  Port {port} is free.")
+        else:
+            killed = kill_pids(pids)
+            print(f"  Killed: {', '.join(killed)}")
+        return
+
     version = get_version()
     from backend.api import run_server
 
     print()
     print("  +------------------------------------------+")
-    print(f"  |          Model Hub v{version:<20} |")
-    print("  |  Hardware scan + model installer         |")
+    print(f"  |              Apt v{version:<22} |")
+    print("  |  Find your perfect local LLM              |")
     print("  +------------------------------------------+")
     print()
 
@@ -72,12 +148,16 @@ def main():
         print(f"  ! Download: {update['download_url']}")
         print()
 
-    def open_browser():
-        time.sleep(1.5)
-        webbrowser.open(f"http://{HOST}:{PORT}")
+    if not clear_port(port, args.force):
+        sys.exit(1)
 
-    threading.Thread(target=open_browser, daemon=True).start()
-    run_server(host=HOST, port=PORT)
+    if not args.no_browser:
+        def open_browser():
+            time.sleep(1.5)
+            webbrowser.open(f"http://{host}:{port}")
+
+        threading.Thread(target=open_browser, daemon=True).start()
+    run_server(host=host, port=port)
 
 
 if __name__ == "__main__":

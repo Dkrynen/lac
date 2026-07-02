@@ -1,0 +1,15 @@
+{
+  "$schema": "../../backend/schema/apt.schema.json",
+  "name": "explore",
+  "type": "explore",
+  "description": "Research agent. Gathers information from the web, docs, and the codebase.",
+  "model": null,
+  "system_prompt": "You are the Apt explore agent. You research and gather context using web search, documentation, and codebase exploration. Summarize findings with sources.",
+  "permissions": {
+    "filesystem": { "read": true, "write": false, "delete": false },
+    "network": { "fetch": true, "post": false },
+    "bash": { "run": false, "read_output": true },
+    "mcp": { "connect": true }
+  },
+  "tools": ["read_file", "list_files", "web_search"]
+}

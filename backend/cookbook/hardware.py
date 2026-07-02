@@ -13,6 +13,22 @@ class GPUInfo:
     vram_gb: float
     driver: str = ""
     backend: str = "cuda"
+    tier: str = ""                # "" (auto) | "discrete" | "integrated"
+    device_index: int = 0         # for HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES
+
+
+@dataclass
+class ComputeTier:
+    """A single memory/compute tier in the hand-off hierarchy.
+
+    Ordered fastest-first: discrete GPU(s) → integrated GPU → system RAM.
+    The recommendation engine fills tiers greedily to build a layer-split plan.
+    """
+    name: str
+    memory_gb: float
+    backend: str                  # rocm, cuda, vulkan, metal, cpu
+    kind: str                     # "discrete" | "integrated" | "ram"
+    device_index: int = -1        # -1 for RAM
 
 
 @dataclass
@@ -22,11 +38,13 @@ class SystemInfo:
     cpu_cores: int = 0
     ram_gb: float = 0.0
     gpus: list[GPUInfo] = field(default_factory=list)
-    total_vram_gb: float = 0.0
+    total_vram_gb: float = 0.0           # best single discrete GPU (backward compat)
     is_apple_silicon: bool = False
     has_nvidia: bool = False
     has_amd: bool = False
     in_container: bool = False
+    compute_tiers: list[ComputeTier] = field(default_factory=list)
+    combined_vram_gb: float = 0.0        # sum of all GPU VRAM (for multi-GPU planning)
 
 
 def _in_container() -> bool:
@@ -302,6 +320,70 @@ return $result | ConvertTo-Json -Compress
         return [], 0, "", 0
 
 
+# Names that indicate an integrated GPU (shares system RAM).
+_IGPU_KEYWORDS = [
+    "radeon(tm) graphics", "radeon graphics", "amd radeon graphics",
+    "intel(r) uhd", "intel(r) hd", "intel iris",
+    "radeon 680m", "radeon 780m", "radeon 760m", "radeon 610m", "radeon 660m",
+]
+
+
+def _classify_gpu(name: str) -> str:
+    """Classify a GPU as 'discrete' or 'integrated' from its name."""
+    n = name.lower()
+    if any(k in n for k in _IGPU_KEYWORDS):
+        return "integrated"
+    return "discrete"
+
+
+def build_compute_tiers(gpus: list[GPUInfo], ram_gb: float,
+                        is_apple_silicon: bool = False) -> list[ComputeTier]:
+    """Build the ordered compute-tier list: discrete GPU(s) → iGPU → RAM.
+
+    On Apple Silicon the GPU and RAM are unified, so there is a single tier.
+    Device indices are assigned discrete-first then integrated, matching the
+    typical HIP/CUDA device ordering (dGPU = 0, iGPU = 1).
+    """
+    if is_apple_silicon:
+        return [ComputeTier(
+            name=gpus[0].name if gpus else "Apple Silicon",
+            memory_gb=gpus[0].vram_gb if gpus else ram_gb,
+            backend="metal", kind="discrete", device_index=0,
+        )] if gpus else []
+
+    discrete = []
+    integrated = []
+    for gpu in gpus:
+        kind = gpu.tier or _classify_gpu(gpu.name)
+        (discrete if kind == "discrete" else integrated).append(gpu)
+
+    # Fastest discrete GPU first (most VRAM = primary).
+    discrete.sort(key=lambda g: g.vram_gb, reverse=True)
+
+    tiers: list[ComputeTier] = []
+    idx = 0
+    for gpu in discrete:
+        tiers.append(ComputeTier(
+            name=gpu.name, memory_gb=gpu.vram_gb, backend=gpu.backend,
+            kind="discrete", device_index=idx,
+        ))
+        idx += 1
+    for gpu in integrated:
+        tiers.append(ComputeTier(
+            name=gpu.name, memory_gb=gpu.vram_gb, backend=gpu.backend,
+            kind="integrated", device_index=idx,
+        ))
+        idx += 1
+
+    # RAM is always the slowest fallback tier.
+    if ram_gb > 0 and not is_apple_silicon:
+        tiers.append(ComputeTier(
+            name="System RAM", memory_gb=ram_gb, backend="cpu",
+            kind="ram", device_index=-1,
+        ))
+    return tiers
+
+
 def detect() -> SystemInfo:
     info = SystemInfo(os=platform.system(), in_container=_in_container())
 
@@ -356,15 +438,25 @@ def detect() -> SystemInfo:
             pass
         info.cpu_cores = os.cpu_count() or 0
 
-    discrete = [g for g in info.gpus if not any(
-        kw in g.name.lower() for kw in ["radeon(tm) graphics", "intel(r) uhd",
-                                         "intel(r) hd", "intel iris", "intel arc"])
-    ]
+    # Classify each GPU as discrete/integrated (stored on GPUInfo for the API).
+    for g in info.gpus:
+        g.tier = _classify_gpu(g.name)
+
+    # total_vram_gb = best single discrete GPU (backward-compat; what fits in one
+    # GPU without the hand-off). combined_vram_gb = all GPUs summed.
+    discrete = [g for g in info.gpus if g.tier == "discrete"]
     if discrete:
-        top = max(discrete, key=lambda g: g.vram_gb)
-        info.total_vram_gb = round(top.vram_gb, 1)
+        info.total_vram_gb = round(max(g.vram_gb for g in discrete), 1)
+    elif info.gpus:
+        info.total_vram_gb = round(max(g.vram_gb for g in info.gpus), 1)
     else:
-        info.total_vram_gb = round(max(g.vram_gb for g in info.gpus), 1) if info.gpus else 0.0
+        info.total_vram_gb = 0.0
+
+    gpu_vram = [g for g in info.gpus if g.tier in ("discrete", "integrated")]
+    info.combined_vram_gb = round(sum(g.vram_gb for g in gpu_vram), 1) if gpu_vram else info.total_vram_gb
+
+    # Build the full compute-tier hierarchy (dGPU → iGPU → RAM).
+    info.compute_tiers = build_compute_tiers(info.gpus, info.ram_gb, info.is_apple_silicon)
     return info
 
 
@@ -379,9 +471,17 @@ def print_system(info: SystemInfo) -> None:
         print(f"Apple Silicon unified memory (GPU budget): {info.gpus[0].vram_gb} GB" if info.gpus else "")
     elif info.gpus:
         for i, gpu in enumerate(info.gpus):
+            kind = gpu.tier
             marker = " (primary)" if i == 0 and len(info.gpus) > 1 else ""
-            print(f"GPU {i}:        {gpu.name} ({gpu.vram_gb} GB VRAM, {gpu.backend}){marker}")
+            print(f"GPU {i}:        {gpu.name} ({gpu.vram_gb} GB VRAM, {gpu.backend}, {kind}){marker}")
         print(f"Effective:   {info.total_vram_gb} GB VRAM (best discrete GPU)")
+        if info.combined_vram_gb > info.total_vram_gb:
+            extra = info.combined_vram_gb - info.total_vram_gb
+            print(f"Hand-off:    {info.combined_vram_gb} GB combined GPU VRAM (+{extra:.1f} GB from iGPU)")
     else:
         print("GPU:         None detected (CPU only)")
+    if info.compute_tiers and not info.is_apple_silicon and len(info.compute_tiers) > 1:
+        print("Compute tiers:")
+        for t in info.compute_tiers:
+            print(f"  {t.kind:<11} {t.name} ({t.memory_gb} GB, {t.backend})")
     print()

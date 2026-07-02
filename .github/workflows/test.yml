@@ -1,0 +1,53 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system -r requirements.txt
+          uv pip install --system pytest pytest-asyncio apispec
+
+      - name: Show environment
+        run: |
+          python --version
+          python -c "import flask, textual; print('flask', flask.__version__, 'textual', textual.__version__)"
+
+      - name: Run unit tests (no live Ollama)
+        env:
+          PYTEST_ADDOPTS: "-m 'not live'"
+        run: python -m pytest -v
+
+  test-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install uv
+      - run: |
+          uv pip install --system -r requirements.txt
+          uv pip install --system pytest pytest-asyncio apispec
+      - env:
+          PYTEST_ADDOPTS: "-m 'not live'"
+        run: python -m pytest -v

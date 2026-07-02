@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://apt.dev/schemas/apt.schema.json",
+  "title": "Apt Project Configuration",
+  "description": "Schema for .apt/apt.jsonc — project-level Apt configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": { "type": "string" },
+    "workspace": { "type": "string", "description": "Active workspace id." },
+    "ollama_host": { "type": "string", "format": "uri", "description": "Ollama base URL." },
+    "theme": { "type": "string", "description": "Active TUI theme id." },
+    "default_model": { "type": "string", "description": "Default chat model." },
+    "default_context": { "type": "integer", "minimum": 512, "description": "Default context window size." },
+    "providers": {
+      "type": "object",
+      "description": "LLM provider configurations keyed by name.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["ollama", "openai", "anthropic"] },
+          "base_url": { "type": "string" },
+          "api_key": { "type": "string" },
+          "api_key_env": { "type": "string", "description": "Environment variable holding the API key." },
+          "default_model": { "type": "string" }
+        },
+        "required": ["type"]
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "properties": {
+        "servers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "command": { "type": "string" },
+              "args": { "type": "array", "items": { "type": "string" } },
+              "env": { "type": "object", "additionalProperties": { "type": "string" } },
+              "url": { "type": "string" },
+              "transport": { "type": "string", "enum": ["stdio", "sse", "http"] },
+              "enabled": { "type": "boolean", "default": true }
+            },
+            "anyOf": [
+              { "required": ["command"] },
+              { "required": ["url"] }
+            ]
+          }
+        }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Enabled agent names (must exist in .apt/agent/ or built-ins)."
+    },
+    "plugins": {
+      "type": "object",
+      "additionalProperties": { "type": "object" },
+      "description": "Plugin-specific options keyed by plugin name."
+    }
+  }
+}

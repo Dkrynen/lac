@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Apt — Design System Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ---- tokens (mirrors tokens.css) ---- */
+:root,[data-theme="dark"]{
+  --bg:#09090B;--surface:#0F0F13;--surface-2:#15151A;--surface-3:#1B1B22;--overlay:rgba(4,4,7,.6);
+  --border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.14);
+  --text:#ECECEE;--text-muted:#A1A1AA;--text-faint:#71717A;
+  --accent:#6E7BF2;--accent-hover:#8B96F5;--accent-pressed:#5A67E0;--accent-soft:rgba(110,123,242,.14);--accent-fg:#FFF;
+  --success:#3DD68C;--success-soft:rgba(61,214,140,.14);
+  --warning:#F5A524;--warning-soft:rgba(245,165,36,.16);
+  --danger:#F6465D;--danger-soft:rgba(246,70,93,.14);
+  --info:#38BDF8;--info-soft:rgba(56,189,248,.14);
+  --radius-sm:6px;--radius:8px;--radius-lg:12px;--radius-pill:9999px;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.30);--shadow-md:0 4px 12px rgba(0,0,0,.35);--shadow-lg:0 12px 32px rgba(0,0,0,.45);
+  --font-sans:"Geist","Inter",system-ui,-apple-system,Segoe UI,sans-serif;
+  --font-mono:"Geist Mono","JetBrains Mono",ui-monospace,monospace;
+  --ease:cubic-bezier(.22,.61,.36,1);--dur:160ms;
+}
+[data-theme="light"]{
+  --bg:#FAFAFA;--surface:#FFF;--surface-2:#F4F4F5;--surface-3:#E9E9EC;
+  --border:rgba(0,0,0,.08);--border-strong:rgba(0,0,0,.14);
+  --text:#18181B;--text-muted:#52525B;--text-faint:#8A8A93;
+  --accent:#5A67E0;--accent-hover:#6E7BF2;--accent-pressed:#4F52D6;--accent-soft:rgba(90,103,224,.12);--accent-fg:#FFF;
+  --success:#1FAE6A;--success-soft:rgba(31,174,106,.12);--warning:#D98324;--warning-soft:rgba(217,131,36,.14);
+  --danger:#E11D48;--danger-soft:rgba(225,29,72,.12);--info:#0EA5E9;--info-soft:rgba(14,165,233,.12);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.06);--shadow-md:0 4px 12px rgba(0,0,0,.08);--shadow-lg:0 12px 32px rgba(0,0,0,.12);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.mono{font-family:var(--font-mono)}
+.row{display:flex;align-items:center}
+.between{justify-content:space-between}
+.muted{color:var(--text-muted)} .faint{color:var(--text-faint)}
+a{color:var(--accent);text-decoration:none}
+
+/* layout */
+.app{display:flex;min-height:100vh}
+.sidebar{width:240px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);padding:16px 12px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.brand{display:flex;align-items:center;gap:9px;padding:6px 8px 18px}
+.brand .logo{font-family:var(--font-mono);font-weight:600;font-size:18px;letter-spacing:-.02em}
+.cursor{display:inline-block;width:8px;height:16px;background:var(--accent);margin-left:2px;border-radius:1px;animation:blink 1.1s steps(2,start) infinite;transform:translateY(2px)}
+@keyframes blink{50%{opacity:0}}
+@media(prefers-reduced-motion:reduce){.cursor{animation:none}}
+.brand .sub{font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:var(--text-faint);margin-top:2px}
+.nav{display:flex;flex-direction:column;gap:2px;margin-top:6px}
+.nav .item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius-sm);color:var(--text-muted);font-size:13.5px;font-weight:500;cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease)}
+.nav .item:hover{background:var(--surface-3);color:var(--text)}
+.nav .item.active{background:var(--accent-soft);color:var(--accent)}
+.nav .item .ic{width:15px;opacity:.9}
+.nav .label{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--text-faint);padding:14px 10px 6px}
+.ws{margin-top:auto;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:9px 10px;font-size:12.5px;display:flex;align-items:center;gap:8px;cursor:pointer}
+.ws .dot{width:8px;height:8px;border-radius:50%;background:var(--success)}
+
+.main{flex:1;min-width:0;padding:28px 36px 64px;max-width:1100px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:26px}
+.topbar h1{font-size:22px;font-weight:600;letter-spacing:-.02em;margin:0}
+.topbar .sub{font-size:12.5px;color:var(--text-muted);margin-top:2px}
+.search{display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:7px 11px;width:240px;font-size:13px;color:var(--text-faint)}
+.search input{background:none;border:none;outline:none;color:var(--text);font:inherit;width:100%}
+.kbd{font-family:var(--font-mono);font-size:11px;background:var(--surface-3);border:1px solid var(--border);border-radius:5px;padding:1px 5px;color:var(--text-muted)}
+
+/* buttons */
+.btn{appearance:none;border:1px solid transparent;font-family:inherit;font-size:13px;font-weight:500;padding:7px 14px;border-radius:var(--radius);cursor:pointer;transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease),color var(--dur) var(--ease),box-shadow var(--dur) var(--ease);display:inline-flex;align-items:center;gap:7px;line-height:1}
+.btn:focus-visible{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--accent-soft);outline:none}
+.btn-primary{background:var(--accent);color:var(--accent-fg)}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-secondary{background:var(--surface-2);color:var(--text);border-color:var(--border)}
+.btn-secondary:hover{background:var(--surface-3);border-color:var(--border-strong)}
+.btn-outline{background:transparent;color:var(--text);border-color:var(--border-strong)}
+.btn-outline:hover{background:var(--surface-2)}
+.btn-ghost{background:transparent;color:var(--text-muted)}
+.btn-ghost:hover{background:var(--surface-3);color:var(--text)}
+.btn-danger{background:var(--danger);color:#fff}
+
+/* badges */
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:var(--radius-pill);letter-spacing:.01em;line-height:1.4}
+.badge .bdot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge-neutral{background:var(--surface-3);color:var(--text-muted)}
+.badge-accent{background:var(--accent-soft);color:var(--accent)}
+.badge-success{background:var(--success-soft);color:var(--success)}
+.badge-warning{background:var(--warning-soft);color:var(--warning)}
+.badge-danger{background:var(--danger-soft);color:var(--danger)}
+.badge-info{background:var(--info-soft);color:var(--info)}
+
+/* cards */
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:980px){.grid{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;box-shadow:var(--shadow-sm);transition:border-color var(--dur) var(--ease),transform var(--dur) var(--ease)}
+.card:hover{border-color:var(--border-strong)}
+.card .name{font-family:var(--font-mono);font-weight:600;font-size:14.5px}
+.card .desc{color:var(--text-muted);font-size:12.5px;margin:4px 0 10px;min-height:32px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.metrics{display:flex;gap:16px;margin:10px 0 12px}
+.metrics .m .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint)}
+.metrics .m .v{font-family:var(--font-mono);font-size:13px;font-weight:500}
+.bar{height:6px;background:var(--surface-3);border-radius:var(--radius-pill);overflow:hidden}
+.bar > i{display:block;height:100%;border-radius:inherit}
+.bar .ok{background:var(--success)} .bar .mid{background:var(--warning)} .bar .bad{background:var(--danger)} .bar .acc{background:var(--accent)}
+
+/* sections */
+.section{margin-top:40px}
+.section h2{font-size:13px;text-transform:uppercase;letter-spacing:.12em;color:var(--text-faint);font-weight:600;margin:0 0 14px}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.sw{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.sw .chip{height:46px}
+.sw .meta{padding:7px 10px}
+.sw .meta .n{font-size:12px;font-weight:600}
+.sw .meta .h{font-family:var(--font-mono);font-size:11px;color:var(--text-muted)}
+
+.types{display:flex;flex-direction:column;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px}
+.types .t{display:flex;align-items:baseline;gap:16px}
+.types .t .tag{font-family:var(--font-mono);font-size:11px;color:var(--text-faint);width:74px;flex-shrink:0}
+.t-display{font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1.15}
+.t-h1{font-size:22px;font-weight:600;letter-spacing:-.02em}
+.t-h2{font-size:18px;font-weight:600;letter-spacing:-.01em}
+.t-h3{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.t-body{font-size:14px}
+.t-small{font-size:13px;color:var(--text-muted)}
+.t-cap{font-size:12px;font-weight:500;letter-spacing:.01em;color:var(--text-muted)}
+.t-mono{font-family:var(--font-mono);font-size:13px;font-weight:500}
+
+.comps{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px}
+.demo{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:980px){.demo{grid-template-columns:1fr}}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px}
+.field input{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 11px;color:var(--text);font:inherit;outline:none}
+.field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.switch{width:38px;height:22px;background:var(--surface-3);border-radius:var(--radius-pill);position:relative;cursor:pointer;border:1px solid var(--border)}
+.switch.on{background:var(--accent);border-color:transparent}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left var(--dur) var(--ease)}
+.switch.on::after{left:18px}
+.progs{display:flex;flex-direction:column;gap:11px}
+
+.theme-toggle{position:fixed;right:18px;bottom:18px;background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius-pill);padding:7px 13px;font-size:12px;color:var(--text-muted);cursor:pointer;box-shadow:var(--shadow-md);font-family:inherit}
+.theme-toggle:hover{color:var(--text)}
+.note{margin-top:10px;font-size:12px;color:var(--text-faint);font-family:var(--font-mono)}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div>
+        <div class="logo">apt<span class="cursor"></span></div>
+        <div class="sub">Local AI, sorted.</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="item active">▦ Dashboard</div>
+      <div class="item">⌕ Browse models</div>
+      <div class="item">🗴 Scan &amp; recommend</div>
+      <div class="item">⬚ Installed</div>
+      <div class="item">↓ Downloads</div>
+      <div class="item">✎ Chat</div>
+      <div class="label">Library</div>
+      <div class="item">★ Workspaces</div>
+      <div class="item">⚙ Settings</div>
+    </nav>
+    <div class="ws"><span class="dot"></span> Default workspace <span class="faint" style="margin-left:auto">▾</span></div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h1>Dashboard</h1>
+        <div class="sub">AMD Ryzen 5 7600 · Radeon RX 6800 XT · 16&nbsp;GB VRAM</div>
+      </div>
+      <div class="row" style="gap:10px">
+        <div class="search">⌕ <input placeholder="Search models…" /> <span class="kbd">⌘K</span></div>
+        <button class="btn btn-primary">⟳ Scan hardware</button>
+      </div>
+    </div>
+
+    <!-- MODEL CARDS -->
+    <div class="section" style="margin-top:4px">
+      <h2>Recommended for your GPU</h2>
+      <div class="grid">
+
+        <div class="card">
+          <div class="row between">
+            <div class="name">llama3.2:3b</div>
+            <span class="badge badge-success"><span class="bdot"></span>Fits GPU</span>
+          </div>
+          <div class="desc">Compact, fast, tool-calling. Great default for chat and agents on modest hardware.</div>
+          <div class="chips">
+            <span class="badge badge-accent">tools</span>
+            <span class="badge badge-neutral">3.2B</span>
+            <span class="badge badge-neutral">128k ctx</span>
+          </div>
+          <div class="metrics">
+            <div class="m"><div class="k">Params</div><div class="v">3.21B</div></div>
+            <div class="m"><div class="k">VRAM Q4</div><div class="v">2.0 GB</div></div>
+          </div>
+          <div class="bar"><i class="ok" style="width:14%"></i></div>
+          <div class="row between" style="margin-top:14px">
+            <span class="faint" style="font-size:11.5px">14% of 16 GB</span>
+            <button class="btn btn-secondary">Install</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row between">
+            <div class="name">phi4:14b</div>
+            <span class="badge badge-success"><span class="bdot"></span>Fits GPU</span>
+          </div>
+          <div class="desc">Strong reasoning at 14B. Squeezes onto 16 GB at Q4 with room to spare.</div>
+          <div class="chips">
+            <span class="badge badge-accent">thinking</span>
+            <span class="badge badge-neutral">14B</span>
+            <span class="badge badge-neutral">16k ctx</span>
+          </div>
+          <div class="metrics">
+            <div class="m"><div class="k">Params</div><div class="v">14.0B</div></div>
+            <div class="m"><div class="k">VRAM Q4</div><div class="v">8.4 GB</div></div>
+          </div>
+          <div class="bar"><i class="ok" style="width:53%"></i></div>
+          <div class="row between" style="margin-top:14px">
+            <span class="faint" style="font-size:11.5px">53% of 16 GB</span>
+            <button class="btn btn-secondary">Install</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row between">
+            <div class="name">gemma3:12b</div>
+            <span class="badge badge-warning"><span class="bdot"></span>Offload</span>
+          </div>
+          <div class="desc">Multimodal (vision + text). Will partially offload to CPU at this VRAM.</div>
+          <div class="chips">
+            <span class="badge badge-info">vision</span>
+            <span class="badge badge-neutral">12B</span>
+            <span class="badge badge-neutral">128k ctx</span>
+          </div>
+          <div class="metrics">
+            <div class="m"><div class="k">Params</div><div class="v">12.0B</div></div>
+            <div class="m"><div class="k">VRAM Q4</div><div class="v">13.9 GB</div></div>
+          </div>
+          <div class="bar"><i class="mid" style="width:87%"></i></div>
+          <div class="row between" style="margin-top:14px">
+            <span class="faint" style="font-size:11.5px">87% of 16 GB</span>
+            <button class="btn btn-secondary">Install</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- FOUNDATIONS -->
+    <div class="section">
+      <h2>Color — Iris accent on neutral dark</h2>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#09090B;border-bottom:1px solid var(--border)"></div><div class="meta"><div class="n">bg</div><div class="h">#09090B</div></div></div>
+        <div class="sw"><div class="chip" style="background:#0F0F13"></div><div class="meta"><div class="n">surface</div><div class="h">#0F0F13</div></div></div>
+        <div class="sw"><div class="chip" style="background:#15151A"></div><div class="meta"><div class="n">surface-2</div><div class="h">#15151A</div></div></div>
+        <div class="sw"><div class="chip" style="background:#1B1B22"></div><div class="meta"><div class="n">surface-3</div><div class="h">#1B1B22</div></div></div>
+        <div class="sw"><div class="chip" style="background:#6E7BF2"></div><div class="meta"><div class="n">accent · Iris</div><div class="h">#6E7BF2</div></div></div>
+        <div class="sw"><div class="chip" style="background:rgba(110,123,242,.14)"></div><div class="meta"><div class="n">accent-soft</div><div class="h">.14α</div></div></div>
+        <div class="sw"><div class="chip" style="background:#3DD68C"></div><div class="meta"><div class="n">success</div><div class="h">#3DD68C</div></div></div>
+        <div class="sw"><div class="chip" style="background:#F5A524"></div><div class="meta"><div class="n">warning</div><div class="h">#F5A524</div></div></div>
+        <div class="sw"><div class="chip" style="background:#F6465D"></div><div class="meta"><div class="n">danger</div><div class="h">#F6465D</div></div></div>
+        <div class="sw"><div class="chip" style="background:#38BDF8"></div><div class="meta"><div class="n">info</div><div class="h">#38BDF8</div></div></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Type scale — Geist Sans / Mono</h2>
+      <div class="types">
+        <div class="t"><span class="tag">display</span><span class="t-display">Find models that fit.</span></div>
+        <div class="t"><span class="tag">h1</span><span class="t-h1">Scan your hardware</span></div>
+        <div class="t"><span class="tag">h2</span><span class="t-h2">Recommended for your GPU</span></div>
+        <div class="t"><span class="tag">h3</span><span class="t-h3">Compatibility</span></div>
+        <div class="t"><span class="tag">body</span><span class="t-body">Apt scans your GPU, VRAM, RAM and CPU — then ranks models that actually fit.</span></div>
+        <div class="t"><span class="tag">small</span><span class="t-small">Defaults to Q4_K_M quantization for fit estimates.</span></div>
+        <div class="t"><span class="tag">caption</span><span class="t-cap">UPDATED 2 MINUTES AGO</span></div>
+        <div class="t"><span class="tag">mono</span><span class="t-mono">llama3.2:3b · 3.21B params · 2.0 GB</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Components</h2>
+      <div class="demo">
+        <div class="panel">
+          <div style="font-weight:600;margin-bottom:14px">Buttons &amp; badges</div>
+          <div class="comps" style="background:transparent;border:none;padding:0">
+            <button class="btn btn-primary">Primary</button>
+            <button class="btn btn-secondary">Secondary</button>
+            <button class="btn btn-outline">Outline</button>
+            <button class="btn btn-ghost">Ghost</button>
+            <button class="btn btn-danger">Delete</button>
+          </div>
+          <div class="comps" style="background:transparent;border:none;padding:0;margin-top:14px">
+            <span class="badge badge-accent"><span class="bdot"></span>accent</span>
+            <span class="badge badge-success"><span class="bdot"></span>Fits GPU</span>
+            <span class="badge badge-warning"><span class="bdot"></span>Offload</span>
+            <span class="badge badge-danger"><span class="bdot"></span>Too large</span>
+            <span class="badge badge-info"><span class="bdot"></span>vision</span>
+            <span class="badge badge-neutral"><span class="bdot"></span>neutral</span>
+          </div>
+          <div class="field" style="margin-top:16px">
+            <label>Model name</label>
+            <input value="llama3.2:3b" class="mono" />
+          </div>
+          <div class="row between" style="margin-top:16px">
+            <span class="muted" style="font-size:12.5px">Auto-scan on launch</span>
+            <div class="switch on" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div style="font-weight:600;margin-bottom:14px">Progress states</div>
+          <div class="progs">
+            <div>
+              <div class="row between" style="margin-bottom:6px"><span class="t-small">Downloading phi4:14b</span><span class="mono faint" style="font-size:12px">62%</span></div>
+              <div class="bar"><i class="acc" style="width:62%"></i></div>
+            </div>
+            <div>
+              <div class="row between" style="margin-bottom:6px"><span class="t-small">VRAM fit · llama3.2:3b</span><span class="mono faint" style="font-size:12px">14%</span></div>
+              <div class="bar"><i class="ok" style="width:14%"></i></div>
+            </div>
+            <div>
+              <div class="row between" style="margin-bottom:6px"><span class="t-small">VRAM fit · gemma3:12b</span><span class="mono faint" style="font-size:12px">87%</span></div>
+              <div class="bar"><i class="mid" style="width:87%"></i></div>
+            </div>
+            <div>
+              <div class="row between" style="margin-bottom:6px"><span class="t-small">VRAM fit · qwen2.5:32b</span><span class="mono faint" style="font-size:12px">118%</span></div>
+              <div class="bar"><i class="bad" style="width:100%"></i></div>
+            </div>
+          </div>
+          <div class="note">verdict → success / warning / danger maps 1:1 to fit</div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<button class="theme-toggle" onclick="t()">◐ toggle theme</button>
+<script>function t(){const h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark'}</script>
+</body>
+</html>

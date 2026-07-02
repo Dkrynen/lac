@@ -21,11 +21,10 @@ backend_dirs = [
 ]
 
 # -- Collect frontend static files --
-frontend_files = [
-    "frontend/index.html",
-    "frontend/style.css",
-    "frontend/script.js",
-]
+# Bundle every static asset under frontend/ (html, css, js, images, etc.)
+frontend_dir = PROJECT_ROOT / "frontend"
+frontend_exts = (".html", ".css", ".js", ".png", ".jpg", ".jpeg", ".svg",
+                 ".gif", ".ico", ".woff", ".woff2", ".ttf", ".json")
 
 datas = []
 for d in backend_dirs:
@@ -35,10 +34,10 @@ for d in backend_dirs:
             if f.suffix in (".py", ".json", ".txt") and "__pycache__" not in f.parts:
                 datas.append((str(f), d))
 
-for f in frontend_files:
-    p = PROJECT_ROOT / f
-    if p.exists():
-        datas.append((str(p), "frontend"))
+if frontend_dir.is_dir():
+    for f in frontend_dir.rglob("*"):
+        if f.is_file() and f.suffix.lower() in frontend_exts and "__pycache__" not in f.parts:
+            datas.append((str(f), str(f.parent.relative_to(PROJECT_ROOT))))
 
 for extra in ["requirements.txt", "CHANGELOG.md", "LICENSE"]:
     p = PROJECT_ROOT / extra

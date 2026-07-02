@@ -1,0 +1,62 @@
+{
+  "$schema": "../backend/schema/apt.schema.json",
+  "_comment": "Project-level Apt config. Overrides ~/.model-hub/config.json. JSONC allowed (// and /* */ comments).",
+  "workspace": "default",
+  "ollama_host": "http://localhost:11434",
+  "theme": "apt-dark",
+  "default_model": "llama3.2:3b",
+  "default_context": 4096,
+  "providers": {
+    "ollama": {
+      "type": "ollama",
+      "base_url": "http://localhost:11434"
+    }
+  },
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        "transport": "stdio",
+        "env": {}
+      }
+    }
+  },
+  "agents": ["build", "plan", "explore"],
+  "permission": {
+    "build": {
+      "read": "allow",
+      "edit": { "src/**": "allow", "*.secret": "deny", "*": "ask" },
+      "glob": "allow",
+      "grep": "allow",
+      "list": "allow",
+      "bash": "ask",
+      "task": "ask",
+      "webfetch": "allow",
+      "websearch": "allow",
+      "external_directory": "ask",
+      "doom_loop": "ask"
+    },
+    "plan": {
+      "*": "ask",
+      "read": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "list": "allow",
+      "edit": "deny",
+      "bash": "deny"
+    },
+    "explore": {
+      "read": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "list": "allow",
+      "webfetch": "allow",
+      "websearch": "allow",
+      "edit": "deny",
+      "bash": "deny",
+      "task": "allow"
+    }
+  },
+  "plugins": {}
+}

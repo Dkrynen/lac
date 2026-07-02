@@ -170,8 +170,9 @@ function toggleSidebar() {
 function initNav() {
   document.querySelectorAll(".sidebar nav a").forEach(a => {
     a.addEventListener("click", e => {
-      e.preventDefault();
       const page = a.dataset.page;
+      if (!page) return;
+      e.preventDefault();
       document.querySelectorAll(".sidebar nav a").forEach(x => x.classList.remove("active"));
       a.classList.add("active");
       document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
@@ -182,8 +183,6 @@ function initNav() {
       if (page === "chat") loadChatModels();
       if (page === "browse") loadBrowse();
       if (page === "downloads") loadDownloadHistory();
-      if (page === "docs-api") renderDocsApi();
-      if (page === "docs-guide") renderDocsGuide();
     });
   });
 }
@@ -221,11 +220,11 @@ async function checkFirstRun() {
         <h1>First-Run Setup</h1>
         <div class="result-box">
           <h3>Ollama Not Found</h3>
-          <p>Model Hub requires <strong>Ollama</strong> to download and run models.</p>
+          <p>Apt requires <strong>Ollama</strong> to download and run models.</p>
           <p style="margin:16px 0">
             <a href="${escHtml(r.download_url)}" target="_blank" class="btn" style="text-decoration:none">Download Ollama</a>
           </p>
-          <p style="font-size:0.85rem;color:var(--muted)">Install Ollama, then restart Model Hub. You can still browse recommendations without it.</p>
+          <p style="font-size:0.85rem;color:var(--muted)">Install Ollama, then restart Apt. You can still browse recommendations without it.</p>
         </div>
         <h2>Downloads</h2>
         <div id="downloads-list"><em>No downloads yet.</em></div>
@@ -963,18 +962,14 @@ function renderBrowsePage() {
     const tag = encodeURIComponent(m.display || m.name);
     const caps = (m.capabilities || []).map(c => `<span class="badge-sm cap">${escHtml(c)}</span>`).join("");
     const fit = fitBadge(m.fit);
-    const vramLine = m.vram_q4 > 0
-      ? `<div style="font-size:0.75rem;color:var(--muted);margin-top:4px">
-          <span>${escHtml(m.variant || "")}</span>
-          <span style="margin:0 6px">&#8226;</span>
-          <span><strong>${m.params_b}B</strong> params</span>
-          <span style="margin:0 6px">&#8226;</span>
-          <span>Q4: <strong>${m.vram_q4}GB</strong></span>
-          <span style="margin:0 6px">&#8226;</span>
-          <span>Q8: ${m.vram_q8}GB</span>
-          <span style="margin:0 6px">&#8226;</span>
-          <span>ctx: ${m.context.toLocaleString()}</span>
-        </div>`
+    const vramParts = [];
+    if (m.variant) vramParts.push(`<span>${escHtml(m.variant)}</span>`);
+    if (m.params_b) vramParts.push(`<span><strong>${m.params_b}B</strong> params</span>`);
+    if (m.vram_q4) vramParts.push(`<span>Q4: <strong>${m.vram_q4}GB</strong></span>`);
+    if (m.vram_q8) vramParts.push(`<span>Q8: ${m.vram_q8}GB</span>`);
+    if (m.context) vramParts.push(`<span>ctx: ${m.context.toLocaleString()}</span>`);
+    const vramLine = vramParts.length
+      ? `<div style="font-size:0.75rem;color:var(--muted);margin-top:4px">${vramParts.join('<span style="margin:0 5px">&#8226;</span>')}</div>`
       : "";
     return `<div class="browse-card">
       <h3>${escHtml(display)}</h3>

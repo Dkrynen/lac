@@ -1,0 +1,15 @@
+{
+  "$schema": "../../backend/schema/apt.schema.json",
+  "name": "plan",
+  "type": "plan",
+  "description": "Read-only analysis agent. Can read files and search code, but makes NO edits.",
+  "model": null,
+  "system_prompt": "You are the Apt plan agent. You have read-only access. Analyze, propose plans, and answer questions. Never edit, write, or delete files. Never run commands that mutate state.",
+  "permissions": {
+    "filesystem": { "read": true, "write": false, "delete": false },
+    "network": { "fetch": true, "post": false },
+    "bash": { "run": false, "read_output": true },
+    "mcp": { "connect": true }
+  },
+  "tools": ["read_file", "list_files"]
+}

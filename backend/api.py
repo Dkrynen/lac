@@ -21,11 +21,36 @@ except ImportError:
     __github_url__ = "https://github.com/Dkrynen/model-hub"
     __download_url__ = "https://github.com/Dkrynen/model-hub/releases"
 
-app = Flask(__name__, static_folder="../frontend", static_url_path="", template_folder="../frontend")
+# Serve the built web app (web/dist) when present, else the legacy frontend/.
+_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
+_FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
+_STATIC = str(_DIST) if (_DIST / "index.html").exists() else str(_FRONTEND)
+app = Flask(__name__, static_folder=_STATIC, static_url_path="", template_folder=_STATIC)
 
 PULL_PROGRESS = {}
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+
+def _serialize_split_plan(plan) -> dict:
+    """Serialize a SplitPlan dataclass to a JSON-safe dict for the API."""
+    return {
+        "run_mode": plan.run_mode,
+        "summary": plan.summary,
+        "total_model_gb": plan.total_model_gb,
+        "total_layers": plan.total_layers,
+        "gpu_layers": plan.gpu_layers,
+        "env_vars": plan.env_vars,
+        "tiers": [
+            {
+                "kind": a.kind, "name": a.name, "memory_gb": a.memory_gb,
+                "allocated_gb": a.allocated_gb, "backend": a.backend,
+                "device_index": a.device_index, "bandwidth": a.bandwidth,
+                "layers": a.layers,
+            }
+            for a in plan.tiers
+        ],
+    }
 
 
 def _ollama_request(method: str, path: str, json_body: Optional[dict] = None, stream: bool = False):
@@ -50,10 +75,24 @@ def _ollama_request(method: str, path: str, json_body: Optional[dict] = None, st
     except Exception as e:
         return {"error": str(e)}
 
-
 @app.route("/")
 def index():
     return app.send_static_file("index.html")
+
+
+@app.route("/docs")
+@app.route("/docs/api")
+@app.route("/docs/guide")
+def docs_page():
+    # Docs is a client-side route in the new web app.
+    return app.send_static_file("index.html")
+
+
+@app.route("/api/openapi.json")
+def openapi_spec():
+    from .openapi_gen import generate_openapi
+
+    return jsonify(generate_openapi(app, f"http://127.0.0.1:5050"))
 
 
 @app.route("/api/scan")
@@ -64,8 +103,15 @@ def api_scan():
         "cpu": info.cpu,
         "cores": info.cpu_cores,
         "ram_gb": info.ram_gb,
-        "gpus": [{"name": g.name, "vram_gb": g.vram_gb, "backend": g.backend} for g in info.gpus],
+        "gpus": [{"name": g.name, "vram_gb": g.vram_gb, "backend": g.backend,
+                  "tier": g.tier, "device_index": g.device_index} for g in info.gpus],
         "total_vram_gb": info.total_vram_gb,
+        "combined_vram_gb": info.combined_vram_gb,
+        "compute_tiers": [
+            {"name": t.name, "memory_gb": t.memory_gb, "backend": t.backend,
+             "kind": t.kind, "device_index": t.device_index}
+            for t in info.compute_tiers
+        ],
         "is_apple_silicon": info.is_apple_silicon,
         "in_container": info.in_container,
     })
@@ -90,6 +136,7 @@ def api_recommend():
     recs = recommend(info, use_case=use_case, top_k=top_k)
     return jsonify({
         "vram_gb": info.total_vram_gb,
+        "combined_vram_gb": info.combined_vram_gb,
         "ram_gb": info.ram_gb,
         "recommendations": [
             {
@@ -109,6 +156,7 @@ def api_recommend():
                     "fit": r.fit_score,
                     "context": r.context_score,
                 },
+                "split_plan": _serialize_split_plan(r.split_plan) if r.split_plan else None,
             }
             for r in recs
         ],
@@ -271,7 +319,7 @@ def api_version():
         "version": APP_VERSION,
         "github_url": __github_url__,
         "download_url": __download_url__,
-        "app_name": "Model Hub",
+        "app_name": "Apt",
     })
 
 
@@ -329,20 +377,12 @@ def ollama_check_detailed():
 LIBRARY_CACHE = None
 LIBRARY_CACHE_TIME = 0
 LIBRARY_CACHE_TTL = 3600
+LIBRARY_CACHE_REFRESHING = False
 
-def _fetch_library():
-    global LIBRARY_CACHE, LIBRARY_CACHE_TIME
-    now = time.time()
-    if LIBRARY_CACHE and (now - LIBRARY_CACHE_TIME) < LIBRARY_CACHE_TTL:
-        return LIBRARY_CACHE
-    cache_path = Path(__file__).parent / "cookbook" / "data" / "library_cache.json"
-    if cache_path.exists():
-        with open(cache_path) as f:
-            data = json.load(f)
-            if (now - data.get("fetched", 0)) < 86400:
-                LIBRARY_CACHE = data["models"]
-                LIBRARY_CACHE_TIME = now
-                return LIBRARY_CACHE
+
+def _scrape_library():
+    """Scrape the Ollama library index. Returns a list of model dicts or
+    {"error": str, "models": []} on failure."""
     try:
         import urllib.request
         req = urllib.request.Request("https://ollama.com/library", headers={"User-Agent": "Mozilla/5.0"})
@@ -371,18 +411,70 @@ def _fetch_library():
                 "pulls": pulls,
                 "tag_count": tag_count,
             })
-        LIBRARY_CACHE = models
-        LIBRARY_CACHE_TIME = now
+        cache_path = Path(__file__).parent / "cookbook" / "data" / "library_cache.json"
         try:
             with open(cache_path, "w") as f:
-                json.dump({"fetched": now, "models": models}, f)
+                json.dump({"fetched": time.time(), "models": models}, f)
         except Exception:
             pass
         return models
     except Exception as e:
-        if LIBRARY_CACHE:
-            return LIBRARY_CACHE
         return {"error": str(e), "models": []}
+
+
+def _refresh_library_background():
+    """Refresh the library cache off the request thread (stale-while-revalidate)."""
+    global LIBRARY_CACHE_REFRESHING
+    if LIBRARY_CACHE_REFRESHING:
+        return
+    LIBRARY_CACHE_REFRESHING = True
+
+    def worker():
+        global LIBRARY_CACHE, LIBRARY_CACHE_TIME, LIBRARY_CACHE_REFRESHING
+        try:
+            models = _scrape_library()
+            if isinstance(models, list):
+                LIBRARY_CACHE = models
+                LIBRARY_CACHE_TIME = time.time()
+        finally:
+            LIBRARY_CACHE_REFRESHING = False
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _fetch_library():
+    """Stale-while-revalidate: serve any cached data instantly and refresh in
+    the background when stale. Only the very first (cold) call blocks on a
+    live scrape — thereafter Browse loads instantly."""
+    global LIBRARY_CACHE, LIBRARY_CACHE_TIME
+    now = time.time()
+
+    if LIBRARY_CACHE:
+        if now - LIBRARY_CACHE_TIME > LIBRARY_CACHE_TTL:
+            _refresh_library_background()
+        return LIBRARY_CACHE
+
+    cache_path = Path(__file__).parent / "cookbook" / "data" / "library_cache.json"
+    if cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                data = json.load(f)
+            models = data.get("models")
+            if models:
+                LIBRARY_CACHE = models
+                LIBRARY_CACHE_TIME = now
+                if now - data.get("fetched", 0) > LIBRARY_CACHE_TTL:
+                    _refresh_library_background()
+                return LIBRARY_CACHE
+        except Exception:
+            pass
+
+    # Cold cache — scrape synchronously (happens once, ever).
+    models = _scrape_library()
+    if isinstance(models, list):
+        LIBRARY_CACHE = models
+        LIBRARY_CACHE_TIME = now
+    return models
 
 
 @app.route("/api/library/browse")
@@ -395,37 +487,79 @@ def api_library_browse():
     if isinstance(result, dict) and "error" in result:
         return jsonify(result)
     models = list(result)
+
+    # Always detect system VRAM so every card can show a real fit verdict.
+    system_vram = None
+    try:
+        info = detect()
+        system_vram = info.total_vram_gb or (info.gpus[0].vram_gb if info.gpus else 0)
+    except Exception:
+        system_vram = None
+
+    # Cross-reference each library family against the curated catalog (the cookbook)
+    # to populate real VRAM/params and a hardware fit verdict.
+    catalog_by_family: dict[str, list] = {}
+    try:
+        for cm in load_models():
+            catalog_by_family.setdefault(cm.id.split(":")[0], []).append(cm)
+    except Exception:
+        pass
+
+    sv = system_vram or 0
+    for m in models:
+        fam = m.get("name", "")
+        variants = catalog_by_family.get(fam)
+        if variants:
+            variants = sorted(variants, key=lambda v: v.vram_q4 or 0)
+            fitting = [v for v in variants if (v.vram_q4 or 0) <= sv * 0.9]
+            if fitting:
+                rep = fitting[-1]
+                m["fit"] = "gpu"
+            else:
+                rep = variants[0]
+                m["fit"] = "offload" if (rep.vram_q4 or 0) <= sv * 2 else "too_big"
+            m["vram_q4"] = rep.vram_q4
+            m["params_b"] = rep.params_b
+        elif m.get("sizes"):
+            # No catalog match — rough estimate from advertised sizes (e.g. "3B").
+            try:
+                pb = float(re.sub(r"[^0-9.]", "", str(m["sizes"][0])) or 0)
+                if pb:
+                    vq4 = round(pb * 0.6, 1)
+                    m["params_b"] = pb
+                    m["vram_q4"] = vq4
+                    if sv:
+                        m["fit"] = "gpu" if vq4 <= sv * 0.9 else ("offload" if vq4 <= sv * 2 else "too_big")
+                    else:
+                        m["fit"] = "unknown"
+                else:
+                    m["fit"] = "unknown"
+            except Exception:
+                m["fit"] = "unknown"
+        else:
+            m["fit"] = "unknown"
+
     if q:
         models = [m for m in models if q in m["name"].lower() or q in m.get("display", m["name"]).lower() or q in m.get("description", "").lower()]
     if capability:
         models = [m for m in models if any(capability in c.lower() for c in m.get("capabilities", []))]
-    
-    # Filter by system compatibility if user has VRAM
-    system_vram = None
-    if compatible and compatible != "false":
-        try:
-            from .cookbook.hardware import detect
-            sys_info = detect()
-            system_vram = sys_info.total_vram_gb or (sys_info.gpus[0].vram_gb if sys_info.gpus else 0)
-            if compatible == "gpu":
-                models = [m for m in models if m.get("vram_q4", 999) > 0 and m["vram_q4"] <= system_vram * 0.9]
-            elif compatible == "cpu":
-                models = [m for m in models if m.get("vram_q4", 999) > 0 and m["vram_q4"] > system_vram]
-            elif compatible == "any":
-                pass
-        except Exception:
-            pass
-    
+
+    if compatible and compatible != "false" and sv:
+        if compatible == "gpu":
+            models = [m for m in models if m.get("fit") == "gpu"]
+        elif compatible == "cpu":
+            models = [m for m in models if m.get("fit") in ("offload", "too_big")]
+
     def parse_pulls(p):
         try:
             p = p.replace("M", "e6").replace("B", "e9").replace("K", "e3")
             return float(p)
         except (ValueError, TypeError):
             return 0
-    
+
     def parse_vram(m):
         return m.get("vram_q4", 0) or 0
-    
+
     if sort == "name":
         models.sort(key=lambda m: m.get("display", m["name"]))
     elif sort == "pulls":
@@ -436,23 +570,6 @@ def api_library_browse():
         models.sort(key=parse_vram)
     elif sort == "params":
         models.sort(key=lambda m: m.get("params_b", 0), reverse=True)
-
-    # Annotate with compatibility if we have system info
-    if system_vram is not None:
-        for m in models:
-            vq4 = m.get("vram_q4", 0)
-            if vq4 and vq4 <= system_vram * 0.9:
-                m["fit"] = "gpu"
-            elif vq4 and vq4 <= system_vram * 2.0:
-                m["fit"] = "offload"
-            elif vq4:
-                m["fit"] = "too_big"
-            else:
-                m["fit"] = "unknown"
-    else:
-        for m in models:
-            vq4 = m.get("vram_q4", 0)
-            m["fit"] = "unknown" if not vq4 else ("cpu" if vq4 > 24 else "maybe")
 
     return jsonify({"total": len(models), "system_vram": system_vram, "models": models})
 
@@ -635,7 +752,23 @@ def api_delete_session(session_id):
     return jsonify({"success": True})
 
 
+@app.errorhandler(404)
+def spa_fallback(_e):
+    # Client-side routes (e.g. /browse, /chat) -> index.html; API 404 -> JSON.
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Not found"}), 404
+    index_path = Path(app.static_folder) / "index.html"
+    if index_path.exists():
+        return app.send_static_file("index.html")
+    return (
+        "Web app not built. Run `npm run build` inside web/, or `npm run dev` for development.",
+        404,
+    )
+
+
 def run_server(host="127.0.0.1", port=5050, debug=False):
-    print(f"  Model Hub running at http://{host}:{port}")
+    print(f"  Apt running at http://{host}:{port}")
     print(f"  Open your browser to that address.\n")
+    # Pre-warm the library cache in the background so Browse loads instantly.
+    threading.Thread(target=_fetch_library, daemon=True).start()
     app.run(host=host, port=port, debug=debug)
