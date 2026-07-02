@@ -153,6 +153,7 @@ export function Scan() {
                       <Badge variant="accent">{r.quant}</Badge>
                       <Badge variant="neutral">{fmtParams(r.params_b)}</Badge>
                       <Badge variant="neutral">{fmtContext(r.context)}k</Badge>
+                      <SourceBadge source={r.speed_source} band={r.speed_band_pct} />
                     </div>
                   </td>
                   <td className="hidden px-4 py-3 md:table-cell">
@@ -221,5 +222,32 @@ function ScoreBar({ label, v }: { label: string; v: number }) {
       <Progress value={pct} variant={pct >= 75 ? "success" : pct >= 50 ? "iris" : "warning"} className="h-1.5" />
       <span className="w-7 shrink-0 text-right font-mono text-[10px] text-fg-faint">{pct}</span>
     </div>
+  );
+}
+
+const SOURCE_META: Record<
+  "measured" | "calibrated" | "estimated",
+  { variant: "success" | "info" | "neutral"; label: string }
+> = {
+  measured: { variant: "success", label: "measured" },
+  calibrated: { variant: "info", label: "calibrated" },
+  estimated: { variant: "neutral", label: "estimated" },
+};
+
+function SourceBadge({ source, band }: { source: "measured" | "calibrated" | "estimated"; band: number }) {
+  const meta = SOURCE_META[source];
+  const tip =
+    source === "measured"
+      ? "Real tok/s from your benchmarks"
+      : source === "calibrated"
+      ? `Adjusted by your machine's regime factor (±${Math.round(band)}%)`
+      : `Theoretical estimate (±${Math.round(band)}%)`;
+  return (
+    <Badge variant={meta.variant} dot title={tip}>
+      {meta.label}
+      {source !== "estimated" && (
+        <span className="font-mono text-[9px] opacity-70">±{Math.round(band)}%</span>
+      )}
+    </Badge>
   );
 }

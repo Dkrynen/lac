@@ -63,6 +63,8 @@ export interface Recommendation {
   context: number;
   run_mode: string;
   ollama_cmd: string;
+  speed_source: "measured" | "calibrated" | "estimated";
+  speed_band_pct: number;
   scores: Scores;
   split_plan: SplitPlan | null;
 }
