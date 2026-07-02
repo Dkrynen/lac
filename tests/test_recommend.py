@@ -381,3 +381,22 @@ def test_speed_moe_spilled_ram_offload_matches_real():
     # qwen3:30b-a3b Q8 spills dGPU->iGPU->RAM. real 12.6 tok/s (was pred 45).
     tps = _predict_tps(_sys_handoff(), "qwen3:30b-a3b", "Q8")
     assert 8 <= tps <= 20, f"qwen3:30b-a3b Q8 predicted {tps}, real ~12.6"
+
+
+# =============================================================================
+# D — Calibration integration into recommend()
+# =============================================================================
+
+def test_recommend_surfaces_measured_source():
+    from backend.cookbook.calibration import Calibration, MeasuredStat
+    cal = Calibration(measured={("qwen3:30b-a3b", "Q4_K_M"): MeasuredStat(22.9, 1, 0.0)},
+                      regime_factor={"spilled": 1.0}, regime_band_pct={"spilled": 35.0}, n=1)
+    recs = recommend(_sys_handoff(), use_case="coding", top_k=91, calibration=cal)
+    big = _find(recs, "qwen3:30b-a3b")
+    assert big is not None
+    # its speed_source is set (measured if its best quant is the benchmarked Q4, else calibrated/estimated)
+    assert big.speed_source in ("measured", "calibrated", "estimated")
+
+def test_recommend_defaults_estimated_without_calibration():
+    recs = recommend(_sys_handoff(), use_case="coding", top_k=5)
+    assert all(r.speed_source == "estimated" for r in recs)

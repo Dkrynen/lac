@@ -64,6 +64,8 @@ class Recommendation:
     ollama_cmd: str
     details: dict = field(default_factory=dict)
     split_plan: Optional[SplitPlan] = None
+    speed_source: str = "estimated"
+    speed_band_pct: float = 50.0
 
 
 @dataclass
@@ -355,7 +357,8 @@ def _compute_split_plan(vram_needed: float, info: SystemInfo,
 
 
 def recommend(info: SystemInfo, use_case: str = "coding",
-              min_context: int = 0, top_k: int = 5) -> list[Recommendation]:
+              min_context: int = 0, top_k: int = 5,
+              calibration=None) -> list[Recommendation]:
     models = load_models()
     bw = _estimate_bandwidth(info)
     has_tiers = bool(info.compute_tiers)
@@ -394,6 +397,9 @@ def recommend(info: SystemInfo, use_case: str = "coding",
                     + MODEL_FAMILY_QUALITY_BONUS.get(model.arch, 0) + quant.quality_penalty))
 
                 speed = _estimate_speed(model, quant, split, bw)
+                from .calibration import apply_calibration  # local import to avoid cycle at module load
+                speed, speed_source, speed_band = apply_calibration(
+                    speed, model.id, quant.name, speed_regime(split), calibration)
                 target_speed = 20 if use_case == "reasoning" else 30
                 speed_score = min(100, (speed / target_speed) * 100)
 
@@ -430,6 +436,8 @@ def recommend(info: SystemInfo, use_case: str = "coding",
                         "is_moe": model.is_moe,
                     },
                     split_plan=split,
+                    speed_source=speed_source,
+                    speed_band_pct=speed_band,
                 )
 
                 if best_rec is None or rec.score > best_rec.score:
@@ -493,11 +501,13 @@ def print_recommendations(recs: list[Recommendation], info: SystemInfo, use_case
         print("No models found that fit your hardware.")
         return
     print(f"Top {len(recs)} recommendations for '{use_case}' on your hardware:\n")
-    print(f"{'#':<3} {'Model':<35} {'Quant':<7} {'Score':<7} {'VRAM':<7} {'Ctx':<7} {'Mode':<13} {'Command'}")
+    print(f"{'#':<3} {'Model':<35} {'Quant':<7} {'Score':<7} {'VRAM':<7} {'Ctx':<7} {'Mode':<13} {'Speed':<10} {'Command'}")
     print("-" * 120)
     for i, rec in enumerate(recs, 1):
         mode = {"gpu": "GPU", "multi_gpu": "Multi-GPU", "cpu_offload": "Offload"}.get(rec.run_mode, rec.run_mode)
-        print(f"{i:<3} {rec.model.name:<35} {rec.quant:<7} {rec.score:<7} {rec.vram_gb:<7} {rec.context_used:<7} {mode:<13} {rec.ollama_cmd}")
+        mark = {"measured": "meas", "calibrated": f"cal±{rec.speed_band_pct:.0f}%",
+                "estimated": "est"}.get(rec.speed_source, "est")
+        print(f"{i:<3} {rec.model.name:<35} {rec.quant:<7} {rec.score:<7} {rec.vram_gb:<7} {rec.context_used:<7} {mode:<13} {mark:<10} {rec.ollama_cmd}")
     print()
     for i, rec in enumerate(recs[:3], 1):
         split_info = f"  split: {rec.split_plan.summary}" if rec.split_plan and rec.split_plan.run_mode != "gpu" else ""
