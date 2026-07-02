@@ -307,6 +307,93 @@ def ollama_chat():
     )
 
 
+@app.route("/api/benchmark", methods=["POST"])
+def api_benchmark():
+    """Stream a benchmark run: yields one SSE frame per iteration (tok/s etc.),
+    then a final {done, median_tps, runs, logged} summary. Each run is stamped
+    with the machine fingerprint and logged to results.jsonl so subsequent
+    /api/recommend calls pick up the calibration."""
+    import statistics
+    import urllib.error
+    import urllib.request
+
+    data = request.get_json() or {}
+    model = (data.get("model") or "").strip()
+    if not model:
+        return jsonify({"error": "Model required"}), 400
+
+    prompt = data.get("prompt") or "Write a short function in Python that calculates fibonacci numbers."
+    num_predict = int(data.get("num_predict", 128))
+    temperature = float(data.get("temperature", 0.0))
+    repeat = max(1, min(int(data.get("repeat", 1)), 10))
+    no_cache = bool(data.get("no_cache", False))
+
+    def generate():
+        from .cookbook.benchmark import build_metrics, log_result
+        from .cookbook.calibration import detect_stack, machine_fingerprint
+
+        info = detect()
+        stack = detect_stack(info=info)
+        fp = machine_fingerprint(info, stack)
+
+        options = {"num_predict": num_predict, "temperature": temperature}
+        if no_cache:
+            options["prompt_cache_disable"] = True
+        body = json.dumps({
+            "model": model, "prompt": prompt, "stream": False, "options": options,
+        }).encode()
+
+        tps_values: list[float] = []
+        logged = 0
+        for i in range(repeat):
+            try:
+                req = urllib.request.Request(f"{OLLAMA_HOST}/api/generate", data=body, method="POST")
+                req.add_header("Content-Type", "application/json")
+                resp = urllib.request.urlopen(req, timeout=300)
+                result = json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                yield _sse({"run": i, "error": f"Ollama HTTP {e.code}"})
+                yield _sse_done()
+                return
+            except Exception as e:
+                yield _sse({"run": i, "error": str(e)})
+                yield _sse_done()
+                return
+
+            entry = build_metrics(result, model, prompt, num_predict, temperature,
+                                  fingerprint=fp, stack=stack)
+            if log_result(entry):
+                logged += 1
+            tps_values.append(entry["tokens_per_second"])
+            yield _sse({
+                "run": i,
+                "tokens_per_second": entry["tokens_per_second"],
+                "eval_count": entry["eval_count"],
+                "eval_duration_ms": entry["eval_duration_ms"],
+                "time_to_first_token_ms": entry["time_to_first_token_ms"],
+                "response_len": len(entry["response"]),
+            })
+
+        median = statistics.median(tps_values)
+        yield _sse({"done": True, "median_tps": round(median, 2),
+                    "runs": tps_values, "logged": logged})
+        yield _sse_done()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _sse_done() -> str:
+    return "data: [DONE]\n\n"
+
+
 @app.route("/api/ollama/check-install")
 def ollama_check_install():
     import shutil
