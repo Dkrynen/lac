@@ -272,7 +272,11 @@ def _compute_split_plan(vram_needed: float, info: SystemInfo,
     tiers = info.compute_tiers
     if not tiers:
         from .hardware import ComputeTier
-        if info.total_vram_gb > 0:
+        tiers = []
+        if info.gpus:
+            gpu = info.gpus[0]
+            tiers = [ComputeTier(gpu.name, gpu.vram_gb, gpu.backend, "discrete", 0)]
+        elif info.total_vram_gb > 0:
             tiers = [ComputeTier("GPU", info.total_vram_gb,
                                   "rocm" if info.has_amd else "cuda", "discrete", 0)]
         if info.ram_gb > 0:
