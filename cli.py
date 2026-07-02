@@ -837,82 +837,13 @@ def cmd_recommend(args):
         sys.exit(1)
 
 
-def _benchmark_log(entry: dict):
-    """Append a benchmark result to the jsonl log."""
-    try:
-        log_dir = Path.home() / ".model-hub" / "benchmarks"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "results.jsonl"
-        entry["timestamp"] = time.time()
-        with open(log_file, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-        return log_file
-    except Exception:
-        return None
-
-
-def _benchmark_metrics(result: dict, model: str, prompt: str,
-                       num_predict: int, temperature: float,
-                       fingerprint: str | None = None, stack: dict | None = None) -> dict:
-    """Turn an Ollama /api/generate response into a benchmark log entry.
-
-    tokens_per_second = generated tokens / generation (eval) time.
-    time_to_first_token = model load + prompt prefill (the time before the
-    first generated token) — NOT the generation duration.
-    """
-    eval_count = result.get("eval_count", 0)
-    eval_duration_ns = result.get("eval_duration", 0)  # nanoseconds
-    total_duration_ns = result.get("total_duration", 0)
-    load_duration_ns = result.get("load_duration", 0)
-    prompt_eval_duration_ns = result.get("prompt_eval_duration", 0)
-    ttft_ms = (load_duration_ns + prompt_eval_duration_ns) / 1_000_000
-    tokens_per_second = eval_count / (eval_duration_ns / 1e9) if eval_duration_ns > 0 else 0
-    entry = {
-        "model": model,
-        "prompt": prompt,
-        "prompt_len": len(prompt),
-        "num_predict": num_predict,
-        "temperature": temperature,
-        "eval_count": eval_count,
-        "eval_duration_ns": eval_duration_ns,
-        "eval_duration_ms": round(eval_duration_ns / 1_000_000, 1),
-        "total_duration_ns": total_duration_ns,
-        "total_duration_ms": round(total_duration_ns / 1_000_000, 1),
-        "tokens_per_second": round(tokens_per_second, 2),
-        "time_to_first_token_ms": round(ttft_ms, 1),
-        "response": result.get("response", ""),
-    }
-    if fingerprint:
-        entry["fingerprint"] = fingerprint
-    if stack:
-        entry["stack"] = stack
-    return entry
-
-
-def _benchmark_history() -> list[dict]:
-    log_file = Path.home() / ".model-hub" / "benchmarks" / "results.jsonl"
-    if not log_file.exists():
-        return []
-    history = []
-    try:
-        with open(log_file) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        history.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-    except Exception:
-        pass
-    return history
-
-
 def cmd_benchmark(args):
     """Run a model benchmark via Ollama /api/generate and report tok/s."""
 
+    from backend.cookbook.benchmark import build_metrics, log_result, history as read_history
+
     if args.list:
-        history = _benchmark_history()
+        history = read_history()
         if not history:
             print(f"{C['yellow']}No benchmark results yet.{C['reset']}")
             return
@@ -934,7 +865,7 @@ def cmd_benchmark(args):
         return
 
     if args.export:
-        history = _benchmark_history()
+        history = read_history()
         if not history:
             print(f"{C['yellow']}No benchmark results to export.{C['reset']}")
             return
@@ -995,9 +926,9 @@ def cmd_benchmark(args):
             eprint(f"{C['red']}Error: {result['error']}{C['reset']}")
             sys.exit(1)
 
-        entry = _benchmark_metrics(result, model, prompt, num_predict, temperature,
+        entry = build_metrics(result, model, prompt, num_predict, temperature,
                                     fingerprint=_fp, stack=_stack)
-        if _benchmark_log(entry):
+        if log_result(entry):
             logged += 1
         entries.append(entry)
 
