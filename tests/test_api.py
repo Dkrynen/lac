@@ -70,3 +70,26 @@ def test_openapi_endpoint(flask_app):
     spec = r.get_json()
     assert spec["openapi"] == "3.1.0"
     assert "/api/system/version" in spec["paths"]
+
+
+def test_recommend_serializes_speed_source(flask_app, isolated_home):
+    """Each recommendation must carry speed_source + speed_band_pct so the
+    web UI can tag measured/calibrated/estimated values."""
+    client = flask_app.test_client()
+    r = client.get("/api/recommend?use_case=coding&top_k=3")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert "recommendations" in data and len(data["recommendations"]) > 0
+    for rec in data["recommendations"]:
+        assert rec["speed_source"] in ("measured", "calibrated", "estimated")
+        assert isinstance(rec["speed_band_pct"], (int, float))
+        assert rec["speed_band_pct"] > 0  # never a zero-width band
+
+
+def test_recommend_no_calibration_escape_hatch(flask_app, isolated_home):
+    """?no_calibration=1 must still return recs, all tagged 'estimated'."""
+    client = flask_app.test_client()
+    r = client.get("/api/recommend?use_case=coding&top_k=3&no_calibration=1")
+    assert r.status_code == 200
+    for rec in r.get_json()["recommendations"]:
+        assert rec["speed_source"] == "estimated"

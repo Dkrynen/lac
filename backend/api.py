@@ -122,6 +122,7 @@ def api_recommend():
     vram = request.args.get("vram", type=float, default=0)
     use_case = request.args.get("use_case", default="coding")
     top_k = request.args.get("top_k", type=int, default=5)
+    no_calibration = request.args.get("no_calibration", type=int, default=0)
 
     info = detect()
     if vram and vram > 0:
@@ -133,7 +134,16 @@ def api_recommend():
             from .cookbook.hardware import GPUInfo
             info.gpus = [GPUInfo(name=f"Manual ({vram} GB)", vram_gb=vram, backend="cuda")]
 
-    recs = recommend(info, use_case=use_case, top_k=top_k)
+    # Build the per-machine calibration from benchmarked results (mirrors cli.cmd_recommend).
+    if no_calibration:
+        _cal = None
+    else:
+        from .cookbook.calibration import load_calibration, detect_stack
+        _stack = detect_stack(info=info)
+        _results = str(Path.home() / ".model-hub" / "benchmarks" / "results.jsonl")
+        _cal = load_calibration(info, _stack, _results)
+
+    recs = recommend(info, use_case=use_case, top_k=top_k, calibration=_cal)
     return jsonify({
         "vram_gb": info.total_vram_gb,
         "combined_vram_gb": info.combined_vram_gb,
@@ -150,6 +160,8 @@ def api_recommend():
                 "context": r.context_used,
                 "run_mode": r.run_mode,
                 "ollama_cmd": r.ollama_cmd,
+                "speed_source": r.speed_source,
+                "speed_band_pct": r.speed_band_pct,
                 "scores": {
                     "quality": r.quality_score,
                     "speed": r.speed_score,
