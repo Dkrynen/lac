@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import statistics
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,7 @@ for _q in QUANTS:
         _SUFFIX_TO_QUANT[_QUANT_ALIASES[_q.name]] = _q.name
 
 
-def parse_model_tag(tag: str):
+def parse_model_tag(tag: str) -> tuple[str, str] | None:
     """Map an ollama tag to (catalog_id, quant_name), or None if unknown."""
     ids = {m.id: m for m in load_models()}
     # exact catalog id (incl. hf.co sub-4bit) -> its single/default quant
@@ -48,14 +49,20 @@ def parse_model_tag(tag: str):
 
 
 def machine_fingerprint(info, stack: dict) -> str:
-    gpus = sorted(f"{g.name}|{g.backend}|{round(g.vram_gb,1)}" for g in info.gpus)
-    parts = [
-        ";".join(gpus),
-        f"ram={round(info.ram_gb)}",
-        f"ollama={stack.get('ollama_version', 'unknown')}",
-        f"backend={stack.get('backend', 'unknown')}",
-    ]
-    return hashlib.sha1("::".join(parts).encode()).hexdigest()[:12]
+    # JSON canonical form (sorted) so a GPU name containing '|'/';'/'=' can't
+    # collide with the field delimiters and silently blend two stacks.
+    gpus = sorted(
+        ({"name": g.name, "backend": g.backend, "vram_gb": round(g.vram_gb, 1)}
+         for g in info.gpus),
+        key=lambda d: (d["name"], d["backend"], d["vram_gb"]),
+    )
+    canon = {
+        "gpus": gpus,
+        "ram_gb": round(info.ram_gb),
+        "ollama_version": stack.get("ollama_version", "unknown"),
+        "backend": stack.get("backend", "unknown"),
+    }
+    return hashlib.sha1(json.dumps(canon, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def detect_stack(base_url: str = "http://localhost:11434") -> dict:
@@ -144,8 +151,7 @@ def load_calibration(info, stack, results_path, models=None) -> Calibration:
 
     measured = {}
     for key, vals in samples.items():
-        vals_sorted = sorted(vals)
-        med = vals_sorted[len(vals_sorted) // 2]
+        med = statistics.median(vals)
         spread = (max(vals) - min(vals)) / med * 100 if len(vals) > 1 and med else 0.0
         measured[key] = MeasuredStat(round(med, 2), len(vals), round(spread, 1))
 
