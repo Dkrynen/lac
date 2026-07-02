@@ -5,9 +5,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
 
-from .recommend import load_models, QUANTS, SUB4BIT_QUANT
+from .recommend import (
+    load_models, QUANTS, SUB4BIT_QUANT,
+    _estimate_vram, _estimate_bandwidth, _compute_split_plan, _estimate_speed,
+    speed_regime,
+)
+
+_CTX = 4096  # match Ollama's default_num_ctx used at benchmark time
 
 # ollama quant-suffix (lowercased) -> catalog quant name. Most catalog quant
 # names (e.g. "Q4_K_M", "Q6_K") already match the ollama tag suffix once
@@ -58,3 +67,101 @@ def detect_stack(base_url: str = "http://localhost:11434") -> dict:
     except Exception:
         pass
     return {"ollama_version": version, "backend": "unknown"}  # backend: see spec §11
+
+
+@dataclass
+class MeasuredStat:
+    median_tps: float
+    n_runs: int
+    spread_pct: float
+
+
+@dataclass
+class Calibration:
+    measured: dict = field(default_factory=dict)         # (id,quant) -> MeasuredStat
+    regime_factor: dict = field(default_factory=dict)    # regime -> float
+    regime_band_pct: dict = field(default_factory=dict)  # regime -> float
+    n: int = 0
+
+
+def _geomean(xs):
+    return math.exp(sum(math.log(x) for x in xs) / len(xs)) if xs else 1.0
+
+
+def _quant_by_name(name):
+    if name == SUB4BIT_QUANT.name:
+        return SUB4BIT_QUANT
+    return next((q for q in QUANTS if q.name == name), None)
+
+
+def load_calibration(info, stack, results_path, models=None) -> Calibration:
+    path = Path(results_path)
+    if not path.exists():
+        return Calibration()
+    fp = machine_fingerprint(info, stack)
+    ids = {m.id: m for m in (models or load_models())}
+    bw = _estimate_bandwidth(info)
+
+    # (id,quant) -> list of measured tok/s ; regime -> list of (real/theoretical)
+    samples: dict = {}
+    ratios: dict = {}
+    n = 0
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        tps = e.get("tokens_per_second")
+        tag = e.get("model")
+        if not tps or not tag:
+            continue
+        entry_fp = e.get("fingerprint")
+        legacy = entry_fp is None            # unknown provenance
+        if entry_fp is not None and entry_fp != fp:
+            continue                          # foreign machine/stack -> skip entirely
+        parsed = parse_model_tag(tag)
+        if not parsed:
+            continue
+        cid, qname = parsed
+        model = ids.get(cid)
+        quant = _quant_by_name(qname)
+        if model is None or quant is None:
+            continue
+        n += 1
+        samples.setdefault((cid, qname), []).append(float(tps))
+        if legacy:
+            continue                          # legacy entries: override only, NOT the fit
+        vram = _estimate_vram(model, quant, _CTX)
+        split = _compute_split_plan(vram, info, model)
+        if split is None:
+            continue
+        theo = _estimate_speed(model, quant, split, bw)
+        if theo > 0:
+            ratios.setdefault(speed_regime(split), []).append(float(tps) / theo)
+
+    measured = {}
+    for key, vals in samples.items():
+        vals_sorted = sorted(vals)
+        med = vals_sorted[len(vals_sorted) // 2]
+        spread = (max(vals) - min(vals)) / med * 100 if len(vals) > 1 and med else 0.0
+        measured[key] = MeasuredStat(round(med, 2), len(vals), round(spread, 1))
+
+    regime_factor = {r: _geomean(v) for r, v in ratios.items()}
+    regime_band_pct = {r: _loo_band(v) for r, v in ratios.items()}
+    return Calibration(measured, regime_factor, regime_band_pct, n)
+
+
+def _loo_band(ratios) -> float:
+    """Leave-one-out residual band (68th pct). <3 samples -> conservative default."""
+    if len(ratios) < 3:
+        return 35.0
+    resid = []
+    for i in range(len(ratios)):
+        others = ratios[:i] + ratios[i + 1:]
+        pred_factor = _geomean(others)
+        resid.append(abs(ratios[i] - pred_factor) / pred_factor * 100)
+    resid.sort()
+    return round(resid[int(0.68 * (len(resid) - 1))], 1)
