@@ -70,9 +70,19 @@ cheap-subscription Pro via LemonSqueezy, Windows-first launch with teased macOS/
 ### Remaining
 - Live smoke of `apt pro tune llama3.2:3b --repeat 1` with Ollama up (mocked suite green;
   license gate + CLI discovery proven live).
-- **Plan 2** — LemonSqueezy licensing (replace license.py internals; `apt pro activate`),
-  calibration insights. **Plan 3** — release engineering (CI matrix, installers, rebrand,
-  secrets sweep, landing page + waitlist).
+- **Plan 2 code DONE (2026-07-03)** — LS activation/grace/insights live in apt-pro
+  (`apt pro activate/deactivate/insights`; check() revalidates every 3 days, 14-day
+  offline grace, hard-locks on explicit invalid; legacy v1 grants still work).
+  Duan-gated to finish licensing:
+  1. Create LemonSqueezy account + store + "APT Pro" product (subscription variant,
+     license keys ENABLED, activation limit e.g. 3).
+  2. Put the product id into `apt_pro/activate.py::APT_PRO_PRODUCT_ID`.
+  3. Test mode: generate a test license key -> `apt pro activate <key>` ->
+     `apt pro status` -> `apt pro tune` unlocked -> `apt pro deactivate`.
+  4. Replace the placeholder upgrade URL in `apt_pro/license.py::_UPGRADE_MSG`
+     when the landing page exists (Plan 3).
+- **Plan 3** — release engineering (CI matrix, installers, rebrand, secrets sweep,
+  landing page + waitlist, core packaging rename).
 
 ### C — Partial conditional activation (not started)
 MoE expert pruning, early exit, speculative decoding, dynamic quant — all still research. No code written.
