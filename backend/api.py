@@ -122,6 +122,9 @@ def api_recommend():
     vram = request.args.get("vram", type=float, default=0)
     use_case = request.args.get("use_case", default="coding")
     top_k = request.args.get("top_k", type=int, default=5)
+    no_calibration = request.args.get("no_calibration", type=int, default=0)
+    gpu_mask_raw = request.args.get("gpu_mask", "")
+    allow_spill = request.args.get("allow_spill", type=int, default=1)
 
     info = detect()
     if vram and vram > 0:
@@ -133,7 +136,30 @@ def api_recommend():
             from .cookbook.hardware import GPUInfo
             info.gpus = [GPUInfo(name=f"Manual ({vram} GB)", vram_gb=vram, backend="cuda")]
 
-    recs = recommend(info, use_case=use_case, top_k=top_k)
+    mask = {int(x) for x in gpu_mask_raw.split(",") if x.strip().isdigit()} if gpu_mask_raw else set()
+    if mask:
+        masked_gpus = [g for g in info.gpus if g.device_index in mask]
+        if masked_gpus:  # fail-safe: a mask matching no GPU is ignored, never a zero-GPU result
+            info.gpus = masked_gpus
+            info.compute_tiers = [t for t in info.compute_tiers if t.kind == "ram" or t.device_index in mask]
+            gpu_vrams = [g.vram_gb for g in info.gpus]
+            info.total_vram_gb = round(max(gpu_vrams), 1)
+            info.combined_vram_gb = round(sum(gpu_vrams), 1)
+
+    if not allow_spill:
+        info.compute_tiers = [t for t in info.compute_tiers if t.kind != "ram"]
+        info.ram_gb = 0.0
+
+    # Build the per-machine calibration from benchmarked results (mirrors cli.cmd_recommend).
+    if no_calibration:
+        _cal = None
+    else:
+        from .cookbook.calibration import load_calibration, detect_stack
+        _stack = detect_stack(info=info)
+        _results = str(Path.home() / ".model-hub" / "benchmarks" / "results.jsonl")
+        _cal = load_calibration(info, _stack, _results)
+
+    recs = recommend(info, use_case=use_case, top_k=top_k, calibration=_cal)
     return jsonify({
         "vram_gb": info.total_vram_gb,
         "combined_vram_gb": info.combined_vram_gb,
@@ -150,6 +176,8 @@ def api_recommend():
                 "context": r.context_used,
                 "run_mode": r.run_mode,
                 "ollama_cmd": r.ollama_cmd,
+                "speed_source": r.speed_source,
+                "speed_band_pct": r.speed_band_pct,
                 "scores": {
                     "quality": r.quality_score,
                     "speed": r.speed_score,
@@ -293,6 +321,93 @@ def ollama_chat():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route("/api/benchmark", methods=["POST"])
+def api_benchmark():
+    """Stream a benchmark run: yields one SSE frame per iteration (tok/s etc.),
+    then a final {done, median_tps, runs, logged} summary. Each run is stamped
+    with the machine fingerprint and logged to results.jsonl so subsequent
+    /api/recommend calls pick up the calibration."""
+    import statistics
+    import urllib.error
+    import urllib.request
+
+    data = request.get_json() or {}
+    model = (data.get("model") or "").strip()
+    if not model:
+        return jsonify({"error": "Model required"}), 400
+
+    prompt = data.get("prompt") or "Write a short function in Python that calculates fibonacci numbers."
+    num_predict = int(data.get("num_predict", 128))
+    temperature = float(data.get("temperature", 0.0))
+    repeat = max(1, min(int(data.get("repeat", 1)), 10))
+    no_cache = bool(data.get("no_cache", False))
+
+    def generate():
+        from .cookbook.benchmark import build_metrics, log_result
+        from .cookbook.calibration import detect_stack, machine_fingerprint
+
+        info = detect()
+        stack = detect_stack(info=info)
+        fp = machine_fingerprint(info, stack)
+
+        options = {"num_predict": num_predict, "temperature": temperature}
+        if no_cache:
+            options["prompt_cache_disable"] = True
+        body = json.dumps({
+            "model": model, "prompt": prompt, "stream": False, "options": options,
+        }).encode()
+
+        tps_values: list[float] = []
+        logged = 0
+        for i in range(repeat):
+            try:
+                req = urllib.request.Request(f"{OLLAMA_HOST}/api/generate", data=body, method="POST")
+                req.add_header("Content-Type", "application/json")
+                resp = urllib.request.urlopen(req, timeout=300)
+                result = json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                yield _sse({"run": i, "error": f"Ollama HTTP {e.code}"})
+                yield _sse_done()
+                return
+            except Exception as e:
+                yield _sse({"run": i, "error": str(e)})
+                yield _sse_done()
+                return
+
+            entry = build_metrics(result, model, prompt, num_predict, temperature,
+                                  fingerprint=fp, stack=stack)
+            if log_result(entry):
+                logged += 1
+            tps_values.append(entry["tokens_per_second"])
+            yield _sse({
+                "run": i,
+                "tokens_per_second": entry["tokens_per_second"],
+                "eval_count": entry["eval_count"],
+                "eval_duration_ms": entry["eval_duration_ms"],
+                "time_to_first_token_ms": entry["time_to_first_token_ms"],
+                "response_len": len(entry["response"]),
+            })
+
+        median = statistics.median(tps_values)
+        yield _sse({"done": True, "median_tps": round(median, 2),
+                    "runs": tps_values, "logged": logged})
+        yield _sse_done()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _sse_done() -> str:
+    return "data: [DONE]\n\n"
 
 
 @app.route("/api/ollama/check-install")

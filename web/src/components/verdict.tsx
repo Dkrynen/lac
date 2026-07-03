@@ -6,7 +6,7 @@ export type Verdict = "fits" | "offload" | "too_large" | "unknown";
 export interface VerdictInfo {
   label: string;
   badge: BadgeProps["variant"];
-  bar: "success" | "warning" | "danger";
+  bar: "success" | "warning" | "danger" | "iris";
 }
 
 const MAP: Record<Verdict, VerdictInfo> = {
