@@ -21,8 +21,12 @@ backend_dirs = [
 ]
 
 # -- Collect frontend static files --
-# Bundle every static asset under frontend/ (html, css, js, images, etc.)
+# The React app (web/dist) is what api.py serves when present; the legacy
+# frontend/ is only its fallback. BOTH are bundled so the exe always has a UI,
+# but web/dist MUST be built (npm run build) before running PyInstaller or the
+# shipped exe silently falls back to the legacy UI.
 frontend_dir = PROJECT_ROOT / "frontend"
+webdist_dir = PROJECT_ROOT / "web" / "dist"
 frontend_exts = (".html", ".css", ".js", ".png", ".jpg", ".jpeg", ".svg",
                  ".gif", ".ico", ".woff", ".woff2", ".ttf", ".json")
 
@@ -38,6 +42,13 @@ if frontend_dir.is_dir():
     for f in frontend_dir.rglob("*"):
         if f.is_file() and f.suffix.lower() in frontend_exts and "__pycache__" not in f.parts:
             datas.append((str(f), str(f.parent.relative_to(PROJECT_ROOT))))
+
+if not (webdist_dir / "index.html").exists():
+    raise SystemExit("web/dist missing — run `npm run build` in web/ before PyInstaller "
+                     "(otherwise the exe ships the legacy UI)")
+for f in webdist_dir.rglob("*"):
+    if f.is_file():
+        datas.append((str(f), str(f.parent.relative_to(PROJECT_ROOT))))
 
 for extra in ["requirements.txt", "CHANGELOG.md", "LICENSE"]:
     p = PROJECT_ROOT / extra

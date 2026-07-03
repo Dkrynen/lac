@@ -24,9 +24,22 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web app (bundled into the exe)
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
       - name: Install dependencies
         run: |
-          pip install flask pyinstaller
+          pip install -r requirements.txt pyinstaller
 
       - name: Build with PyInstaller
         run: |
@@ -48,26 +61,31 @@ jobs:
             dist/Model-Hub-Setup-*.exe
             dist/model-hub.exe
 
+  # Linux/macOS legs stay as COMPILE PROOF only — their binaries are NOT
+  # attached to releases (v1 launch is Windows-first; macOS/Linux are teased
+  # via the waitlist, each shipping as its own launch moment later).
   build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
       - name: Install dependencies
-        run: |
-          pip install flask pyinstaller
-
+        run: pip install -r requirements.txt pyinstaller
       - name: Build with PyInstaller
-        run: |
-          pyinstaller build.spec
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        run: pyinstaller build.spec
+      - uses: actions/upload-artifact@v4
         with:
           name: linux-build
           path: dist/model-hub
@@ -76,32 +94,27 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
       - name: Install dependencies
-        run: |
-          pip install flask pyinstaller
-
+        run: pip install -r requirements.txt pyinstaller
       - name: Build with PyInstaller
-        run: |
-          pyinstaller build.spec
-
-      - name: Create DMG
-        run: |
-          pip install dmgbuild
-          dmgbuild -s .github/dmgsettings.py "Model Hub" dist/Model-Hub.dmg
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        run: pyinstaller build.spec
+      - uses: actions/upload-artifact@v4
         with:
           name: macos-build
-          path: |
-            dist/Model-Hub.dmg
-            dist/model-hub
+          path: dist/model-hub
 
   release:
     needs: [build-windows, build-linux, build-macos]
@@ -110,12 +123,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
 
-      - name: Create Release
+      - name: Create draft release (Windows installer only — review before publish)
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           files: |
             windows-build/Model-Hub-Setup-*.exe
-            linux-build/model-hub
-            macos-build/Model-Hub.dmg
           generate_release_notes: true
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
