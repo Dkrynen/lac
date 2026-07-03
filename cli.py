@@ -1239,7 +1239,12 @@ def build_parser():
 
     # --- plugin seam: mount plugin CLI subcommands (never fatal) ---
     from backend import plugins as _plugins
-    for _p in _plugins.discover():
+    try:
+        _found = _plugins.discover()
+    except Exception as e:  # noqa: BLE001 — discovery failure must not kill the CLI
+        eprint(f"[plugins] discovery failed: {e}")
+        _found = []
+    for _p in _found:
         reg = getattr(_p.obj, "register_cli", None)
         if not _p.ok or reg is None:
             continue

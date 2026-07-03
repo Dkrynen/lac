@@ -50,3 +50,18 @@ def test_cmd_plugins_lists(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "fake" in out and "9.9" in out
     assert "broken" in out and "error" in out.lower()
+
+
+def test_discover_failure_does_not_kill_cli(monkeypatch, capsys):
+    """If discovery itself raises, build_parser() must still return a working
+    parser (warning on stderr), so every CLI invocation keeps functioning."""
+    def boom():
+        raise RuntimeError("discovery exploded")
+
+    monkeypatch.setattr(plugins_mod, "discover", boom)
+
+    import cli
+    parser = cli.build_parser()  # must not raise
+    args = parser.parse_args(["list"])
+    assert args is not None
+    assert "discovery failed" in capsys.readouterr().err
