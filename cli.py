@@ -1119,14 +1119,27 @@ def cmd_config(args):
         print()
 
 
+def cmd_plugins(args):
+    from backend import plugins as _plugins
+    found = _plugins.discover()
+    print_header("Plugins")
+    if not found:
+        print("  No plugins installed. Pro and community plugins mount here.")
+        return
+    rows = []
+    for p in found:
+        status = "ok" if p.ok else f"error: {p.error}"
+        rows.append([p.name, p.version, status])
+    print_table(["Name", "Version", "Status"], rows)
+
+
 def print_banner():
     print()
     print(f"  {C['bold']}{C['blue']}apt{C['reset']} {C['dim']}v{__version__}  ·  Local AI, sorted.{C['reset']}")
     print()
 
 
-def main():
-    print_banner()
+def build_parser():
     parser = argparse.ArgumentParser(
         prog="apt",
         description=f"Apt CLI v{__version__} — Find your perfect local LLM",
@@ -1221,6 +1234,30 @@ def main():
 
     p_help = sub.add_parser("help", help="Show this help")
 
+    p_plugins = sub.add_parser("plugins", help="List installed APT plugins")
+    p_plugins.set_defaults(func=cmd_plugins)
+
+    # --- plugin seam: mount plugin CLI subcommands (never fatal) ---
+    from backend import plugins as _plugins
+    try:
+        _found = _plugins.discover()
+    except Exception as e:  # noqa: BLE001 — discovery failure must not kill the CLI
+        eprint(f"[plugins] discovery failed: {e}")
+        _found = []
+    for _p in _found:
+        reg = getattr(_p.obj, "register_cli", None)
+        if not _p.ok or reg is None:
+            continue
+        try:
+            reg(sub)
+        except Exception as e:  # noqa: BLE001
+            eprint(f"[plugin:{_p.name}] register_cli failed: {e}")
+    return parser
+
+
+def main():
+    print_banner()
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.host:
@@ -1234,6 +1271,9 @@ def main():
         from backend.tui.app import run_tui
         run_tui()
         return
+
+    if hasattr(args, "func"):
+        return args.func(args)
 
     commands = {
         "list": cmd_list,
