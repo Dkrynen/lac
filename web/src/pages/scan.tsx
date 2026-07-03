@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Cpu, MemoryStick, HardDrive, Microchip, Gauge } from "lucide-react";
+import React, { useState } from "react";
+import { Cpu, MemoryStick, HardDrive, Microchip, Gauge, ChevronDown, ChevronRight, Layers } from "lucide-react";
 import { PageHeader, ErrorState } from "@/components/page";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ export function Scan() {
   const scan = useAsync(() => api.scan());
   const [useCase, setUseCase] = useState("coding");
   const [manualVram, setManualVram] = useState(0);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const detectedVram = scan.data?.total_vram_gb ?? 0;
   const effectiveVram = manualVram > 0 ? manualVram : detectedVram;
@@ -145,41 +146,80 @@ export function Scan() {
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {recs.data.recommendations.map((r) => (
-                <tr key={r.model_id + r.quant} className="transition-colors hover:bg-panel-3/40">
-                  <td className="px-4 py-3">
-                    <div className="font-mono text-[13px] font-semibold">{r.name}</div>
-                    <div className="mt-0.5 flex gap-1.5">
-                      <Badge variant="accent">{r.quant}</Badge>
-                      <Badge variant="neutral">{fmtParams(r.params_b)}</Badge>
-                      <Badge variant="neutral">{fmtContext(r.context)}k</Badge>
-                      <SourceBadge source={r.speed_source} band={r.speed_band_pct} />
-                    </div>
-                  </td>
-                  <td className="hidden px-4 py-3 md:table-cell">
-                    <div className="grid w-[280px] grid-cols-2 gap-x-4 gap-y-1.5">
-                      <ScoreBar label="Quality" v={r.scores.quality} />
-                      <ScoreBar label="Speed" v={r.scores.speed} />
-                      <ScoreBar label="Fit" v={r.scores.fit} />
-                      <ScoreBar label="Context" v={r.scores.context} />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono text-[13px] text-fg-muted">
-                    {r.vram_gb.toFixed(1)} GB
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() =>
-                        pullWithToast(r.ollama_cmd?.replace(/^ollama run\s+/, "") || r.model_id)
-                      }
-                    >
-                      Install
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+              {recs.data.recommendations.map((r) => {
+                const key = r.model_id + r.quant;
+                const hasSplit = r.split_plan !== null && r.run_mode !== "gpu";
+                const isOpen = expanded === key;
+                return (
+                  <React.Fragment key={key}>
+                    <tr className="transition-colors hover:bg-panel-3/40">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1.5">
+                          {hasSplit ? (
+                            <button
+                              aria-label={isOpen ? "Hide split plan" : "Show split plan"}
+                              onClick={() => setExpanded(isOpen ? null : key)}
+                              className="text-fg-faint hover:text-fg"
+                            >
+                              {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                            </button>
+                          ) : (
+                            <span className="w-3.5" />
+                          )}
+                          <div className="font-mono text-[13px] font-semibold">{r.name}</div>
+                        </div>
+                        <div className="mt-0.5 flex gap-1.5 pl-5">
+                          <Badge variant="accent">{r.quant}</Badge>
+                          <Badge variant="neutral">{fmtParams(r.params_b)}</Badge>
+                          <Badge variant="neutral">{fmtContext(r.context)}k</Badge>
+                          <SourceBadge source={r.speed_source} band={r.speed_band_pct} />
+                        </div>
+                      </td>
+                      <td className="hidden px-4 py-3 md:table-cell">
+                        <div className="grid w-[280px] grid-cols-2 gap-x-4 gap-y-1.5">
+                          <ScoreBar label="Quality" v={r.scores.quality} />
+                          <ScoreBar label="Speed" v={r.scores.speed} />
+                          <ScoreBar label="Fit" v={r.scores.fit} />
+                          <ScoreBar label="Context" v={r.scores.context} />
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono text-[13px] text-fg-muted">
+                        {r.vram_gb.toFixed(1)} GB
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() =>
+                            pullWithToast(r.ollama_cmd?.replace(/^ollama run\s+/, "") || r.model_id)
+                          }
+                        >
+                          Install
+                        </Button>
+                      </td>
+                    </tr>
+                    {isOpen && r.split_plan && (
+                      <tr className="bg-panel-2/60">
+                        <td colSpan={4} className="px-4 py-3">
+                          <div className="flex items-center gap-2 text-[12px] text-fg-muted">
+                            <Layers className="h-3.5 w-3.5 text-iris" />
+                            <span className="font-medium">{r.split_plan.summary}</span>
+                            <Badge variant="neutral">{r.run_mode}</Badge>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {r.split_plan.tiers.filter((t) => t.allocated_gb > 0).map((t, i) => (
+                              <Badge key={i} variant="neutral">
+                                {t.name}: {t.allocated_gb.toFixed(1)} GB
+                                {t.layers > 0 && ` · ${t.layers} layers`}
+                              </Badge>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
