@@ -42,10 +42,12 @@ def discover() -> list[LoadedPlugin]:
     for ep in _entry_points():
         try:
             obj = ep.load()
+            # getattr is inside the guard: a raising name/version property
+            # must not break core either.
+            name = getattr(obj, "name", None) or ep.name
+            version = getattr(obj, "version", None) or "?"
         except Exception as exc:  # noqa: BLE001 — a plugin must never break core
             out.append(LoadedPlugin(name=ep.name, version="?", obj=None, error=str(exc)))
             continue
-        name = getattr(obj, "name", None) or ep.name
-        version = getattr(obj, "version", None) or "?"
         out.append(LoadedPlugin(name=name, version=version, obj=obj))
     return out

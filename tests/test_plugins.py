@@ -58,3 +58,22 @@ def test_discover_defaults_missing_metadata(monkeypatch):
 def test_discover_empty(monkeypatch):
     _patch_eps(monkeypatch, [])
     assert discover() == []
+
+
+def test_discover_isolates_raising_metadata_property(monkeypatch):
+    """A plugin whose name/version PROPERTY raises must become an error record,
+    not an exception escaping discover()."""
+
+    class ExplodingMeta:
+        @property
+        def name(self):
+            raise RuntimeError("metadata bomb")
+
+        version = "1.0"
+
+    _patch_eps(monkeypatch, [FakeEntryPoint("volatile", obj=ExplodingMeta())])
+    out = discover()
+    assert len(out) == 1
+    assert not out[0].ok
+    assert "metadata bomb" in out[0].error
+    assert out[0].name == "volatile"  # falls back to the entry-point name
