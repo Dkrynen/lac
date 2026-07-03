@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Gauge } from "lucide-react";
 import { toast } from "sonner";
-import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 
 interface RunFrame {
   run?: number;
-  tps?: number;
+  tokens_per_second?: number;  // per-run frames from build_metrics()
   done?: boolean;
   median_tps?: number;
   error?: string;
@@ -52,12 +52,16 @@ export function BenchmarkDialog({ onDone }: { onDone?: () => void }) {
           setMedian(frame.median_tps ?? null);
           toast.success(`${model}: ${(frame.median_tps ?? 0).toFixed(1)} tok/s (median of ${repeat})`);
           onDone?.();
-        } else if (typeof frame.tps === "number") {
-          setRuns((prev) => [...prev, frame.tps as number]);
+        } else if (typeof frame.tokens_per_second === "number") {
+          setRuns((prev) => [...prev, frame.tokens_per_second as number]);
         }
       }
     } catch (e) {
-      toast.error(`Benchmark failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (abortRef.current?.signal.aborted) {
+        toast.info("Benchmark cancelled");
+      } else {
+        toast.error(`Benchmark failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
       setRunning(false);
     }
@@ -72,9 +76,9 @@ export function BenchmarkDialog({ onDone }: { onDone?: () => void }) {
       </DialogTrigger>
       <DialogContent>
         <DialogTitle className="text-sm font-semibold">Benchmark a model</DialogTitle>
-        <p className="mt-1 text-[12px] text-fg-muted">
+        <DialogDescription className="mt-1 text-[12px] text-fg-muted">
           Runs a deterministic generation and logs real tok/s — recommendations recalibrate from it.
-        </p>
+        </DialogDescription>
         <div className="mt-4 flex items-end gap-3">
           <div className="flex-1">
             <label className="mb-1.5 block text-[12px] font-medium text-fg-muted">Model</label>
