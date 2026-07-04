@@ -14,17 +14,14 @@ Subcommands:
   recommend             Get model recommendations
   browse [query]        Browse model library
   workspace             Manage workspaces
-  benchmark [model]     Benchmark a model's tok/s via Ollama
   config                View/set configuration
   help                  Show this help
 """
 
 import argparse
-import csv
 import json
 import os
 import shutil
-import statistics
 import subprocess
 import sys
 import time
@@ -860,122 +857,6 @@ def cmd_recommend(args):
         sys.exit(1)
 
 
-def cmd_benchmark(args):
-    """Run a model benchmark via Ollama /api/generate and report tok/s."""
-
-    from backend.cookbook.benchmark import build_metrics, log_result, history as read_history
-
-    if args.list:
-        history = read_history()
-        if not history:
-            print(f"{C['yellow']}No benchmark results yet.{C['reset']}")
-            return
-        print_header(f"Benchmark History ({len(history)} runs)")
-        headers = ["Model", "Tok/s", "Eval Count", "Duration", "Prompt"]
-        rows = []
-        for e in reversed(history[-30:]):
-            ts = time.strftime("%H:%M", time.localtime(e.get("timestamp", 0)))
-            prompt_preview = e.get("prompt", "")[:40]
-            rows.append([
-                e.get("model", "?"),
-                f"{e.get('tokens_per_second', 0):.1f}",
-                str(e.get("eval_count", 0)),
-                f"{e.get('eval_duration_ms', 0):.0f}ms",
-                prompt_preview,
-            ])
-        print_table(headers, rows)
-        print(f"\n{C['dim']}Results logged to ~/.model-hub/benchmarks/results.jsonl{C['reset']}")
-        return
-
-    if args.export:
-        history = read_history()
-        if not history:
-            print(f"{C['yellow']}No benchmark results to export.{C['reset']}")
-            return
-        path = Path(args.export)
-        ext = path.suffix.lower()
-        if ext == ".csv":
-            with open(path, "w", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=history[0].keys())
-                w.writeheader()
-                w.writerows(history)
-        elif ext == ".json":
-            with open(path, "w") as f:
-                json.dump(history, f, indent=2)
-        else:
-            # Default: enhanced JSONL.
-            path = path.with_suffix(".jsonl") if not path.suffix else path
-            with open(path, "w") as f:
-                for e in history:
-                    f.write(json.dumps(e) + "\n")
-        print(f"{C['green']}Exported {len(history)} results to {path}{C['reset']}")
-        return
-
-    model = args.model
-    prompt = args.prompt or "Write a short function in Python that calculates fibonacci numbers."
-    num_predict = args.num_predict or 128
-    temperature = args.temperature or 0.0
-    repeat = args.repeat or 1
-
-    from backend.cookbook.hardware import detect
-    from backend.cookbook.calibration import detect_stack, machine_fingerprint
-    _info = detect()
-    _stack = detect_stack(info=_info)
-    _fp = machine_fingerprint(_info, _stack)
-
-    print(f"{C['yellow']}Benchmarking {C['bold']}{model}{C['reset']}...")
-    print(f"{C['gray']}  prompt: {prompt[:60]}...{C['reset']}")
-    print(f"{C['gray']}  num_predict: {num_predict}, temperature: {temperature}, repeat: {repeat}{C['reset']}\n")
-
-    body = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "num_predict": num_predict,
-            "temperature": temperature,
-        },
-    }
-
-    if args.no_cache:
-        body["options"]["prompt_cache_disable"] = True  # type: ignore
-
-    entries = []
-    logged = 0
-    for i in range(repeat):
-        result = ollama("POST", "/api/generate", body, timeout=args.timeout or 300)
-
-        if "error" in result:
-            eprint(f"{C['red']}Error: {result['error']}{C['reset']}")
-            sys.exit(1)
-
-        entry = build_metrics(result, model, prompt, num_predict, temperature,
-                                    fingerprint=_fp, stack=_stack)
-        if log_result(entry):
-            logged += 1
-        entries.append(entry)
-
-    entry = entries[-1]
-    tps_values = [e["tokens_per_second"] for e in entries]
-    median_tps = statistics.median(tps_values)
-
-    print_header("Results")
-    print(f"  {C['bold']}Model:{C['reset']}             {model}")
-    print(f"  {C['bold']}Eval count:{C['reset']}         {entry['eval_count']} tokens")
-    print(f"  {C['bold']}Eval duration:{C['reset']}      {entry['eval_duration_ms']:.0f} ms")
-    print(f"  {C['bold']}Total duration:{C['reset']}     {entry['total_duration_ms']:.0f} ms")
-    print(f"  {C['bold']}Tokens/second:{C['reset']}      {C['green']}{entry['tokens_per_second']:.1f}{C['reset']}")
-    print(f"  {C['bold']}Time to first token:{C['reset']} {entry['time_to_first_token_ms']:.0f} ms")
-    print(f"  {C['bold']}Response length:{C['reset']}    {len(entry['response'])} chars")
-
-    if repeat > 1:
-        per_run = ", ".join(f"{v:.1f}" for v in tps_values)
-        print(f"\n{C['bold']}Runs ({repeat}):{C['reset']}          {per_run}")
-        print(f"  {C['bold']}Median tok/s:{C['reset']}      {C['green']}{median_tps:.1f}{C['reset']}")
-
-    print(f"\n{C['dim']}Logged {logged} of {len(entries)} result(s) to ~/.model-hub/benchmarks/results.jsonl{C['reset']}")
-
-
 def cmd_browse(args):
     query = args.query or ""
     sort = args.sort or "pulls"
@@ -1218,17 +1099,6 @@ def build_parser():
     p_rec.add_argument("--top-k", type=int, default=10, help="Number of recommendations")
     p_rec.add_argument("--no-calibration", action="store_true", help="Ignore measured benchmarks in results.jsonl")
 
-    p_bench = sub.add_parser("benchmark", help="Benchmark model tok/s via Ollama")
-    p_bench.add_argument("model", nargs="?", help="Model name to benchmark")
-    p_bench.add_argument("--prompt", default=None, help="Prompt text (default: fibonacci function)")
-    p_bench.add_argument("--num-predict", type=int, default=128, help="Tokens to generate (default: 128)")
-    p_bench.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature (default: 0)")
-    p_bench.add_argument("--timeout", type=int, default=300, help="Request timeout in seconds (default: 300)")
-    p_bench.add_argument("--no-cache", action="store_true", help="Disable prompt cache for fresh eval")
-    p_bench.add_argument("--repeat", type=int, default=1, help="Run N times and report median tok/s (default: 1)")
-    p_bench.add_argument("--list", action="store_true", help="Show benchmark history")
-    p_bench.add_argument("--export", metavar="FILE", help="Export results to CSV/JSON/JSONL")
-
     p_browse = sub.add_parser("browse", help="Browse model library")
     p_browse.add_argument("query", nargs="?", help="Search query")
     p_browse.add_argument("--sort", default="pulls", choices=["pulls", "vram", "params", "name"], help="Sort order")
@@ -1310,7 +1180,6 @@ def main():
         "recommend": cmd_recommend,
         "rec": cmd_recommend,
         "browse": cmd_browse,
-        "benchmark": cmd_benchmark,
         "workspace": cmd_workspace,
         "ws": cmd_workspace,
         "config": cmd_config,

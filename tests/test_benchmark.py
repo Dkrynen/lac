@@ -104,7 +104,7 @@ def test_benchmark_entry_can_carry_fingerprint():
     assert entry["stack"]["ollama_version"] == "0.31.1"
 
 
-def test_cli_help_includes_benchmark():
+def test_benchmark_subcommand_removed_from_free_cli():
     import subprocess
     import sys
 
@@ -112,10 +112,5 @@ def test_cli_help_includes_benchmark():
         [sys.executable, "-m", "cli", "benchmark", "--help"],
         capture_output=True, text=True, timeout=10,
     )
-    assert r.returncode == 0
-    assert "benchmark" in r.stdout
-    assert "--prompt PROMPT" in r.stdout
-    assert "--num-predict" in r.stdout
-    assert "--temperature" in r.stdout
-    assert "--list" in r.stdout
-    assert "--export FILE" in r.stdout
+    assert r.returncode != 0
+    assert "invalid choice" in r.stderr.lower()
