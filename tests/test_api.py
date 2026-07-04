@@ -95,58 +95,19 @@ def test_recommend_no_calibration_escape_hatch(flask_app, isolated_home):
         assert rec["speed_source"] == "estimated"
 
 
-def test_benchmark_requires_model(flask_app):
-    r = flask_app.test_client().post("/api/benchmark", json={})
-    assert r.status_code == 400
+def test_api_benchmark_route_removed(flask_app):
+    """The free-tier web benchmark surface is gone entirely — benchmarking
+    only happens through LAC Pro's autopilot from now on (spec decision 1).
 
-
-def test_benchmark_streams_runs_and_median(flask_app, isolated_home, monkeypatch):
-    import json as _json
-    import urllib.request
-
-    fake_result = {
-        "eval_count": 100,
-        "eval_duration": 5_000_000_000,
-        "load_duration": 1_000_000_000,
-        "prompt_eval_duration": 1_000_000_000,
-        "total_duration": 7_000_000_000,
-        "response": "ok",
-    }
-
-    class _FakeResp:
-        def __init__(self, data): self._d = data
-        def read(self): return self._d
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-
-    def fake_urlopen(req, timeout=None):
-        return _FakeResp(_json.dumps(fake_result).encode())
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-
-    client = flask_app.test_client()
-    r = client.post("/api/benchmark", json={"model": "test:1b", "repeat": 2})
-    assert r.status_code == 200
-
-    frames = []
-    for line in r.data.decode().split("\n"):
-        line = line.strip()
-        if line.startswith("data:"):
-            payload = line[5:].strip()
-            if payload == "[DONE]":
-                break
-            frames.append(_json.loads(payload))
-
-    run_frames = [f for f in frames if "done" not in f]
-    done = [f for f in frames if f.get("done")]
-    assert len(run_frames) == 2
-    assert len(done) == 1
-    assert run_frames[0]["tokens_per_second"] == 20.0
-    assert done[0]["median_tps"] == 20.0
-    assert done[0]["logged"] == 2
-
-    from backend.cookbook.benchmark import history
-    assert len(history()) == 2
+    This app serves the SPA build from a catch-all static route mounted at
+    "/", so any POST to a path with no registered POST handler resolves to
+    405 (Werkzeug finds the static GET/HEAD/OPTIONS rule for the URL, then
+    rejects the method) rather than a bare 404 — same as any other removed
+    or never-existed /api/* POST route in this app. What matters here is
+    that it's no longer a working 200 benchmark stream.
+    """
+    r = flask_app.test_client().post("/api/benchmark", json={"model": "m:1b"})
+    assert r.status_code == 405
 
 
 def _fake_detect_factory():
