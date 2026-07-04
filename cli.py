@@ -154,6 +154,27 @@ def _download_history() -> list[dict]:
     return history
 
 
+def _notify_model_installed(model_name: str) -> None:
+    """Call every plugin's on_model_installed(model_name), isolated per-plugin
+    (mirrors the register_cli mounting loop in build_parser()). Runs
+    synchronously — a CLI session is already a blocking, watch-it-happen
+    context, so a Pro autopilot hook prints its own progress inline."""
+    from backend import plugins as _plugins
+    try:
+        found = _plugins.discover()
+    except Exception as e:  # noqa: BLE001 — discovery failure must not kill the CLI
+        eprint(f"[plugins] discovery failed: {e}")
+        return
+    for p in found:
+        hook = getattr(p.obj, "on_model_installed", None)
+        if not p.ok or hook is None:
+            continue
+        try:
+            hook(model_name)
+        except Exception as e:  # noqa: BLE001
+            eprint(f"[plugin:{p.name}] on_model_installed failed: {e}")
+
+
 def _update_session(session_id, model, messages):
     try:
         from backend.cookbook.persistence import save_session
@@ -474,6 +495,7 @@ def cmd_pull(args):
                 size_gb = round(chunk["total"] / (1024**3), 2)
             print(f"\n\n{C['green']}✓ {model} installed successfully!{C['reset']}")
             _log_download(model, "completed", size_gb)
+            _notify_model_installed(model)
 
     if not success:
         print(f"\n{C['yellow']}Pull may still be in progress. Check 'lac list'.{C['reset']}")

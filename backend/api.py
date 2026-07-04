@@ -260,6 +260,12 @@ def ollama_pull():
                 decoded = line.decode().strip()
                 if decoded:
                     yield f"data: {decoded}\n\n"
+                    try:
+                        chunk = json.loads(decoded)
+                    except json.JSONDecodeError:
+                        chunk = {}
+                    if chunk.get("status") == "success":
+                        _notify_model_installed_async(model_name)
         except urllib.error.HTTPError as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         except Exception as e:
@@ -904,6 +910,28 @@ def _discover_plugins_safe():
     except Exception as e:  # noqa: BLE001 — discovery failure must not kill the API
         print(f"[plugins] discovery failed: {e}")
         return []
+
+
+def _notify_model_installed(model_name: str) -> None:
+    """Call every plugin's on_model_installed(model_name), isolated per-plugin
+    (mirrors _mount_plugins()'s isolation). A missing hook, a plugin that
+    isn't installed, or a raising hook must never affect the install that
+    already succeeded."""
+    for p in _discover_plugins_safe():
+        hook = getattr(p.obj, "on_model_installed", None)
+        if not p.ok or hook is None:
+            continue
+        try:
+            hook(model_name)
+        except Exception as e:  # noqa: BLE001
+            print(f"[plugin:{p.name}] on_model_installed failed: {e}")
+
+
+def _notify_model_installed_async(model_name: str) -> None:
+    """Fire _notify_model_installed in a background thread so a slow plugin
+    hook (e.g. LAC Pro's benchmark+sweep+apply autopilot) never delays the
+    pull's HTTP response. Mirrors _refresh_library_background()'s pattern."""
+    threading.Thread(target=_notify_model_installed, args=(model_name,), daemon=True).start()
 
 
 @app.route("/api/plugins")

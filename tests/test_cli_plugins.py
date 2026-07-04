@@ -65,3 +65,50 @@ def test_discover_failure_does_not_kill_cli(monkeypatch, capsys):
     args = parser.parse_args(["list"])
     assert args is not None
     assert "discovery failed" in capsys.readouterr().err
+
+
+def test_notify_model_installed_calls_hook(monkeypatch):
+    calls = []
+    plug = SimpleNamespace(name="fake", version="1.0", on_model_installed=lambda m: calls.append(m))
+    _fake_discover(monkeypatch, [LoadedPlugin("fake", "1.0", plug)])
+
+    import cli
+    cli._notify_model_installed("llama3.2:3b")
+    assert calls == ["llama3.2:3b"]
+
+
+def test_notify_model_installed_isolates_raising_hook(monkeypatch, capsys):
+    def boom(model_name):
+        raise RuntimeError("sweep exploded")
+
+    plug = SimpleNamespace(name="bad", version="0.0", on_model_installed=boom)
+    _fake_discover(monkeypatch, [LoadedPlugin("bad", "0.0", plug)])
+
+    import cli
+    cli._notify_model_installed("m:1b")  # must not raise
+    assert "on_model_installed failed" in capsys.readouterr().err
+
+
+def test_notify_model_installed_skips_plugin_without_hook(monkeypatch):
+    plug = SimpleNamespace(name="fake", version="1.0")  # no on_model_installed attr
+    _fake_discover(monkeypatch, [LoadedPlugin("fake", "1.0", plug)])
+
+    import cli
+    cli._notify_model_installed("m:1b")  # must not raise
+
+
+def test_cmd_pull_fires_hook_on_success(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    import cli
+    calls = []
+    monkeypatch.setattr(cli, "ollama_stream",
+                         lambda path, body, timeout=3600: iter([{"status": "success", "total": 0}]))
+    monkeypatch.setattr(cli, "_notify_model_installed", lambda m: calls.append(m))
+
+    args = SimpleNamespace(model="m:1b")
+    cli.cmd_pull(args)
+    assert calls == ["m:1b"]
