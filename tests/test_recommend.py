@@ -177,11 +177,30 @@ def test_sub4bit_hf_cmd_has_no_quant_tag():
     assert ":" not in falcon.ollama_cmd.split("run ", 1)[1]
 
 
-def test_normal_model_cmd_has_quant_for_non_default_quant():
-    recs = recommend(_sys16(), use_case="coding", top_k=30)
-    big = _find(recs, "qwen3:30b-a3b")
-    if big and big.quant != "Q4_K_M":
-        assert ":" in big.ollama_cmd.split("run ", 1)[1]
+def test_bare_id_model_cmd_has_quant_for_non_default_quant():
+    recs = recommend(_sys16(), use_case="general", top_k=91)
+    flash = _find(recs, "deepseek-v4-flash")
+    if flash and flash.quant != "Q4_K_M":
+        assert ":" in flash.ollama_cmd.split("run ", 1)[1]
+
+
+def test_colon_id_model_cmd_never_gets_a_second_colon_segment():
+    """Models whose id already embeds a variant tag (e.g. "gpt-oss:20b",
+    "qwen3:30b-a3b") must never get a quant suffix appended as a second
+    colon segment. Ollama's registry does not publish a quant-suffixed
+    tag for these multi-size families (confirmed empty for gpt-oss's
+    real tag list: only 120b/120b-cloud/20b/20b-cloud/latest exist), so
+    "gpt-oss:20b:q5-k-m" is rejected outright with "invalid model name".
+    The command must always be the bare, always-resolvable base id."""
+    recs = recommend(_sys16(), use_case="coding", top_k=91)
+    for r in recs:
+        if ":" not in r.model.id or r.model.id.startswith("hf.co/"):
+            continue
+        cmd_target = r.ollama_cmd.split("run ", 1)[1]
+        assert cmd_target == r.model.id, (
+            f"{r.model.id} (quant {r.quant}) produced {cmd_target!r} - "
+            "a colon-id model must never grow a second colon segment"
+        )
 
 
 # =============================================================================

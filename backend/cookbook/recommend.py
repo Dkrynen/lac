@@ -217,6 +217,16 @@ def _ollama_cmd(model: ModelEntry, quant: QuantInfo) -> str:
     quant_tag = quant.name.lower().replace("_", "-")
     if quant_tag == "q4-k-m":
         return f"ollama run {model.id}"
+    # model.id for multi-size families already embeds its own tag (e.g.
+    # "gpt-oss:20b", "qwen3:30b-a3b") - Ollama's registry does not publish a
+    # second, quant-suffixed tag for these (confirmed empty for gpt-oss's
+    # real tag list: only 120b/120b-cloud/20b/20b-cloud/latest exist), so
+    # appending ":{quant_tag}" produces an invalid 3-segment reference Ollama
+    # rejects outright ("invalid model name"). Fall back to the bare id,
+    # which is always a real, resolvable tag - Ollama's bundled default
+    # quant for that model+size, rather than a guessed tag that 404s.
+    if ":" in model.id:
+        return f"ollama run {model.id}"
     return f"ollama run {model.id}:{quant_tag}"
 
 
