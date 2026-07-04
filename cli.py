@@ -1153,6 +1153,15 @@ def build_parser():
 
 
 def main():
+    # Windows' default console codepage (cp1252) can't encode glyphs like
+    # '✓' (success lines) or '█'/'░' (the pull progress bar), crashing
+    # commands AFTER their action already succeeded. Force UTF-8 with a
+    # lossy fallback rather than hunting down every current and future
+    # glyph.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     print_banner()
     parser = build_parser()
     args = parser.parse_args()
