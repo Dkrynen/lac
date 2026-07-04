@@ -11,7 +11,7 @@ from typing import Any
 
 from .version import __version__ as CURRENT_VERSION, __github_url__, __download_url__
 
-GITHUB_API = "https://api.github.com/repos/Dkrynen/model-hub/releases/latest"
+GITHUB_API = "https://api.github.com/repos/Dkrynen/lac/releases/latest"
 
 
 class UpdateMode(Enum):
@@ -69,7 +69,7 @@ def is_newer(latest: str, current: str = CURRENT_VERSION) -> bool:
 def check_update(timeout: int = 10) -> dict | None:
     req = urllib.request.Request(GITHUB_API)
     req.add_header("Accept", "application/vnd.github+json")
-    req.add_header("User-Agent", f"Apt/{CURRENT_VERSION}")
+    req.add_header("User-Agent", f"LAC/{CURRENT_VERSION}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
@@ -98,9 +98,9 @@ def check_update(timeout: int = 10) -> dict | None:
 def upgrade_command(method: str | None = None) -> str:
     method = method or detect_install_method()
     if method == "pip":
-        return "pip install --upgrade apt"
+        return "pip install --upgrade lac-ai"
     if method == "uv":
-        return "uv pip install --upgrade apt"
+        return "uv pip install --upgrade lac-ai"
     if method == "pyinstaller":
         return f"download latest exe from {__download_url__}"
     return "git pull && uv pip install -r requirements.txt"

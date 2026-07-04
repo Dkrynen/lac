@@ -1,13 +1,13 @@
 ---
 name: Feature request
-about: Something APT should do
+about: Something LAC should do
 labels: enhancement
 ---
 
 **The problem you're solving**
 
 
-**What you'd like APT to do**
+**What you'd like LAC to do**
 
 
 **Hardware context (if relevant)**

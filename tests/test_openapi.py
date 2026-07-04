@@ -7,7 +7,7 @@ from backend.openapi_gen import generate_openapi
 def test_spec_has_basic_structure():
     spec = generate_openapi(app)
     assert spec["openapi"] == "3.1.0"
-    assert spec["info"]["title"] == "Apt API"
+    assert spec["info"]["title"] == "LAC API"
     assert spec["info"]["version"] != "0.0.0"
     assert "paths" in spec and len(spec["paths"]) > 0
 

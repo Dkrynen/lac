@@ -8,7 +8,7 @@ try:
     from .version import __description__ as APP_DESCRIPTION
 except Exception:
     APP_VERSION = "0.0.0"
-    APP_DESCRIPTION = "Apt — local LLM management toolkit"
+    APP_DESCRIPTION = "LAC — local LLM management toolkit"
 
 _PARAM_RE = re.compile(r"<(?:(?:string|int|float|path|uuid):)?([a-zA-Z_][a-zA-Z0-9_]*)>")
 
@@ -49,7 +49,7 @@ def _tag_for(endpoint: str) -> str:
     for prefix, tag in _OPERATION_TAGS.items():
         if endpoint.startswith(prefix):
             return tag
-    return "apt"
+    return "lac"
 
 
 def _slug(path: str) -> str:
@@ -103,7 +103,7 @@ def generate_openapi(app, server_url: str = "http://127.0.0.1:5050") -> dict:
     return {
         "openapi": "3.1.0",
         "info": {
-            "title": "Apt API",
+            "title": "LAC API",
             "version": APP_VERSION,
             "description": APP_DESCRIPTION,
         },

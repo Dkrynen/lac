@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "apt-hub"
-description = "APT — local AI, sorted. Scans your hardware, recommends models that fit, benchmarks real tok/s, and manages local LLMs via Ollama."
+name = "lac-ai"
+description = "LAC — local AI, sorted. Scans your hardware, recommends models that fit, benchmarks real tok/s, and manages local LLMs via Ollama."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -24,13 +24,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Dkrynen/model-hub"
-Releases = "https://github.com/Dkrynen/model-hub/releases"
+Homepage = "https://github.com/Dkrynen/lac"
+Releases = "https://github.com/Dkrynen/lac/releases"
 
 [project.scripts]
-# `aptm` everywhere — never literally `apt` on POSIX (Debian/Ubuntu collision).
-# The Windows installer may add an `apt` alias; pipx installs stay collision-free.
-aptm = "cli:main"
+lac = "cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "backend.version.__version__" }

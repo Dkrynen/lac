@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Apt CLI — chat with and manage local LLMs via Ollama.
+LAC CLI — chat with and manage local LLMs via Ollama.
 
 Subcommands:
   chat [model]          Interactive chat with a model
@@ -183,7 +183,7 @@ def cmd_chat(args):
 
     model_list = [m["name"] for m in models.get("models", [])]
     if not model_list:
-        eprint(f"{C['yellow']}No models installed. Pull one first: apt pull <model>{C['reset']}")
+        eprint(f"{C['yellow']}No models installed. Pull one first: lac pull <model>{C['reset']}")
         sys.exit(1)
 
     model = args.model or model_list[0]
@@ -433,7 +433,7 @@ def cmd_list(args):
 
     models = result.get("models", [])
     if not models:
-        print(f"{C['yellow']}No models installed. Pull one: apt pull <model>{C['reset']}")
+        print(f"{C['yellow']}No models installed. Pull one: lac pull <model>{C['reset']}")
         return
 
     print_header(f"Installed Models ({len(models)})")
@@ -476,7 +476,7 @@ def cmd_pull(args):
             _log_download(model, "completed", size_gb)
 
     if not success:
-        print(f"\n{C['yellow']}Pull may still be in progress. Check 'apt list'.{C['reset']}")
+        print(f"\n{C['yellow']}Pull may still be in progress. Check 'lac list'.{C['reset']}")
         _log_download(model, "incomplete")
 
 
@@ -553,7 +553,7 @@ def cmd_agents(args):
     from backend.agent import list_agents, get_agent
 
     agents = list_agents()
-    print_header(f"Apt Agents ({len(agents)})")
+    print_header(f"LAC Agents ({len(agents)})")
     for a in agents:
         p = a.permissions
         flags = []
@@ -703,19 +703,19 @@ def cmd_update(args):
 
     method = detect_install_method()
     mode = UpdateMode.parse(args.mode) if args.mode else configured_mode()
-    print_header(f"Apt Update  [dim]({method}, {mode.value})[/dim]")
+    print_header(f"LAC Update  [dim]({method}, {mode.value})[/dim]")
 
     if args.action == "install":
         result = do_update(UpdateMode.ENABLE)
     else:
         info = check_update()
         if info is None:
-            print(f"{C['green']}Apt is up to date.{C['reset']}  {C['dim']}v{_ver()}{C['reset']}")
+            print(f"{C['green']}LAC is up to date.{C['reset']}  {C['dim']}v{_ver()}{C['reset']}")
             return
         print(f"{C['yellow']}Update available: v{info['latest_version']}{C['reset']}  {C['dim']}(current v{info['current_version']}){C['reset']}")
         if info.get("changelog"):
             print(f"\n{C['dim']}{info['changelog'][:600]}{C['reset']}\n")
-        print(f"{C['dim']}Apply with: apt update install{C['reset']}")
+        print(f"{C['dim']}Apply with: lac update install{C['reset']}")
         return
 
     if result.get("update_available") is False and not args.action == "install":
@@ -779,7 +779,7 @@ def cmd_scan(args):
 
     except ImportError as e:
         eprint(f"{C['red']}Error loading hardware scanner: {e}{C['reset']}")
-        eprint(f"{C['gray']}Run from the Apt project directory.{C['reset']}")
+        eprint(f"{C['gray']}Run from the LAC project directory.{C['reset']}")
         sys.exit(1)
 
 
@@ -834,7 +834,7 @@ def cmd_recommend(args):
 
     except ImportError as e:
         eprint(f"{C['red']}Error: {e}{C['reset']}")
-        eprint(f"{C['gray']}Run from the Apt project directory.{C['reset']}")
+        eprint(f"{C['gray']}Run from the LAC project directory.{C['reset']}")
         sys.exit(1)
 
 
@@ -1136,21 +1136,21 @@ def cmd_plugins(args):
 
 def print_banner():
     print()
-    print(f"  {C['bold']}{C['blue']}apt{C['reset']} {C['dim']}v{__version__}  ·  Local AI, sorted.{C['reset']}")
+    print(f"  {C['bold']}{C['green']}lac{C['reset']} {C['dim']}v{__version__}  ·  Local AI, sorted.{C['reset']}")
     print()
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="apt",
-        description=f"Apt CLI v{__version__} — Find your perfect local LLM",
+        prog="lac",
+        description=f"LAC CLI v{__version__} — Find your perfect local LLM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--host", default=None, help="Ollama host (default: OLLAMA_HOST env or localhost:11434)")
 
     sub = parser.add_subparsers(dest="command")
 
-    p_chat = sub.add_parser("chat", aliases=["tui"], help="Launch Apt TUI — full terminal chat interface")
+    p_chat = sub.add_parser("chat", aliases=["tui"], help="Launch LAC TUI — full terminal chat interface")
     p_chat.add_argument("model", nargs="?", help="Model to use (default: first installed)")
     p_chat.add_argument("--system", help="System prompt")
     p_chat.add_argument("--timeout", type=int, default=300, help="Request timeout in seconds (legacy only)")
@@ -1235,7 +1235,7 @@ def build_parser():
 
     p_help = sub.add_parser("help", help="Show this help")
 
-    p_plugins = sub.add_parser("plugins", help="List installed APT plugins")
+    p_plugins = sub.add_parser("plugins", help="List installed LAC plugins")
     p_plugins.set_defaults(func=cmd_plugins)
 
     # --- plugin seam: mount plugin CLI subcommands (never fatal) ---

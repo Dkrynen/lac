@@ -27,7 +27,7 @@ def get_version():
 
 def check_for_update(current_version: str) -> dict | None:
     try:
-        url = "https://api.github.com/repos/Dkrynen/model-hub/releases/latest"
+        url = "https://api.github.com/repos/Dkrynen/lac/releases/latest"
         req = urllib.request.Request(url, method="GET")
         req.add_header("Accept", "application/json")
         resp = urllib.request.urlopen(req, timeout=5)
@@ -93,7 +93,7 @@ def clear_port(port: int, force: bool) -> bool:
         return True
     print(f"  ! Port {port} is already in use by PID(s): {', '.join(pids)}")
     if not force:
-        print(f"  ! This is likely a stale Apt server. Re-run with --force to kill it,")
+        print(f"  ! This is likely a stale LAC server. Re-run with --force to kill it,")
         print(f"  ! or stop it manually:  taskkill /F /PID {pids[0]}")
         print(f"  ! (Refusing to start to avoid serving stale code.)")
         return False
@@ -106,7 +106,7 @@ def clear_port(port: int, force: bool) -> bool:
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Apt web UI server")
+    parser = argparse.ArgumentParser(description="LAC web UI server")
     parser.add_argument("--host", default=HOST, help="Bind host")
     parser.add_argument("--port", type=int, default=PORT, help="Bind port")
     parser.add_argument("--force", action="store_true", help="Kill any process already using the port, then start")
@@ -131,7 +131,7 @@ def main():
 
     print()
     print("  +------------------------------------------+")
-    print(f"  |              Apt v{version:<22} |")
+    print(f"  |              LAC v{version:<22} |")
     print("  |  Find your perfect local LLM              |")
     print("  +------------------------------------------+")
     print()

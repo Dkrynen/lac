@@ -18,8 +18,8 @@ try:
     from .version import __version__ as APP_VERSION, __github_url__, __download_url__
 except ImportError:
     APP_VERSION = "0.0.0"
-    __github_url__ = "https://github.com/Dkrynen/model-hub"
-    __download_url__ = "https://github.com/Dkrynen/model-hub/releases"
+    __github_url__ = "https://github.com/Dkrynen/lac"
+    __download_url__ = "https://github.com/Dkrynen/lac/releases"
 
 # Serve the built web app (web/dist) when present, else the legacy frontend/.
 _DIST = Path(__file__).resolve().parent.parent / "web" / "dist"

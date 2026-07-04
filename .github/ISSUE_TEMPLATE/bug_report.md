@@ -18,5 +18,5 @@ labels: bug
 
 - OS:
 - Install method (installer / pipx / source):
-- Output of `aptm scan` (paste the System block):
+- Output of `lac scan` (paste the System block):
 - Ollama version (`ollama -v`):
