@@ -27,3 +27,18 @@ def test_mono_variant_uses_current_color_only():
     assert 'viewBox="0 0 100 100"' in svg
     assert svg.count("currentColor") == 10        # 6 strokes + 4 via-dot fills
     assert "#4ADE80" not in svg
+
+
+def test_raster_assets_are_committed():
+    for rel in (
+        "app-icon.ico",
+        "favicon.ico",
+        "social-preview.png",
+        "icons/leaf-mark-256.png",
+        "icons/app-icon-256.png",
+        "icons/app-icon-16.png",
+    ):
+        assert (ASSETS / rel).exists(), f"missing committed asset: {rel}"
+    assert (ROOT / "web" / "public" / "favicon.ico").exists()
+    assert (ROOT / "web" / "public" / "favicon.svg").exists()
+    assert (ROOT / "site" / "favicon.svg").exists()
