@@ -58,8 +58,8 @@ jobs:
         with:
           name: windows-build
           path: |
-            dist/APT-Setup-*.exe
-            dist/model-hub.exe
+            dist/LAC-Setup-*.exe
+            dist/lac.exe
 
   # Linux/macOS legs stay as COMPILE PROOF only — their binaries are NOT
   # attached to releases (v1 launch is Windows-first; macOS/Linux are teased
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux-build
-          path: dist/model-hub
+          path: dist/lac
 
   build-macos:
     runs-on: macos-latest
@@ -114,7 +114,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-build
-          path: dist/model-hub
+          path: dist/lac
 
   release:
     needs: [build-windows, build-linux, build-macos]
@@ -128,6 +128,6 @@ jobs:
         with:
           draft: true
           files: |
-            windows-build/APT-Setup-*.exe
+            windows-build/LAC-Setup-*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true

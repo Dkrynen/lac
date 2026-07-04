@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller build spec for APT.
+PyInstaller build spec for LAC.
 
 Produces a single portable .exe with embedded frontend.
 
@@ -88,7 +88,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="model-hub",
+    name="lac",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -101,7 +101,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon="assets/app-icon.ico",
 )
 
 exe_debug = EXE(
@@ -111,7 +111,7 @@ exe_debug = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="model-hub-console",
+    name="lac-console",
     debug=True,
     bootloader_ignore_signals=False,
     strip=False,
@@ -124,5 +124,5 @@ exe_debug = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon="assets/app-icon.ico",
 )

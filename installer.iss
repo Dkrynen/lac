@@ -1,12 +1,12 @@
-; InnoSetup script for APT
+; InnoSetup script for LAC — local AI, sorted.
 ; Build the .exe first with: pyinstaller build.spec
 ; Then compile: iscc installer.iss
 
-#define MyAppName "APT"
+#define MyAppName "LAC"
 #define MyAppVersion "2.2.0"
 #define MyAppPublisher "Duan Krynen"
-#define MyAppURL "https://github.com/Dkrynen/model-hub"
-#define MyAppExeName "model-hub.exe"
+#define MyAppURL "https://github.com/Dkrynen/lac"
+#define MyAppExeName "lac.exe"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -21,8 +21,8 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=LICENSE
 OutputDir=dist
-OutputBaseFilename=APT-Setup-{#MyAppVersion}
-SetupIconFile=
+OutputBaseFilename=LAC-Setup-{#MyAppVersion}
+SetupIconFile=assets\app-icon.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
