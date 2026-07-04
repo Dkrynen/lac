@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from PIL import Image
+
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets"
 
@@ -30,15 +32,46 @@ def test_mono_variant_uses_current_color_only():
 
 
 def test_raster_assets_are_committed():
-    for rel in (
-        "app-icon.ico",
-        "favicon.ico",
-        "social-preview.png",
-        "icons/leaf-mark-256.png",
-        "icons/app-icon-256.png",
-        "icons/app-icon-16.png",
-    ):
-        assert (ASSETS / rel).exists(), f"missing committed asset: {rel}"
+    """Every committed raster must exist AND decode to its exact expected
+    pixel geometry — existence alone would let a corrupted or wrong-size
+    regenerated asset pass silently (per assets/generate_icons.py's own
+    render_mark/render_app_icon/render_social_preview sizing)."""
+
+    # PNGs are square, one file per requested size — icons/{leaf-mark,app-icon}-N.png -> (N, N).
+    png_expected_sizes: dict[str, tuple[int, int]] = {
+        f"icons/leaf-mark-{n}.png": (n, n) for n in (16, 32, 48, 64, 128, 256, 512)
+    }
+    png_expected_sizes.update(
+        {f"icons/app-icon-{n}.png": (n, n) for n in (16, 32, 48, 64, 128, 256, 512)}
+    )
+    png_expected_sizes["social-preview.png"] = (1280, 640)  # render_social_preview()
+
+    for rel, expected_size in png_expected_sizes.items():
+        path = ASSETS / rel
+        assert path.exists(), f"missing committed asset: {rel}"
+        with Image.open(path) as img:
+            assert img.size == expected_size, (
+                f"{rel}: expected {expected_size}, got {img.size}"
+            )
+
+    # .ico files embed multiple resolutions (Pillow's default `Image.open()` only
+    # surfaces the largest frame's `.size`). This venv's Pillow (12.3.0) exposes
+    # the full embedded-size set via both `img.info["sizes"]` and `img.ico.sizes()`
+    # (verified interactively) — assert it matches exactly what
+    # assets/generate_icons.py passes as `sizes=[...]` when writing each .ico.
+    ico_expected_sizes = {
+        "app-icon.ico": {(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)},
+        "favicon.ico": {(16, 16), (32, 32), (48, 48)},
+    }
+    for rel, expected_sizes in ico_expected_sizes.items():
+        path = ASSETS / rel
+        assert path.exists(), f"missing committed asset: {rel}"
+        with Image.open(path) as img:
+            assert img.size[0] > 0 and img.size[1] > 0, f"{rel}: opened with zero size"
+            assert img.ico.sizes() == expected_sizes, (
+                f"{rel}: expected embedded sizes {expected_sizes}, got {img.ico.sizes()}"
+            )
+
     assert (ROOT / "web" / "public" / "favicon.ico").exists()
     assert (ROOT / "web" / "public" / "favicon.svg").exists()
     assert (ROOT / "site" / "favicon.svg").exists()
