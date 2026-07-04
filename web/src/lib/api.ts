@@ -122,6 +122,4 @@ export const api = {
     getJSON<{ state: "idle" | "running" | "done" | "failed_silent" | "not_licensed"; tokens_per_second?: number }>(
       `/api/pro/optimize-status?model=${encodeURIComponent(model)}`
     ),
-  /** List installed plugins (e.g. to check whether "pro" is present/licensed). */
-  plugins: () => getJSON<{ name: string; version: string; ok: boolean; error: string | null }[]>("/api/plugins"),
 };

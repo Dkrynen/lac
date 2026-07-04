@@ -1,5 +1,6 @@
-"""Shared benchmark logic used by both the CLI (``cli.cmd_benchmark``) and the
-web API (``/api/benchmark`` SSE endpoint).
+"""Shared benchmark logic, fed exclusively by LAC Pro's autopilot
+(``lac_pro.autopilot.run_benchmark``) — the free CLI command and web route
+that used to call this were removed when benchmarking became Pro-only.
 
 Keeps the Ollama-response → log-entry transform, the results.jsonl append, and
 the history read in one place so calibration data is written identically no

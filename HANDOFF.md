@@ -57,10 +57,14 @@ provider superseded 2026-07-03: LemonSqueezy -> Polar.sh** (apt-pro commit `a449
 spec doc still says LemonSqueezy, that's historical).
 
 - **Calibration loop** — DONE + merged (measured > calibrated > estimated; per-machine
-  fingerprint; `apt benchmark` feeds it).
+  fingerprint). **Superseded 2026-07-04: benchmarking moved to LAC Pro Autopilot** —
+  the free `apt benchmark` CLI command that used to feed "measured" data is gone;
+  Pro's `on_model_installed` hook feeds it automatically now (docs/superpowers/specs/
+  2026-07-04-lac-pro-autopilot-design.md).
 - **Web technical controls** — DONE + merged to master (`ffca692`): calibration source
-  badges, expandable split-plan rows, per-GPU what-if toggles + RAM-spill switch,
-  browser benchmark launcher streaming `/api/benchmark`.
+  badges, expandable split-plan rows, per-GPU what-if toggles + RAM-spill switch.
+  **Superseded 2026-07-04:** the browser benchmark launcher (`/api/benchmark`) was
+  removed — benchmarking is LAC Pro-only now, triggered automatically on install.
 - **Open-core plugin seam** — DONE + merged to master (`47dde65`): `lac.plugins`
   entry-point discovery (`backend/plugins.py`), CLI + Flask mounting, `lac plugins`,
   `GET /api/plugins`. See `docs/PLUGINS.md`. (TUI agent-tools moved to `lac.tools`.)
