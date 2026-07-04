@@ -4,9 +4,9 @@
 
 **Scans your hardware. Recommends models that actually fit. LAC Pro benchmarks and auto-tunes every one you install.**
 
-LAC is a local-LLM manager built around one question: *what's the best model this machine can actually run?* It scans your GPU/VRAM/RAM/CPU, ranks models against your real hardware (including multi-GPU and RAM-spill split plans), installs them via [Ollama](https://ollama.com), and then — this is the part nobody else does — **calibrates its own predictions against real benchmarks of your rig**, so recommendations get more accurate the more you use it.
+LAC is a local-LLM manager built around one question: *what's the best model this machine can actually run?* It scans your GPU/VRAM/RAM/CPU, ranks models against your real hardware (including multi-GPU and RAM-spill split plans), installs them via [Ollama](https://ollama.com), and tags every recommendation `measured`, `calibrated`, or `estimated` so you always know how much to trust it. **LAC Pro closes the loop** — it auto-benchmarks every model you install, turning those tags into real, measured data points on your exact rig.
 
-<!-- TODO(launch): replace with a 10-15s screengrab GIF showing: lac scan → lac recommend → lac benchmark. Record at 1080p, terminal on dark bg. -->
+<!-- TODO(launch): replace with a 10-15s screengrab GIF showing: lac scan → lac recommend → lac pull. Record at 1080p, terminal on dark bg. -->
 
 ## Features
 
