@@ -1,27 +1,30 @@
 """
-Apt Light theme — light variation of Apt's design.
+Apt Light — Undergrowth light theme (soft paper + deepened green).
+Values come from backend.brand, the Python mirror of web/tokens.css.
 """
 
 from textual.theme import Theme
 
+from backend import brand
+
 apt_light = Theme(
     name="apt-light",
-    primary="#4F6BED",
-    secondary="#7C3AED",
-    accent="#0284C7",
-    foreground="#1E293B",
-    background="#F8FAFC",
-    success="#16A34A",
-    warning="#CA8A04",
-    error="#DC2626",
-    surface="#F1F5F9",
-    panel="#E2E8F0",
-    boost="#CBD5E1",
+    primary=brand.LIGHT_ACCENT,
+    secondary=brand.LIGHT_ACCENT_HOVER,
+    accent=brand.LIGHT_INFO,
+    foreground=brand.LIGHT_TEXT,
+    background=brand.LIGHT_BG,
+    success=brand.LIGHT_SUCCESS,
+    warning=brand.LIGHT_WARNING,
+    error=brand.LIGHT_DANGER,
+    surface=brand.LIGHT_SURFACE,
+    panel=brand.LIGHT_SURFACE_2,
+    boost=brand.LIGHT_SURFACE_3,
     dark=False,
     variables={
         "block-cursor-text-style": "none",
-        "input-selection-background": "#4f6bed 35%",
-        "input-cursor-color": "#4F6BED",
-        "text-muted": "#64748B",
+        "input-selection-background": f"{brand.LIGHT_ACCENT} 35%",
+        "input-cursor-color": brand.LIGHT_ACCENT,
+        "text-muted": brand.LIGHT_TEXT_MUTED,
     },
 )

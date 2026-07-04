@@ -1,28 +1,34 @@
 """
-Apt Dark theme — dark theme matching the current Apt TUI design.
-Uses Textual's Theme API.
+Apt Dark — Undergrowth dark theme (near-black + green).
+Values come from backend.brand, the Python mirror of web/tokens.css.
+
+Module filename and Theme `name="apt-dark"` are kept intentionally
+(Global Constraints — .apt/apt.jsonc already persists "apt-dark" as a
+saved user choice; only the color VALUES changed).
 """
 
 from textual.theme import Theme
 
+from backend import brand
+
 apt_dark = Theme(
     name="apt-dark",
-    primary="#6E7BF2",
-    secondary="#8B96F5",
-    accent="#38BDF8",
-    foreground="#ECECEE",
-    background="#09090B",
-    success="#3DD68C",
-    warning="#F5A524",
-    error="#F6465D",
-    surface="#0F0F13",
-    panel="#15151A",
-    boost="#1B1B22",
+    primary=brand.ACCENT,
+    secondary=brand.ACCENT_HOVER,
+    accent=brand.INFO,
+    foreground=brand.TEXT,
+    background=brand.BG,
+    success=brand.SUCCESS,
+    warning=brand.WARNING,
+    error=brand.DANGER,
+    surface=brand.SURFACE,
+    panel=brand.SURFACE_2,
+    boost=brand.SURFACE_3,
     dark=True,
     variables={
         "block-cursor-text-style": "none",
-        "input-selection-background": "#6E7BF2 35%",
-        "input-cursor-color": "#6E7BF2",
-        "text-muted": "#A1A1AA",
+        "input-selection-background": f"{brand.ACCENT} 35%",
+        "input-cursor-color": brand.ACCENT,
+        "text-muted": brand.TEXT_MUTED,
     },
 )

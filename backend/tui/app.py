@@ -40,7 +40,7 @@ def _llm(method, path, body=None, timeout=30):
 class HelpScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Static("[bold cyan]Apt[/bold cyan] [dim]— Commands[/dim]")
+            yield Static("[bold #4ADE80]LAC[/bold #4ADE80] [dim]— Commands[/dim]")
             yield Static(
                 "  [bold]/clear[/]        Clear conversation\n"
                 "  [bold]/model[/] [n]    Switch model\n"
@@ -89,7 +89,7 @@ class ModelScreen(ModalScreen):
 
 
 class AptApp(App):
-    TITLE = "Apt"
+    TITLE = "LAC"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     Screen { background: $background; color: $foreground; }
@@ -137,7 +137,7 @@ class AptApp(App):
         yield Input(placeholder="Type a message...  (/help for commands)", id="inp")
 
     def on_mount(self) -> None:
-        self.title = "Apt"
+        self.title = "LAC"
         self.sub_title = f"v{__version__}"
         self._register_themes()
         self._bar("[dim]connecting to Ollama...[/dim]")
@@ -201,7 +201,7 @@ class AptApp(App):
             self.model = models[0]
             self._ensure_session()
         if not models:
-            self._bar("[yellow]No models installed. Run: apt pull <model>[/yellow]")
+            self._bar("[yellow]No models installed. Run: lac pull <model>[/yellow]")
             return
         self._bar()
 
@@ -222,7 +222,7 @@ class AptApp(App):
             self.query_one("#bar", Static).update(text)
             return
         self.query_one("#bar", Static).update(
-            f"[bold cyan]Apt[/bold cyan] [dim]v{__version__}[/dim]  |  "
+            f"[bold #4ADE80]LAC[/bold #4ADE80] [dim]v{__version__}[/dim]  |  "
             f"[bold]{self.model or 'no model'}[/bold]  |  "
             f"[dim]{self.model_count} model{'s' if self.model_count != 1 else ''}[/dim]  |  "
             f"[magenta]{self.agent_name}[/magenta]"
