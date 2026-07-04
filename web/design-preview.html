@@ -3,21 +3,21 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Apt — Design System Preview</title>
+<title>LAC — Design System Preview</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 /* ---- tokens (mirrors tokens.css) ---- */
 :root,[data-theme="dark"]{
-  --bg:#09090B;--surface:#0F0F13;--surface-2:#15151A;--surface-3:#1B1B22;--overlay:rgba(4,4,7,.6);
-  --border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.14);
-  --text:#ECECEE;--text-muted:#A1A1AA;--text-faint:#71717A;
-  --accent:#6E7BF2;--accent-hover:#8B96F5;--accent-pressed:#5A67E0;--accent-soft:rgba(110,123,242,.14);--accent-fg:#FFF;
-  --success:#3DD68C;--success-soft:rgba(61,214,140,.14);
-  --warning:#F5A524;--warning-soft:rgba(245,165,36,.16);
-  --danger:#F6465D;--danger-soft:rgba(246,70,93,.14);
-  --info:#38BDF8;--info-soft:rgba(56,189,248,.14);
+  --bg:#08090A;--surface:#0F1210;--surface-2:#141917;--surface-3:#1B211D;--overlay:rgba(4,5,4,.6);
+  --border:rgba(228,232,226,.08);--border-strong:rgba(228,232,226,.14);
+  --text:#E4E8E2;--text-muted:#7C8981;--text-faint:#545C55;
+  --accent:#4ADE80;--accent-hover:#6AEB9C;--accent-pressed:#34C06A;--accent-soft:rgba(74,222,128,.13);--accent-fg:#06170D;
+  --success:#2DD4BF;--success-soft:rgba(45,212,191,.14);
+  --warning:#D9A84C;--warning-soft:rgba(217,168,76,.16);
+  --danger:#E5484D;--danger-soft:rgba(229,72,77,.14);
+  --info:#6FA8D8;--info-soft:rgba(111,168,216,.14);
   --radius-sm:6px;--radius:8px;--radius-lg:12px;--radius-pill:9999px;
   --shadow-sm:0 1px 2px rgba(0,0,0,.30);--shadow-md:0 4px 12px rgba(0,0,0,.35);--shadow-lg:0 12px 32px rgba(0,0,0,.45);
   --font-sans:"Geist","Inter",system-ui,-apple-system,Segoe UI,sans-serif;
@@ -25,12 +25,12 @@
   --ease:cubic-bezier(.22,.61,.36,1);--dur:160ms;
 }
 [data-theme="light"]{
-  --bg:#FAFAFA;--surface:#FFF;--surface-2:#F4F4F5;--surface-3:#E9E9EC;
-  --border:rgba(0,0,0,.08);--border-strong:rgba(0,0,0,.14);
-  --text:#18181B;--text-muted:#52525B;--text-faint:#8A8A93;
-  --accent:#5A67E0;--accent-hover:#6E7BF2;--accent-pressed:#4F52D6;--accent-soft:rgba(90,103,224,.12);--accent-fg:#FFF;
-  --success:#1FAE6A;--success-soft:rgba(31,174,106,.12);--warning:#D98324;--warning-soft:rgba(217,131,36,.14);
-  --danger:#E11D48;--danger-soft:rgba(225,29,72,.12);--info:#0EA5E9;--info-soft:rgba(14,165,233,.12);
+  --bg:#F6F8F4;--surface:#FFF;--surface-2:#ECF2EA;--surface-3:#E0E8DE;
+  --border:rgba(20,40,24,.10);--border-strong:rgba(20,40,24,.18);
+  --text:#12201A;--text-muted:#55635B;--text-faint:#8A968C;
+  --accent:#1FA157;--accent-hover:#4ADE80;--accent-pressed:#178049;--accent-soft:rgba(31,161,87,.12);--accent-fg:#06170D;
+  --success:#12876F;--success-soft:rgba(18,135,111,.12);--warning:#B27A26;--warning-soft:rgba(178,122,38,.14);
+  --danger:#D93840;--danger-soft:rgba(217,56,64,.12);--info:#3E7A9C;--info-soft:rgba(62,122,156,.12);
   --shadow-sm:0 1px 2px rgba(0,0,0,.06);--shadow-md:0 4px 12px rgba(0,0,0,.08);--shadow-lg:0 12px 32px rgba(0,0,0,.12);
 }
 *{box-sizing:border-box}
@@ -152,7 +152,7 @@ a{color:var(--accent);text-decoration:none}
   <aside class="sidebar">
     <div class="brand">
       <div>
-        <div class="logo">apt<span class="cursor"></span></div>
+        <div class="logo">lac<span class="cursor"></span></div>
         <div class="sub">Local AI, sorted.</div>
       </div>
     </div>
@@ -259,18 +259,18 @@ a{color:var(--accent);text-decoration:none}
 
     <!-- FOUNDATIONS -->
     <div class="section">
-      <h2>Color — Iris accent on neutral dark</h2>
+      <h2>Color — Undergrowth accent on neutral dark</h2>
       <div class="swatches">
-        <div class="sw"><div class="chip" style="background:#09090B;border-bottom:1px solid var(--border)"></div><div class="meta"><div class="n">bg</div><div class="h">#09090B</div></div></div>
-        <div class="sw"><div class="chip" style="background:#0F0F13"></div><div class="meta"><div class="n">surface</div><div class="h">#0F0F13</div></div></div>
-        <div class="sw"><div class="chip" style="background:#15151A"></div><div class="meta"><div class="n">surface-2</div><div class="h">#15151A</div></div></div>
-        <div class="sw"><div class="chip" style="background:#1B1B22"></div><div class="meta"><div class="n">surface-3</div><div class="h">#1B1B22</div></div></div>
-        <div class="sw"><div class="chip" style="background:#6E7BF2"></div><div class="meta"><div class="n">accent · Iris</div><div class="h">#6E7BF2</div></div></div>
-        <div class="sw"><div class="chip" style="background:rgba(110,123,242,.14)"></div><div class="meta"><div class="n">accent-soft</div><div class="h">.14α</div></div></div>
-        <div class="sw"><div class="chip" style="background:#3DD68C"></div><div class="meta"><div class="n">success</div><div class="h">#3DD68C</div></div></div>
-        <div class="sw"><div class="chip" style="background:#F5A524"></div><div class="meta"><div class="n">warning</div><div class="h">#F5A524</div></div></div>
-        <div class="sw"><div class="chip" style="background:#F6465D"></div><div class="meta"><div class="n">danger</div><div class="h">#F6465D</div></div></div>
-        <div class="sw"><div class="chip" style="background:#38BDF8"></div><div class="meta"><div class="n">info</div><div class="h">#38BDF8</div></div></div>
+        <div class="sw"><div class="chip" style="background:#08090A;border-bottom:1px solid var(--border)"></div><div class="meta"><div class="n">bg</div><div class="h">#08090A</div></div></div>
+        <div class="sw"><div class="chip" style="background:#0F1210"></div><div class="meta"><div class="n">surface</div><div class="h">#0F1210</div></div></div>
+        <div class="sw"><div class="chip" style="background:#141917"></div><div class="meta"><div class="n">surface-2</div><div class="h">#141917</div></div></div>
+        <div class="sw"><div class="chip" style="background:#1B211D"></div><div class="meta"><div class="n">surface-3</div><div class="h">#1B211D</div></div></div>
+        <div class="sw"><div class="chip" style="background:#4ADE80"></div><div class="meta"><div class="n">accent · green</div><div class="h">#4ADE80</div></div></div>
+        <div class="sw"><div class="chip" style="background:rgba(74,222,128,.13)"></div><div class="meta"><div class="n">accent-soft</div><div class="h">.13α</div></div></div>
+        <div class="sw"><div class="chip" style="background:#2DD4BF"></div><div class="meta"><div class="n">success</div><div class="h">#2DD4BF</div></div></div>
+        <div class="sw"><div class="chip" style="background:#D9A84C"></div><div class="meta"><div class="n">warning</div><div class="h">#D9A84C</div></div></div>
+        <div class="sw"><div class="chip" style="background:#E5484D"></div><div class="meta"><div class="n">danger</div><div class="h">#E5484D</div></div></div>
+        <div class="sw"><div class="chip" style="background:#6FA8D8"></div><div class="meta"><div class="n">info</div><div class="h">#6FA8D8</div></div></div>
       </div>
     </div>
 
@@ -281,7 +281,7 @@ a{color:var(--accent);text-decoration:none}
         <div class="t"><span class="tag">h1</span><span class="t-h1">Scan your hardware</span></div>
         <div class="t"><span class="tag">h2</span><span class="t-h2">Recommended for your GPU</span></div>
         <div class="t"><span class="tag">h3</span><span class="t-h3">Compatibility</span></div>
-        <div class="t"><span class="tag">body</span><span class="t-body">Apt scans your GPU, VRAM, RAM and CPU — then ranks models that actually fit.</span></div>
+        <div class="t"><span class="tag">body</span><span class="t-body">LAC scans your GPU, VRAM, RAM and CPU — then ranks models that actually fit.</span></div>
         <div class="t"><span class="tag">small</span><span class="t-small">Defaults to Q4_K_M quantization for fit estimates.</span></div>
         <div class="t"><span class="tag">caption</span><span class="t-cap">UPDATED 2 MINUTES AGO</span></div>
         <div class="t"><span class="tag">mono</span><span class="t-mono">llama3.2:3b · 3.21B params · 2.0 GB</span></div>

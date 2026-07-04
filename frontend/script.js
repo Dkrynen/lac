@@ -220,11 +220,11 @@ async function checkFirstRun() {
         <h1>First-Run Setup</h1>
         <div class="result-box">
           <h3>Ollama Not Found</h3>
-          <p>Apt requires <strong>Ollama</strong> to download and run models.</p>
+          <p>LAC requires <strong>Ollama</strong> to download and run models.</p>
           <p style="margin:16px 0">
             <a href="${escHtml(r.download_url)}" target="_blank" class="btn" style="text-decoration:none">Download Ollama</a>
           </p>
-          <p style="font-size:0.85rem;color:var(--muted)">Install Ollama, then restart Apt. You can still browse recommendations without it.</p>
+          <p style="font-size:0.85rem;color:var(--muted)">Install Ollama, then restart LAC. You can still browse recommendations without it.</p>
         </div>
         <h2>Downloads</h2>
         <div id="downloads-list"><em>No downloads yet.</em></div>

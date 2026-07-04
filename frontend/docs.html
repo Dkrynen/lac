@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Apt Docs</title>
+<title>LAC Docs</title>
 <link rel="stylesheet" href="docs.css">
 </head>
 <body>
 
 <header class="docs-topbar">
   <div class="back-link"><a href="/">&larr; App</a></div>
-  <a href="/docs/api" class="logo">Apt <small>docs</small></a>
+  <a href="/docs/api" class="logo">LAC <small>docs</small></a>
   <nav>
     <a href="/docs/api" class="active" data-docs-page="api">API Reference</a>
     <a href="/docs/guide" data-docs-page="guide">User Guide</a>
@@ -49,8 +49,8 @@
 <main class="docs-content" id="docs-content">
 
 <div id="page-landing">
-<h1>Apt</h1>
-<p class="subtitle">Find your perfect local LLM. Apt scans your hardware, recommends the best-fit models, and lets you install and chat with them — all from the command line or web UI.</p>
+<h1>LAC</h1>
+<p class="subtitle">Find your perfect local LLM. LAC scans your hardware, recommends the best-fit models, and lets you install and chat with them — all from the command line or web UI.</p>
 
 <div class="docs-cards">
   <a href="/docs/api" class="docs-card">
@@ -66,7 +66,7 @@
   <a href="/" class="docs-card" style="border-color:var(--docs-accent)">
     <div class="card-icon">&#128640;</div>
     <div class="card-title">Launch App</div>
-    <div class="card-desc">Open the Apt web interface — scan your hardware, browse models, and start chatting.</div>
+    <div class="card-desc">Open the LAC web interface — scan your hardware, browse models, and start chatting.</div>
   </a>
 </div>
 
@@ -83,7 +83,7 @@
 
 <div id="page-api">
 <h1>API Reference</h1>
-<p class="subtitle">Complete reference for all Apt REST API endpoints. All responses are JSON unless otherwise noted. The server runs at <code>http://127.0.0.1:5050</code>.</p>
+<p class="subtitle">Complete reference for all LAC REST API endpoints. All responses are JSON unless otherwise noted. The server runs at <code>http://127.0.0.1:5050</code>.</p>
 
 <h2 id="sys">System</h2>
 
@@ -138,7 +138,7 @@
 <div class="endpoint">
   <div class="head"><span class="method get">GET</span> <code>/api/system/version</code></div>
   <p>Returns app name, version, GitHub URL, and download URL.</p>
-  <details><summary>Example</summary><pre><code>{"version": "2.2.0", "app_name": "Apt", "github_url": "https://github.com/Dkrynen/model-hub", "download_url": "https://github.com/Dkrynen/model-hub/releases"}</code></pre></details>
+  <details><summary>Example</summary><pre><code>{"version": "2.2.0", "app_name": "LAC", "github_url": "https://github.com/Dkrynen/model-hub", "download_url": "https://github.com/Dkrynen/model-hub/releases"}</code></pre></details>
 </div>
 
 <div class="endpoint">
@@ -312,7 +312,7 @@ Base URL: <code>http://127.0.0.1:5050</code>. Set <code>OLLAMA_HOST</code> envir
 
 <div id="page-guide" style="display:none">
 <h1>User Guide</h1>
-<p class="subtitle">Everything you need to know about using Apt &mdash; from first launch to advanced workspace management.</p>
+<p class="subtitle">Everything you need to know about using LAC &mdash; from first launch to advanced workspace management.</p>
 
 <h2 id="guide-quickstart">Quick Start</h2>
 
@@ -320,7 +320,7 @@ Base URL: <code>http://127.0.0.1:5050</code>. Set <code>OLLAMA_HOST</code> envir
 <ol>
   <li><strong>Install Ollama</strong> &mdash; Download from <a href="https://ollama.com/download" target="_blank">ollama.com/download</a> and run the installer.</li>
   <li><strong>Pull your first model</strong> &mdash; In a terminal, run <code>ollama pull qwen3:7b</code> (or any model from the library).</li>
-  <li><strong>Start Apt</strong> &mdash; Run <code>python server.py</code> from the project directory and open <a href="http://127.0.0.1:5050" target="_blank">http://127.0.0.1:5050</a>.</li>
+  <li><strong>Start LAC</strong> &mdash; Run <code>python server.py</code> from the project directory and open <a href="http://127.0.0.1:5050" target="_blank">http://127.0.0.1:5050</a>.</li>
 </ol>
 
 <h3>Starting the server</h3>
@@ -365,7 +365,7 @@ python cli.py help               # Full command list</code></pre>
 <h3>VRAM override</h3>
 <p>In the web UI, you can set a manual VRAM value in the <strong>Scan &amp; Recommend</strong> page. This is useful when your GPU isn't detected automatically, you want to test different hardware, or you're sharing VRAM with other processes.</p>
 <h2 id="guide-recommendations">Recommendations</h2>
-<p>Apt scores 65+ models across four dimensions to find the best fit for your hardware:</p>
+<p>LAC scores 65+ models across four dimensions to find the best fit for your hardware:</p>
 
 <table>
   <tr><th>Score</th><th>Weight</th><th>What it measures</th></tr>
