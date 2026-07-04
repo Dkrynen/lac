@@ -3,13 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>APT — local AI, sorted.</title>
+<title>LAC — local AI, sorted.</title>
 <meta name="description" content="Scans your hardware. Recommends local LLMs that actually fit. Benchmarks real tok/s — not guesses.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root {
-    --bg: #09090B; --panel: #131316; --panel-2: #1A1A1F; --line: #26262C;
-    --fg: #EDEDF0; --fg-muted: #9C9CA6; --fg-faint: #6B6B75;
-    --accent: #6E7BF2; --accent-hover: #8B96F5; --accent-soft: rgba(110,123,242,.14);
+    --bg: #08090A; --panel: #0F1210; --panel-2: #141917; --line: #1B211D;
+    --fg: #E4E8E2; --fg-muted: #7C8981; --fg-faint: #545C55;
+    --accent: #4ADE80; --accent-hover: #6AEB9C; --accent-soft: rgba(74,222,128,.13);
+    --accent-fg: #06170D;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: var(--bg); color: var(--fg); font: 16px/1.6 ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
@@ -18,12 +20,13 @@
   a:hover { text-decoration: underline; }
 
   header { padding: 96px 0 64px; text-align: center; }
+  .mark { display: block; margin: 0 auto 14px; }
   .logo { font-size: 15px; letter-spacing: .28em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
   h1 { font-size: clamp(34px, 6vw, 56px); font-weight: 800; letter-spacing: -0.02em; margin: 18px 0 14px; }
   .sub { font-size: 19px; color: var(--fg-muted); max-width: 620px; margin: 0 auto 34px; }
   .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
   .btn { display: inline-block; padding: 13px 26px; border-radius: 10px; font-weight: 600; font-size: 15px; }
-  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary { background: var(--accent); color: var(--accent-fg); }
   .btn-primary:hover { background: var(--accent-hover); text-decoration: none; }
   .btn-ghost { border: 1px solid var(--line); color: var(--fg); background: var(--panel); }
   .btn-ghost:hover { border-color: var(--accent); text-decoration: none; }
@@ -70,15 +73,27 @@
 <body>
 
 <header class="wrap">
-  <div class="logo">APT</div>
+  <svg class="mark" width="56" height="56" viewBox="0 0 100 100" aria-hidden="true">
+    <polygon points="50,8 68,20 78,38 80,54 72,70 58,82 50,92 42,82 28,70 20,54 22,38 32,20" fill="none" stroke="#4ADE80" stroke-width="3" stroke-linejoin="round"/>
+    <polyline points="50,88 50,24" fill="none" stroke="#4ADE80" stroke-width="2.5" stroke-linecap="round"/>
+    <polyline points="50,74 66,74 66,60" fill="none" stroke="#4ADE80" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="50,74 34,74 34,60" fill="none" stroke="#4ADE80" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="50,50 64,50 64,38" fill="none" stroke="#4ADE80" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="50,50 36,50 36,38" fill="none" stroke="#4ADE80" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="66" cy="60" r="2.5" fill="#4ADE80"/>
+    <circle cx="34" cy="60" r="2.5" fill="#4ADE80"/>
+    <circle cx="64" cy="38" r="2.5" fill="#4ADE80"/>
+    <circle cx="36" cy="38" r="2.5" fill="#4ADE80"/>
+  </svg>
+  <div class="logo">LAC</div>
   <h1>Local AI, sorted.</h1>
   <p class="sub">Scans your hardware. Recommends local LLMs that actually fit.
      Benchmarks real tok/s on <em>your</em> rig — not guesses off a spec sheet.</p>
   <div class="cta-row">
-    <a class="btn btn-primary" href="https://github.com/Dkrynen/model-hub/releases/latest">Download for Windows</a>
-    <a class="btn btn-ghost" href="https://github.com/Dkrynen/model-hub">View on GitHub</a>
+    <a class="btn btn-primary" href="https://github.com/Dkrynen/lac/releases/latest">Download for Windows</a>
+    <a class="btn btn-ghost" href="https://github.com/Dkrynen/lac">View on GitHub</a>
   </div>
-  <p class="hint">CLI on any platform: <code>pipx install git+https://github.com/Dkrynen/model-hub</code> → <code>aptm scan</code></p>
+  <p class="hint">CLI on any platform: <code>pipx install git+https://github.com/Dkrynen/lac</code> → <code>lac scan</code></p>
 </header>
 
 <div class="wrap">
@@ -92,14 +107,14 @@
     <div class="card">
       <div class="k">Dyno</div>
       <h3>Real numbers, not vibes</h3>
-      <p>One-click benchmarks measure actual tokens/second, and APT calibrates its own
+      <p>One-click benchmarks measure actual tokens/second, and LAC calibrates its own
          predictions against them. The more you benchmark, the smarter it gets about your machine.</p>
     </div>
     <div class="card">
       <div class="k">Chat</div>
       <h3>Built-in chat &amp; web UI</h3>
       <p>Full chat interface, web dashboard on <code>:5050</code>, and a terminal TUI.
-         However you like to work, APT has a face for it.</p>
+         However you like to work, LAC has a face for it.</p>
     </div>
   </div>
 </div>
@@ -111,12 +126,12 @@
     <p class="lead">Everything above is free, forever. Pro is for squeezing out every tok/s your hardware can deliver — automatically.</p>
     <div class="pro">
       <ul>
-        <li><strong>Stop guessing your GPU offload.</strong> <code>apt pro tune</code> benchmarks every layer-split config on your exact rig and applies the fastest one. No more afternoon wasted manually tweaking <code>num_gpu</code>.</li>
+        <li><strong>Stop guessing your GPU offload.</strong> <code>lac pro tune</code> benchmarks every layer-split config on your exact rig and applies the fastest one. No more afternoon wasted manually tweaking <code>num_gpu</code>.</li>
         <li><strong>Save optimal settings per model.</strong> Switch between models without re-tuning. Layer splits, context presets, iGPU control — one profile per model, applied automatically.</li>
         <li><strong>Know when something changed.</strong> Insights tracks your tok/s baseline over time and flags the moment a driver update, OS patch, or model swap costs you performance.</li>
       </ul>
       <p><span class="price">$3/month billed annually</span> — activation via license key, no account needed.</p>
-      <a class="btn btn-primary" href="https://buy.polar.sh/polar_cl_jGkeY1nYS0xdgVGAxdFLn7M0yeovlR9FVtyqY1Mh9HX" style="margin-top: 8px;">Get APT Pro</a>
+      <a class="btn btn-primary" href="https://buy.polar.sh/polar_cl_jGkeY1nYS0xdgVGAxdFLn7M0yeovlR9FVtyqY1Mh9HX" style="margin-top: 8px;">Get LAC Pro</a>
     </div>
   </div>
 </section>
@@ -129,7 +144,7 @@
     <div class="waitlist">
       <strong>Get notified</strong>
       <!-- TODO(launch): replace with real endpoint — Tally.so form or Buttondown newsletter -->
-      <form action="mailto:dkrynen9@gmail.com?subject=APT%20waitlist" method="post" enctype="text/plain">
+      <form action="mailto:dkrynen9@gmail.com?subject=LAC%20waitlist" method="post" enctype="text/plain">
         <input type="email" name="email" placeholder="you@example.com" required>
         <button class="btn btn-primary" type="submit">Join the waitlist</button>
       </form>
@@ -142,8 +157,8 @@
     <h2>Frequently asked</h2>
     <div class="cards">
       <div class="card">
-        <h3>Does APT require Ollama?</h3>
-        <p>Yes. APT manages models through Ollama. Install <a href="https://ollama.com/download">Ollama</a> first — APT handles the rest.</p>
+        <h3>Does LAC require Ollama?</h3>
+        <p>Yes. LAC manages models through Ollama. Install <a href="https://ollama.com/download">Ollama</a> first — LAC handles the rest.</p>
       </div>
       <div class="card">
         <h3>Is it actually free?</h3>
@@ -158,8 +173,8 @@
         <p>NVIDIA (all), AMD via Vulkan (RX 6800 XT verified), Apple Silicon M-series, Intel Arc. CPU-only works too — just slower.</p>
       </div>
       <div class="card">
-        <h3>Why <code>aptm</code> instead of <code>apt</code>?</h3>
-        <p>Debian already owns <code>apt</code> on Linux. Windows keeps <code>apt</code>; Linux/macOS use <code>aptm</code> (APT-manager).</p>
+        <h3>What does LAC stand for?</h3>
+        <p><strong>Local AI Companion.</strong> One command (<code>lac</code>), one job: find the best model your machine can actually run, then prove it with real benchmarks.</p>
       </div>
       <div class="card">
         <h3>Is there a GUI?</h3>
@@ -170,8 +185,8 @@
 </section>
 
 <footer class="wrap">
-  APT · <a href="https://github.com/Dkrynen/model-hub">GitHub</a> ·
-  <a href="https://github.com/Dkrynen/model-hub/blob/master/LICENSE">MIT (core)</a> ·
+  LAC · <a href="https://github.com/Dkrynen/lac">GitHub</a> ·
+  <a href="https://github.com/Dkrynen/lac/blob/master/LICENSE">MIT (core)</a> ·
   built by <a href="https://github.com/Dkrynen">Duan Krynen</a>
 </footer>
 
