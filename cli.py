@@ -947,7 +947,11 @@ def cmd_workspace(args):
         if not name:
             eprint(f"{C['red']}Workspace name required.{C['reset']}")
             sys.exit(1)
-        ws = create_workspace(name, desc)
+        try:
+            ws = create_workspace(name, desc)
+        except ValueError as e:
+            eprint(f"{C['red']}{e}{C['reset']}")
+            sys.exit(1)
         print(f"{C['green']}✓ Created workspace '{ws.name}' (id: {ws.id}){C['reset']}")
 
     elif args.action == "delete":

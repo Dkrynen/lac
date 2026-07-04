@@ -124,10 +124,29 @@ def get_workspace(workspace_id: str) -> Optional[Workspace]:
     return None
 
 
+def _resolve_within_workspaces(ws_id: str) -> Path:
+    """Resolve ws_id under _workspaces_dir() and refuse a path that would
+    escape the sandbox via '/', '\\', '..', or an absolute path.
+
+    Proven exploit (pre-launch audit): POST /api/workspaces
+    {"name": "../../../../Temp/x"} created a real directory outside
+    ~/.model-hub/workspaces (invisible to list_workspaces(), which only
+    lists direct children). delete_workspace() had the identical
+    unsanitized join before shutil.rmtree() -- an equally real arbitrary
+    recursive-delete primitive. Raises ValueError if ws_id would not land
+    strictly inside _workspaces_dir().
+    """
+    base = _workspaces_dir().resolve()
+    candidate = (base / ws_id).resolve()
+    if candidate == base or base not in candidate.parents:
+        raise ValueError(f"invalid workspace id: {ws_id!r}")
+    return candidate
+
+
 def create_workspace(name: str, description: str = "") -> Workspace:
     import time
     ws_id = name.lower().replace(" ", "-").replace("_", "-")
-    ws_dir = _workspaces_dir() / ws_id
+    ws_dir = _resolve_within_workspaces(ws_id)
     ws_dir.mkdir(parents=True, exist_ok=True)
     now = time.time()
     meta = ws_dir / "workspace.json"
@@ -142,7 +161,10 @@ def create_workspace(name: str, description: str = "") -> Workspace:
 def delete_workspace(workspace_id: str) -> bool:
     if workspace_id == DEFAULT_WORKSPACE:
         return False
-    ws_dir = _workspaces_dir() / workspace_id
+    try:
+        ws_dir = _resolve_within_workspaces(workspace_id)
+    except ValueError:
+        return False
     if ws_dir.exists():
         import shutil
         shutil.rmtree(ws_dir)

@@ -707,7 +707,10 @@ def api_create_workspace():
     name = data.get("name", "").strip()
     if not name:
         return jsonify({"error": "Workspace name required"}), 400
-    ws = create_workspace(name, data.get("description", ""))
+    try:
+        ws = create_workspace(name, data.get("description", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"id": ws.id, "name": ws.name, "description": ws.description}), 201
 
 
