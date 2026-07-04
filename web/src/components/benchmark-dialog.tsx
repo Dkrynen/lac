@@ -101,7 +101,7 @@ export function BenchmarkDialog({ onDone }: { onDone?: () => void }) {
         </div>
         {(running || runs.length > 0) && (
           <div className="mt-4">
-            <Progress value={median !== null ? 100 : Math.min(95, (runs.length / repeat) * 100)} variant="iris" className="h-1.5" />
+            <Progress value={median !== null ? 100 : Math.min(95, (runs.length / repeat) * 100)} variant="verdant" className="h-1.5" />
             <div className="mt-2 flex flex-wrap gap-2 font-mono text-[12px] text-fg-muted">
               {runs.map((t, i) => <span key={i}>run {i + 1}: {t.toFixed(1)} tok/s</span>)}
               {median !== null && <span className="font-semibold text-fg">median: {median.toFixed(1)} tok/s</span>}

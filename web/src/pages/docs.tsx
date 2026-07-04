@@ -40,7 +40,7 @@ export function Docs() {
     <>
       <PageHeader
         title="Docs"
-        subtitle="API reference and a quick guide to running Apt from the terminal."
+        subtitle="API reference and a quick guide to running LAC from the terminal."
       >
         <a
           href="https://github.com/Dkrynen/model-hub"
@@ -66,7 +66,7 @@ export function Docs() {
           <Card className="prose-chat max-w-none p-5">
             <h2>Quick start</h2>
             <p>
-              Apt runs on top of <a href="https://ollama.com">Ollama</a>. Install it, then start the
+              LAC runs on top of <a href="https://ollama.com">Ollama</a>. Install it, then start the
               server and open the dashboard.
             </p>
             <pre>
@@ -99,7 +99,7 @@ python cli.py tui         # terminal UI`}</code>
             placeholder="Filter endpoints…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            className="mb-3 h-9 w-full rounded border border-line bg-panel-2 px-3 text-sm text-fg placeholder:text-fg-faint focus:border-iris focus:outline-none focus:ring-2 focus:ring-iris-soft"
+            className="mb-3 h-9 w-full rounded border border-line bg-panel-2 px-3 text-sm text-fg placeholder:text-fg-faint focus:border-verdant focus:outline-none focus:ring-2 focus:ring-verdant-soft"
           />
           {spec.loading ? (
             <Skeleton className="h-72 w-full" />

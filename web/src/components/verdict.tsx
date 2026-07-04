@@ -6,14 +6,14 @@ export type Verdict = "fits" | "offload" | "too_large" | "unknown";
 export interface VerdictInfo {
   label: string;
   badge: BadgeProps["variant"];
-  bar: "success" | "warning" | "danger" | "iris";
+  bar: "success" | "warning" | "danger" | "verdant";
 }
 
 const MAP: Record<Verdict, VerdictInfo> = {
   fits: { label: "Fits GPU", badge: "success", bar: "success" },
   offload: { label: "Offload", badge: "warning", bar: "warning" },
   too_large: { label: "Too large", badge: "danger", bar: "danger" },
-  unknown: { label: "Unknown fit", badge: "neutral", bar: "iris" },
+  unknown: { label: "Unknown fit", badge: "neutral", bar: "verdant" },
 };
 
 /** Compute a verdict from a VRAM requirement (GB) and total VRAM (GB). */

@@ -28,7 +28,7 @@ export function Sidebar() {
     <aside className="sticky top-0 flex h-screen w-[232px] shrink-0 flex-col border-r border-line bg-panel">
       <Link to="/" className="block px-4 pb-4 pt-[18px]">
         <div className="font-mono text-[19px] font-semibold leading-none tracking-tight">
-          apt<span className="ml-0.5 inline-block h-[16px] w-[7px] translate-y-[2px] animate-blink rounded-[1px] bg-iris" />
+          lac<span className="ml-0.5 inline-block h-[16px] w-[7px] translate-y-[2px] animate-blink rounded-[1px] bg-verdant" />
         </div>
         <div className="mt-1.5 text-[10px] uppercase tracking-[0.14em] text-fg-faint">
           Local AI, sorted.
@@ -44,7 +44,7 @@ export function Sidebar() {
             className={({ isActive }) =>
               cn(
                 "flex items-center gap-2.5 rounded px-2.5 py-2 text-[13.5px] font-medium transition-colors",
-                isActive ? "bg-iris-soft text-iris" : "text-fg-muted hover:bg-panel-3 hover:text-fg"
+                isActive ? "bg-verdant-soft text-verdant" : "text-fg-muted hover:bg-panel-3 hover:text-fg"
               )
             }
           >
@@ -61,7 +61,7 @@ export function Sidebar() {
           className={({ isActive }) =>
             cn(
               "flex items-center gap-2.5 rounded px-2.5 py-2 text-[13.5px] font-medium transition-colors",
-              isActive ? "bg-iris-soft text-iris" : "text-fg-muted hover:bg-panel-3 hover:text-fg"
+              isActive ? "bg-verdant-soft text-verdant" : "text-fg-muted hover:bg-panel-3 hover:text-fg"
             )
           }
         >
@@ -73,7 +73,7 @@ export function Sidebar() {
           className={({ isActive }) =>
             cn(
               "flex items-center gap-2.5 rounded px-2.5 py-2 text-[13.5px] font-medium transition-colors",
-              isActive ? "bg-iris-soft text-iris" : "text-fg-muted hover:bg-panel-3 hover:text-fg"
+              isActive ? "bg-verdant-soft text-verdant" : "text-fg-muted hover:bg-panel-3 hover:text-fg"
             )
           }
         >
@@ -84,7 +84,7 @@ export function Sidebar() {
 
       <div className="mt-auto px-3 pb-3">
         <div className="rounded-lg border border-line bg-panel-2 px-3 py-2 text-[11.5px] text-fg-faint">
-          Apt {version?.version ? `v${version.version}` : ""}
+          LAC {version?.version ? `v${version.version}` : ""}
         </div>
       </div>
     </aside>

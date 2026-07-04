@@ -1,4 +1,4 @@
-// Thin client for the Apt Flask API. In dev Vite proxies /api -> :5050;
+// Thin client for the LAC Flask API. In dev Vite proxies /api -> :5050;
 // in prod Flask serves the built bundle on the same origin.
 
 export async function getJSON<T>(url: string): Promise<T> {

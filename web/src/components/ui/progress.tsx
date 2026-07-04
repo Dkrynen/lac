@@ -1,9 +1,9 @@
 import { cn } from "@/lib/utils";
 
-type Variant = "iris" | "success" | "warning" | "danger" | "info";
+type Variant = "verdant" | "success" | "warning" | "danger" | "info";
 
 const fills: Record<Variant, string> = {
-  iris: "bg-iris",
+  verdant: "bg-verdant",
   success: "bg-success",
   warning: "bg-warning",
   danger: "bg-danger",
@@ -12,7 +12,7 @@ const fills: Record<Variant, string> = {
 
 export function Progress({
   value,
-  variant = "iris",
+  variant = "verdant",
   className,
 }: {
   value: number; // 0..100
@@ -23,7 +23,7 @@ export function Progress({
   return (
     <div className={cn("h-1.5 w-full overflow-hidden rounded-pill bg-panel-3", className)}>
       <div
-        className={cn("h-full rounded-pill transition-[width] duration-300 ease-apt", fills[variant])}
+        className={cn("h-full rounded-pill transition-[width] duration-300 ease-lac", fills[variant])}
         style={{ width: `${v}%` }}
       />
     </div>

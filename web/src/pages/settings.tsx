@@ -52,7 +52,7 @@ export function Settings() {
         {/* Connection */}
         <Card className="p-5">
           <h2 className="text-sm font-semibold">Engine</h2>
-          <p className="mt-0.5 text-[13px] text-fg-muted">Where Apt talks to Ollama.</p>
+          <p className="mt-0.5 text-[13px] text-fg-muted">Where LAC talks to Ollama.</p>
 
           <div className="mt-4 space-y-3">
             <Field label="Ollama host">
@@ -105,7 +105,7 @@ export function Settings() {
           </h2>
           <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-[13px]">
             <dt className="text-fg-muted">App</dt>
-            <dd className="font-mono">Apt v{ver.data?.version ?? "—"}</dd>
+            <dd className="font-mono">LAC v{ver.data?.version ?? "—"}</dd>
             <dt className="text-fg-muted">Workspace</dt>
             <dd className="font-mono">{cfg.data?.workspace ?? "—"}</dd>
             <dt className="text-fg-muted">Source</dt>
@@ -114,7 +114,7 @@ export function Settings() {
                 href={ver.data?.github_url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1.5 text-iris hover:underline"
+                className="inline-flex items-center gap-1.5 text-verdant hover:underline"
               >
                 <Github className="h-3.5 w-3.5" /> GitHub
               </a>

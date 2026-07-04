@@ -138,7 +138,7 @@ export function Chat() {
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center text-center">
-              <Sparkles className="mb-3 h-7 w-7 text-iris" />
+              <Sparkles className="mb-3 h-7 w-7 text-verdant" />
               <p className="text-sm font-medium">Start a conversation</p>
               <div className="mt-4 grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
@@ -199,7 +199,7 @@ function Bubble({ role, content, model }: { role: string; content: string; model
       <div
         className={cn(
           "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-pill text-[11px] font-semibold",
-          user ? "bg-iris text-iris-fg" : "bg-panel-3 text-fg-muted"
+          user ? "bg-verdant text-verdant-fg" : "bg-panel-3 text-fg-muted"
         )}
       >
         {user ? "You" : "A"}
@@ -209,7 +209,7 @@ function Bubble({ role, content, model }: { role: string; content: string; model
         <div
           className={cn(
             "rounded-lg px-3.5 py-2.5 text-[14px]",
-            user ? "bg-iris text-iris-fg" : "bg-panel-2 text-fg"
+            user ? "bg-verdant text-verdant-fg" : "bg-panel-2 text-fg"
           )}
         >
           {user ? content : <Markdown text={content || "…"} />}

@@ -73,7 +73,7 @@ export function Scan() {
       ) : (
         <Card className="p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-            <Cpu className="h-4 w-4 text-iris" /> System
+            <Cpu className="h-4 w-4 text-verdant" /> System
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat icon={<Microchip />} label="CPU" value={scan.data.cpu} sub={`${scan.data.cores} cores`} />
@@ -125,7 +125,7 @@ export function Scan() {
             step={1}
             value={manualVram}
             onChange={(e) => setManualVram(Number(e.target.value))}
-            className="h-1.5 w-full cursor-pointer appearance-none rounded-pill bg-panel-3 accent-iris"
+            className="h-1.5 w-full cursor-pointer appearance-none rounded-pill bg-panel-3 accent-verdant"
           />
           <div className="mt-1 flex justify-between text-[10px] text-fg-faint">
             <span>0</span><span>64</span><span>128</span><span>192</span><span>256</span>
@@ -245,7 +245,7 @@ export function Scan() {
                       <tr className="bg-panel-2/60">
                         <td colSpan={4} className="px-4 py-3">
                           <div className="flex items-center gap-2 text-[12px] text-fg-muted">
-                            <Layers className="h-3.5 w-3.5 text-iris" />
+                            <Layers className="h-3.5 w-3.5 text-verdant" />
                             <span className="font-medium">{r.split_plan.summary}</span>
                             <Badge variant="neutral">{r.run_mode}</Badge>
                           </div>
@@ -302,7 +302,7 @@ function ScoreBar({ label, v }: { label: string; v: number }) {
   return (
     <div className="flex items-center gap-2">
       <span className="w-12 shrink-0 text-[10.5px] text-fg-faint">{label}</span>
-      <Progress value={pct} variant={pct >= 75 ? "success" : pct >= 50 ? "iris" : "warning"} className="h-1.5" />
+      <Progress value={pct} variant={pct >= 75 ? "success" : pct >= 50 ? "verdant" : "warning"} className="h-1.5" />
       <span className="w-7 shrink-0 text-right font-mono text-[10px] text-fg-faint">{pct}</span>
     </div>
   );

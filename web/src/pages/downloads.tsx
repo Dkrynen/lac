@@ -12,7 +12,7 @@ export function Downloads() {
 
   return (
     <>
-      <PageHeader title="Downloads" subtitle="History of models pulled through Apt." />
+      <PageHeader title="Downloads" subtitle="History of models pulled through LAC." />
 
       {dl.error ? (
         <EmptyState title="No download history yet" hint="Pulled models will show up here." />

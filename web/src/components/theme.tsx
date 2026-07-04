@@ -7,7 +7,7 @@ interface ThemeCtx {
   toggle: () => void;
 }
 const Ctx = createContext<ThemeCtx | null>(null);
-const KEY = "apt-theme";
+const KEY = "lac-theme";
 
 function apply(theme: Theme) {
   const el = document.documentElement;

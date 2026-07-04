@@ -1,6 +1,6 @@
 import type { Config } from "tailwindcss";
 
-// Tailwind theme maps directly to the Apt design tokens (see src/index.css).
+// Tailwind theme maps directly to the LAC design tokens (see src/index.css).
 export default {
   darkMode: "class",
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
@@ -16,11 +16,11 @@ export default {
         fg: "var(--text)",
         "fg-muted": "var(--text-muted)",
         "fg-faint": "var(--text-faint)",
-        iris: "var(--accent)",
-        "iris-hover": "var(--accent-hover)",
-        "iris-pressed": "var(--accent-pressed)",
-        "iris-soft": "var(--accent-soft)",
-        "iris-fg": "var(--accent-fg)",
+        verdant: "var(--accent)",
+        "verdant-hover": "var(--accent-hover)",
+        "verdant-pressed": "var(--accent-pressed)",
+        "verdant-soft": "var(--accent-soft)",
+        "verdant-fg": "var(--accent-fg)",
         success: "var(--success)",
         "success-soft": "var(--success-soft)",
         warning: "var(--warning)",
@@ -50,7 +50,7 @@ export default {
         focus: "var(--shadow-focus)",
       },
       transitionTimingFunction: {
-        apt: "var(--ease)",
+        lac: "var(--ease)",
       },
       keyframes: {
         "fade-in": { from: { opacity: "0" }, to: { opacity: "1" } },
