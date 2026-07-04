@@ -1,7 +1,7 @@
 # TUI AgentRunner Wiring — Research Findings
 
 **Date:** 2026-07-01
-**Context:** Model Hub (Apt) v2.2.0, Textual 8.2.8, Python 3.11.15, Ollama 0.30.11
+**Context:** Model Hub (LAC, formerly Apt) v2.2.0, Textual 8.2.8, Python 3.11.15, Ollama 0.30.11
 **Source files:** `backend/tui/app.py`, `backend/agent/runner.py`, `backend/permission/engine.py`, `backend/resilience/fallback.py`, `backend/provider/base.py`, `backend/mcp/client.py`, `backend/plugin/builtins/tools.py`
 
 ---

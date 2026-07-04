@@ -1,11 +1,11 @@
-# Contributing to APT
+# Contributing to LAC
 
 Thanks for looking under the hood.
 
 ## Dev setup
 
 ```bash
-git clone https://github.com/Dkrynen/model-hub && cd model-hub
+git clone https://github.com/Dkrynen/lac && cd lac
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt pytest pytest-asyncio apispec   # bin/ on POSIX
 .venv/Scripts/python server.py          # Flask + web UI on :5050
@@ -22,7 +22,7 @@ CI runs the suite on Windows, Ubuntu, and macOS plus the web gates — a PR that
 
 ## Plugins
 
-APT is open-core: plugins mount through the `apt.plugins` entry-point group
+LAC is open-core: plugins mount through the `lac.plugins` entry-point group
 (CLI subcommands + Flask routes) with per-plugin error isolation. Authoring
 guide: [docs/PLUGINS.md](docs/PLUGINS.md).
 

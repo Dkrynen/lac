@@ -2,12 +2,13 @@
 
 ## [Unreleased]
 
-- **Real-speed calibration loop** — `aptm benchmark` results (per-machine + software-stack fingerprint) now calibrate recommendations; recs tagged `measured`/`calibrated`/`estimated` with confidence bands
+- **LAC rebrand** — renamed from APT to **LAC** (Local AI Companion): CLI command `lac`, PyPI dist `lac-ai`, Undergrowth visual identity (near-black + single green accent, vein-leaf mark) replaces the Iris palette across web, landing page, and TUI theme values; committed SVG/icon assets (`assets/`); installer/exe renamed to `LAC-Setup-x.x.x.exe` / `lac.exe`
+- **Real-speed calibration loop** — `lac benchmark` results (per-machine + software-stack fingerprint) now calibrate recommendations; recs tagged `measured`/`calibrated`/`estimated` with confidence bands
 - **Web technical controls** — calibration badges, expandable per-model split-plan rows, per-GPU on/off + RAM-spill what-if toggles, browser benchmark dialog with live tok/s streaming
-- **Open-core plugin seam** — plugins mount via the `apt.plugins` entry-point group (CLI subcommands + API routes, per-plugin error isolation); `aptm plugins`, `GET /api/plugins`, authoring guide in docs/PLUGINS.md
-- **APT Pro (separate add-on)** — Tuning Cockpit: `apt pro tune` offload auto-tuner with `--apply`, license activation, calibration insights
-- **Packaging** — pip/pipx-installable (`aptm` console script); release pipeline now bundles the React UI into the Windows exe (previously shipped the legacy UI); tri-OS CI matrix
-- Fixes: GPU masking now keyed to real device indices assigned during tier building; `aptm benchmark --export *.csv` no longer crashes (missing import)
+- **Open-core plugin seam** — plugins mount via the `lac.plugins` entry-point group (CLI subcommands + API routes, per-plugin error isolation); `lac plugins`, `GET /api/plugins`, authoring guide in docs/PLUGINS.md
+- **LAC Pro (separate add-on)** — Tuning Cockpit: `lac pro tune` offload auto-tuner with `--apply`, license activation, calibration insights
+- **Packaging** — pip/pipx-installable (`lac` console script); release pipeline now bundles the React UI into the Windows exe (previously shipped the legacy UI); tri-OS CI matrix
+- Fixes: GPU masking now keyed to real device indices assigned during tier building; `lac benchmark --export *.csv` no longer crashes (missing import)
 
 ## 2.1.0 (2026-07-01)
 

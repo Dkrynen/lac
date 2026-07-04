@@ -1,4 +1,4 @@
-# Apt — Session Handoff Prompt
+# LAC — Session Handoff Prompt
 
 Copy-paste the block below into a new session to continue exactly where we left off.
 
@@ -6,7 +6,7 @@ Copy-paste the block below into a new session to continue exactly where we left 
 
 ## Context
 
-I'm working on **Apt** — a local LLM manager (hardware scan → model recommendation → install → chat) built on Python/Flask + React/Vite/Tailwind/shadcn frontend. The repo is at `C:\Users\User\repos\model-hub`.
+I'm working on **LAC** — a local LLM manager (hardware scan → model recommendation → install → chat) built on Python/Flask + React/Vite/Tailwind/shadcn frontend. The repo is at `C:\Users\User\repos\model-hub` (local directory name unchanged — the GitHub remote is `Dkrynen/lac`).
 
 **My hardware:** AMD Ryzen 5 7600 (6 cores), 30.9 GB RAM, AMD Radeon RX 6800 XT (16 GB VRAM, ROCm), AMD Radeon integrated graphics (10.5 GB, ROCm). Total discrete VRAM 16 GB, combined GPU VRAM 26.5 GB.
 
@@ -42,7 +42,7 @@ I'm working on **Apt** — a local LLM manager (hardware scan → model recommen
 - 25 recommend tests, 146 total.
 
 ### D2 — Benchmark CLI command
-- `apt benchmark <model>` — runs model through Ollama `/api/generate` with deterministic prompt (temp 0, num_predict 128, stream=false).
+- `lac benchmark <model>` — runs model through Ollama `/api/generate` with deterministic prompt (temp 0, num_predict 128, stream=false).
 - Outputs: eval_count, eval_duration_ms, tokens/second, time-to-first-token.
 - Logs results to `~/.model-hub/benchmarks/results.jsonl`.
 - Supports `--list` (show history), `--export CSV|JSON|JSONL`, `--prompt`, `--num-predict`, `--temperature`, `--no-cache`.
@@ -61,16 +61,16 @@ spec doc still says LemonSqueezy, that's historical).
 - **Web technical controls** — DONE + merged to master (`ffca692`): calibration source
   badges, expandable split-plan rows, per-GPU what-if toggles + RAM-spill switch,
   browser benchmark launcher streaming `/api/benchmark`.
-- **Open-core plugin seam** — DONE + merged to master (`47dde65`): `apt.plugins`
-  entry-point discovery (`backend/plugins.py`), CLI + Flask mounting, `apt plugins`,
-  `GET /api/plugins`. See `docs/PLUGINS.md`. (TUI agent-tools moved to `apt.tools`.)
+- **Open-core plugin seam** — DONE + merged to master (`47dde65`): `lac.plugins`
+  entry-point discovery (`backend/plugins.py`), CLI + Flask mounting, `lac plugins`,
+  `GET /api/plugins`. See `docs/PLUGINS.md`. (TUI agent-tools moved to `lac.tools`.)
 - **apt-pro** — private repo `C:\Users\User\repos\apt-pro` (NEVER gets a public
-  remote): license-gate stub (`APT_PRO_DEV=1` / `~/.model-hub/license.json`,
-  `require()` exits 3), `apt pro status`, `apt pro tune <model> [--repeat N] [--apply]`
+  remote): license-gate stub (`LAC_PRO_DEV=1` / `~/.model-hub/license.json`,
+  `require()` exits 3), `lac pro status`, `lac pro tune <model> [--repeat N] [--apply]`
   (offload sweep -> tune.jsonl, winner baked into `<model>-tuned` via /api/create).
 
 ### Remaining
-- Live smoke of `apt pro tune llama3.2:3b --repeat 1` with Ollama up (mocked suite green;
+- Live smoke of `lac pro tune llama3.2:3b --repeat 1` with Ollama up (mocked suite green;
   license gate + CLI discovery proven live).
 - **Plan 2 code DONE (2026-07-03), licensing provider swapped to Polar.sh same day** —
   activation/grace/insights live in apt-pro (`apt pro activate/deactivate/insights`;
@@ -82,14 +82,14 @@ spec doc still says LemonSqueezy, that's historical).
   Remaining, Duan-gated:
   1. Confirm the Polar organization/product/checkout is fully live in the Polar
      dashboard (checkout link is already in `site/index.html`, added 2026-07-03).
-  2. Test mode: generate a real license key -> `apt pro activate <key>` ->
-     `apt pro status` -> `apt pro tune` unlocked -> `apt pro deactivate`.
+  2. Test mode: generate a real license key -> `lac pro activate <key>` ->
+     `lac pro status` -> `lac pro tune` unlocked -> `lac pro deactivate`.
   3. Upgrade-message URL in `apt_pro/license.py::_UPGRADE_MSG` already points at
      the live GitHub Pages site (`dkrynen.github.io/model-hub/#pro`) — DONE.
 - **Plan 3 DONE (2026-07-03)** — repo is launch-grade: full-history secrets sweep PASSED
   (repo was already public; 56 commits, zero credential patterns); tri-OS CI matrix + web
-  gates (`test.yml`); pip/pipx installable (`pyproject.toml`, command `aptm`, dist name
-  `apt-hub`, PyPI upload deferred to name-freeze); release pipeline fixed + locally proven
+  gates (`test.yml`); pip/pipx installable (`pyproject.toml`, command `lac`, dist name
+  `lac-ai`, PyPI upload deferred to name-freeze); release pipeline fixed + locally proven
   (`build.yml`: web/dist now bundled into the exe — it WAS shipping the legacy UI — full
   deps, draft release, Windows-only assets; exe built + booted + verified serving the React
   UI); APT rebrand (README/CONTRIBUTING/issue templates/CHANGELOG); landing page + waitlist
