@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="lac vein-leaf mark">
+  <polygon points="50,8 68,20 78,38 80,54 72,70 58,82 50,92 42,82 28,70 20,54 22,38 32,20" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+  <polyline points="50,88 50,24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+  <polyline points="50,74 66,74 66,60" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="50,74 34,74 34,60" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="50,50 64,50 64,38" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="50,50 36,50 36,38" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="66" cy="60" r="2.5" fill="currentColor"/>
+  <circle cx="34" cy="60" r="2.5" fill="currentColor"/>
+  <circle cx="64" cy="38" r="2.5" fill="currentColor"/>
+  <circle cx="36" cy="38" r="2.5" fill="currentColor"/>
+</svg>
