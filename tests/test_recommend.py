@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from backend.cookbook.hardware import GPUInfo, SystemInfo
@@ -520,3 +522,112 @@ def test_ram_tier_capacity_subtracts_igpu_shared_claim():
     model = next(m for m in load_models() if m.id == "qwen3:32b")
     split = _compute_split_plan(38.0, info, model)
     assert split is None
+
+
+# =============================================================================
+# E — LAC Pro custom model import: best_fit_quant() + catalog extension
+# =============================================================================
+
+def test_best_fit_quant_picks_highest_quality_quant_that_fits():
+    from backend.cookbook.recommend import best_fit_quant
+
+    # A dense 9B model on a 16GB card: Q8 (1.05 bpp * 9 ~ 9.45GB) should
+    # fit and score better than a smaller/lower quant that underuses VRAM.
+    quant_name, vram = best_fit_quant(
+        params_b=9.0, is_moe=False, active_params_b=None, context=8192, available_vram_gb=16.0,
+    )
+    assert quant_name == "Q8"
+    assert 9.0 < vram < 10.6
+
+
+def test_best_fit_quant_falls_back_to_smallest_when_nothing_fits():
+    from backend.cookbook.recommend import best_fit_quant
+
+    quant_name, vram = best_fit_quant(
+        params_b=70.0, is_moe=False, active_params_b=None, context=8192, available_vram_gb=4.0,
+    )
+    assert quant_name == "Q2_K"  # smallest bpp in QUANTS -- last resort, still returned not raised
+
+
+def test_best_fit_quant_matches_recommend_engines_own_pick_for_an_equivalent_catalog_model():
+    """Spec §6 requires this specific cross-check: best_fit_quant() must
+    pick the identical quant the curated-catalog scoring path would for a
+    real catalog model at the same param count -- not just structurally
+    similar code, the SAME numbers. Picks a real, small, non-MoE catalog
+    entry and proves iterating QUANTS via _estimate_vram/_fit_score against
+    the REAL ModelEntry produces the same (quant, vram) as best_fit_quant's
+    synthetic ModelEntry does for the same params_b/is_moe/context."""
+    from backend.cookbook.recommend import (
+        best_fit_quant, load_models, QUANTS, _estimate_vram, _fit_score,
+    )
+
+    real_model = next(m for m in load_models() if not m.is_moe and 0.5 <= m.params_b <= 4.0)
+    available_vram_gb = 8.0
+
+    got_quant, got_vram = best_fit_quant(
+        real_model.params_b, real_model.is_moe, real_model.active_params_b,
+        real_model.context, available_vram_gb,
+    )
+
+    best = None
+    for q in QUANTS:
+        vram = _estimate_vram(real_model, q, real_model.context)
+        if vram > available_vram_gb:
+            continue
+        utilization = vram / available_vram_gb
+        score = _fit_score(utilization, "gpu")
+        if best is None or score > best[2]:
+            best = (q.name, vram, score)
+
+    assert (got_quant, got_vram) == (best[0], best[1])
+
+
+def test_register_custom_model_then_load_models_includes_it(tmp_path, monkeypatch):
+    # NOTE: importlib.import_module (not `from backend.cookbook import recommend`
+    # or `import backend.cookbook.recommend`) -- backend/cookbook/__init__.py does
+    # `from .recommend import recommend`, which shadows the `recommend` submodule
+    # attribute on the `backend.cookbook` package with the `recommend()` function.
+    # Both plain-import forms resolve via attribute traversal off the package and
+    # would bind to that function instead of the module (CUSTOM_MODELS_PATH
+    # wouldn't exist on it, and monkeypatch.setattr would AttributeError).
+    # importlib.import_module looks the fully-qualified name up in sys.modules
+    # directly, sidestepping the shadowed attribute.
+    import importlib
+    recommend_mod = importlib.import_module("backend.cookbook.recommend")
+
+    custom_path = tmp_path / "custom_models.json"
+    monkeypatch.setattr(recommend_mod, "CUSTOM_MODELS_PATH", custom_path)
+
+    recommend_mod.register_custom_model({
+        "id": "myorg/mymodel", "name": "My Model", "provider": "custom",
+        "params_b": 9.0, "arch": "qwen2", "context": 8192, "use_cases": ["general"],
+        "is_moe": False,
+    })
+
+    models = recommend_mod.load_models()
+    assert any(m.id == "myorg/mymodel" for m in models)
+
+
+def test_register_custom_model_dedupes_on_reimport(tmp_path, monkeypatch):
+    # NOTE: importlib.import_module (not `from backend.cookbook import recommend`
+    # or `import backend.cookbook.recommend`) -- backend/cookbook/__init__.py does
+    # `from .recommend import recommend`, which shadows the `recommend` submodule
+    # attribute on the `backend.cookbook` package with the `recommend()` function.
+    # Both plain-import forms resolve via attribute traversal off the package and
+    # would bind to that function instead of the module (CUSTOM_MODELS_PATH
+    # wouldn't exist on it, and monkeypatch.setattr would AttributeError).
+    # importlib.import_module looks the fully-qualified name up in sys.modules
+    # directly, sidestepping the shadowed attribute.
+    import importlib
+    recommend_mod = importlib.import_module("backend.cookbook.recommend")
+
+    custom_path = tmp_path / "custom_models.json"
+    monkeypatch.setattr(recommend_mod, "CUSTOM_MODELS_PATH", custom_path)
+
+    entry = {"id": "myorg/mymodel", "name": "My Model", "provider": "custom",
+              "params_b": 9.0, "arch": "qwen2", "context": 8192, "use_cases": [], "is_moe": False}
+    recommend_mod.register_custom_model(entry)
+    recommend_mod.register_custom_model(entry)  # re-import same id
+
+    raw = json.loads(custom_path.read_text())
+    assert len(raw) == 1

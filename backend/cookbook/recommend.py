@@ -140,15 +140,85 @@ DATA_DIR = Path(__file__).parent / "data"
 
 
 @functools.lru_cache(maxsize=1)
-def load_models() -> list[ModelEntry]:
-    # Catalog is read-only app data; memoize so repeated callers (recommend(),
-    # load_calibration, parse_model_tag) share one JSON parse per process.
+def _load_shipped_models() -> list[ModelEntry]:
     path = DATA_DIR / "models.json"
     if not path.exists():
         raise FileNotFoundError(f"Model database not found at {path}")
     with open(path) as f:
         raw = json.load(f)
     return [ModelEntry(**m) for m in raw]
+
+
+CUSTOM_MODELS_PATH = Path.home() / ".model-hub" / "custom_models.json"
+
+
+def _load_custom_models() -> list[ModelEntry]:
+    """User-imported custom models (LAC Pro's Hugging Face import feature,
+    spec 2026-07-05). Deliberately NOT cached like the shipped catalog --
+    this file can change while the app is running, right after a new
+    import completes, and callers must see it on their very next
+    load_models() call with no restart needed."""
+    if not CUSTOM_MODELS_PATH.exists():
+        return []
+    try:
+        with open(CUSTOM_MODELS_PATH) as f:
+            raw = json.load(f)
+        return [ModelEntry(**m) for m in raw]
+    except Exception:
+        return []
+
+
+def register_custom_model(entry_dict: dict) -> None:
+    """Append a newly-imported custom model to the user's catalog
+    extension file, so it becomes a full catalog citizen -- scored,
+    tagged, recommended -- exactly like the curated 91 (spec 2026-07-05,
+    decision 4). Re-importing the same id replaces the previous entry
+    rather than duplicating it."""
+    CUSTOM_MODELS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing: list[dict] = []
+    if CUSTOM_MODELS_PATH.exists():
+        try:
+            existing = json.loads(CUSTOM_MODELS_PATH.read_text())
+        except Exception:
+            existing = []
+    existing = [e for e in existing if e.get("id") != entry_dict["id"]]
+    existing.append(entry_dict)
+    CUSTOM_MODELS_PATH.write_text(json.dumps(existing, indent=2))
+
+
+def load_models() -> list[ModelEntry]:
+    return _load_shipped_models() + _load_custom_models()
+
+
+def best_fit_quant(params_b: float, is_moe: bool, active_params_b: float | None,
+                    context: int, available_vram_gb: float) -> tuple[str, float]:
+    """Pick the best-fitting quant for an arbitrary model that ISN'T in the
+    catalog yet, given its raw param count and the user's available VRAM --
+    reuses the exact same _estimate_vram/_fit_score logic recommend()
+    already uses for the curated 91, so a custom-imported model gets
+    scored by the identical rules (spec 2026-07-05, decision 3). Returns
+    (quant_name, estimated_vram_gb). Falls back to the smallest/most
+    aggressive quant in QUANTS if nothing fits within available_vram_gb,
+    rather than raising -- a caller can still offer that as a last resort
+    with a clear "this will be tight" framing, not a hard failure."""
+    synthetic = ModelEntry(
+        id="_synthetic", name="_synthetic", provider="custom", params_b=params_b,
+        arch="custom", context=context, use_cases=[], is_moe=is_moe,
+        active_params_b=active_params_b,
+    )
+    best: tuple[str, float, float] | None = None
+    for q in QUANTS:
+        vram = _estimate_vram(synthetic, q, context)
+        if vram > available_vram_gb:
+            continue
+        utilization = vram / available_vram_gb if available_vram_gb > 0 else 0.0
+        score = _fit_score(utilization, "gpu")
+        if best is None or score > best[2]:
+            best = (q.name, vram, score)
+    if best is None:
+        smallest = min(QUANTS, key=lambda q: q.bpp)
+        return smallest.name, _estimate_vram(synthetic, smallest, context)
+    return best[0], best[1]
 
 
 def _quality_base(params_b: float) -> float:
