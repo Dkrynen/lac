@@ -13,10 +13,32 @@ every call is isolated and errors are captured on the LoadedPlugin record.
 """
 from __future__ import annotations
 
+import importlib
+import sys
 from dataclasses import dataclass
 from importlib.metadata import entry_points
+from pathlib import Path
 
 GROUP = "lac.plugins"
+
+
+def _ensure_plugin_dir_on_path() -> None:
+    """Make the bootstrap plugin dir (`lac unlock` installs there) visible to
+    entry-point discovery by prepending it to ``sys.path`` BEFORE the
+    entry-point read. If the dir doesn't exist, skip cleanly — zero behavior
+    change. Never raises: the seam must never break core."""
+    try:
+        from backend import pro_install  # call-time read so tests can patch PLUGIN_DIR
+
+        plugin_dir = Path(pro_install.PLUGIN_DIR)
+        if not plugin_dir.is_dir():
+            return
+        path_str = str(plugin_dir)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
+        importlib.invalidate_caches()
+    except Exception:  # noqa: BLE001 — discovery plumbing must never break core
+        return
 
 
 def _entry_points():
@@ -38,6 +60,7 @@ class LoadedPlugin:
 
 def discover() -> list[LoadedPlugin]:
     """Load all ``apt.plugins`` entry points, isolating per-plugin failures."""
+    _ensure_plugin_dir_on_path()
     out: list[LoadedPlugin] = []
     for ep in _entry_points():
         try:

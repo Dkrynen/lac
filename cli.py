@@ -1047,6 +1047,24 @@ def cmd_plugins(args):
     print_table(["Name", "Version", "Status"], rows)
 
 
+def cmd_unlock(args):
+    """Activate LAC Pro: fetch the licensed plugin from the gate + install it.
+
+    Exit codes: 0 = installed, 1 = any failure (honest message on stderr).
+    """
+    from backend import pro_install
+
+    result = pro_install.install_pro_plugin(args.key)
+    if result.get("state") == "installed":
+        dest = result.get("path", "the LAC plugin directory")
+        print(f"{C['green']}✓ LAC Pro installed to {dest}{C['reset']}")
+        print("  Restart LAC to use Pro.")
+        return
+
+    eprint(f"{C['red']}✗ Unlock failed: {result.get('message', 'unknown error')}{C['reset']}")
+    sys.exit(1)
+
+
 def print_banner():
     print()
     print(f"  {C['bold']}{C['green']}lac{C['reset']} {C['dim']}v{__version__}  ·  Local AI, sorted.{C['reset']}")
@@ -1139,6 +1157,10 @@ def build_parser():
 
     p_plugins = sub.add_parser("plugins", help="List installed LAC plugins")
     p_plugins.set_defaults(func=cmd_plugins)
+
+    p_unlock = sub.add_parser("unlock", help="Activate LAC Pro with your license key")
+    p_unlock.add_argument("key", help="Your LAC Pro license key")
+    p_unlock.set_defaults(func=cmd_unlock)
 
     # --- plugin seam: mount plugin CLI subcommands (never fatal) ---
     from backend import plugins as _plugins
