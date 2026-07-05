@@ -122,4 +122,15 @@ export const api = {
     getJSON<{ state: "idle" | "running" | "done" | "failed_silent" | "not_licensed"; tokens_per_second?: number }>(
       `/api/pro/optimize-status?model=${encodeURIComponent(model)}`
     ),
+  /** Kick off a LAC Pro custom Hugging Face model import (background). */
+  importModel: (repoId: string, quant?: string) =>
+    postJSON<{ accepted?: boolean; state?: string; error?: string }>("/api/pro/import-model", {
+      repo_id: repoId,
+      quant: quant ?? null,
+    }),
+  /** Poll a custom-model import's progress. */
+  importStatus: (repoId: string) =>
+    getJSON<{ state: string; error_type?: string; message?: string; model_name?: string; quant?: string }>(
+      `/api/pro/import-status?repo_id=${encodeURIComponent(repoId)}`
+    ),
 };

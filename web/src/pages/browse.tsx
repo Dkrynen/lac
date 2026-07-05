@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { useAsync } from "@/lib/hooks";
 import { api } from "@/lib/api";
-import { pullWithToast } from "@/lib/installer";
+import { pullWithToast, importModelWithToast } from "@/lib/installer";
 
 const CAPS = [
   { v: "", l: "All capabilities" },
@@ -36,6 +36,7 @@ export function Browse() {
   const [compatible, setCompatible] = useState(false);
   const [limit, setLimit] = useState(36);
   const [newModel, setNewModel] = useState("");
+  const [hfRepoId, setHfRepoId] = useState("");
 
   const lib = useAsync(
     () => api.library({ q, capability, sort, compatible: compatible ? "gpu" : "" }),
@@ -135,6 +136,29 @@ export function Browse() {
         >
           Pull
         </Button>
+      </Card>
+
+      {/* LAC Pro: download, convert, and install a custom model straight from a HF repo ID */}
+      <Card className="p-4 mb-4">
+        <h3 className="text-sm font-semibold mb-2">Import from Hugging Face</h3>
+        <p className="text-xs text-fg-muted mb-3">
+          LAC Pro can download, convert, and install any compatible model straight from a Hugging Face repo ID.
+        </p>
+        <div className="flex gap-2">
+          <Input
+            placeholder="e.g. deepreinforce-ai/Ornith-1.0-9B"
+            value={hfRepoId}
+            onChange={(e) => setHfRepoId(e.target.value)}
+          />
+          <Button
+            onClick={() => {
+              if (!hfRepoId.trim()) return;
+              importModelWithToast(hfRepoId.trim(), undefined, () => setHfRepoId(""));
+            }}
+          >
+            Import
+          </Button>
+        </div>
       </Card>
 
       {lib.error ? (

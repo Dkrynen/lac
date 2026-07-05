@@ -149,3 +149,79 @@ function maybeShowAutopilotExplainerToast() {
     "LAC Pro just optimized this model automatically — benchmarked it, swept GPU-offload configs, and applied the fastest. It'll keep doing this for every model you install, silently, from now on."
   );
 }
+
+const PRO_IMPORT_UPSELL_TOAST_KEY = "lac.pro_import_upsell_toast_shown";
+const IMPORT_POLL_MS = 3000;
+const IMPORT_POLL_TIMEOUT_MS = 30 * 60 * 1000; // conversion can genuinely take many minutes
+
+/**
+ * Kick off a LAC Pro custom Hugging Face model import and poll its
+ * progress via a toast, the same shape pullWithToast/pollProOptimizeStatus
+ * already use. Distinct honest failure messages per state (spec §4) --
+ * never a generic "something went wrong".
+ *
+ * The import routes only exist at all when the lac-pro plugin is loaded, so
+ * an unreachable route (404) means "no Pro" exactly like an explicit
+ * {state: "not_licensed"} response -- both are routed through the same
+ * try/catch-then-upsell handling pollProOptimizeStatus already established.
+ */
+export async function importModelWithToast(repoId: string, quant: string | undefined, onDone?: () => void) {
+  let kickoff: { accepted?: boolean; state?: string; error?: string };
+  try {
+    kickoff = await api.importModel(repoId, quant);
+  } catch {
+    // Route unreachable (404 = Pro not installed at all, or transient) --
+    // same "no Pro" outcome as an explicit not_licensed, same one-time upsell.
+    maybeShowImportUpsellToast();
+    return;
+  }
+  if (kickoff.state === "not_licensed") {
+    maybeShowImportUpsellToast();
+    return;
+  }
+  if (kickoff.error) {
+    toast.error(`Couldn't start import: ${kickoff.error}`);
+    return;
+  }
+
+  const started = Date.now();
+  const toastId = toast.loading(`Importing ${repoId} from Hugging Face…`, {
+    description: "This can take several minutes — download, convert, and quantize.",
+  });
+
+  while (Date.now() - started < IMPORT_POLL_TIMEOUT_MS) {
+    let status: { state: string; error_type?: string; message?: string; model_name?: string; quant?: string };
+    try {
+      status = await api.importStatus(repoId);
+    } catch {
+      toast.dismiss(toastId);
+      maybeShowImportUpsellToast();
+      return;
+    }
+    if (status.state === "not_licensed") {
+      toast.dismiss(toastId);
+      maybeShowImportUpsellToast();
+      return;
+    }
+    if (status.state === "done") {
+      toast.success(`Imported ${status.model_name} (${status.quant})`, { id: toastId });
+      onDone?.();
+      return;
+    }
+    if (status.state === "failed") {
+      toast.error(`Import failed: ${status.message ?? status.error_type}`, { id: toastId });
+      return;
+    }
+    toast.loading(`Importing ${repoId} — ${status.state}…`, { id: toastId });
+    await new Promise((resolve) => setTimeout(resolve, IMPORT_POLL_MS));
+  }
+  toast.dismiss(toastId);
+}
+
+function maybeShowImportUpsellToast() {
+  if (localStorage.getItem(PRO_IMPORT_UPSELL_TOAST_KEY)) return;
+  localStorage.setItem(PRO_IMPORT_UPSELL_TOAST_KEY, "1");
+  toast.info("Importing custom Hugging Face models is a LAC Pro feature.", {
+    action: { label: "Get Pro", onClick: () => window.open("https://dkrynen.github.io/lac/#pro", "_blank") },
+  });
+}
