@@ -15,7 +15,7 @@ export function Downloads() {
       <PageHeader title="Downloads" subtitle="History of models pulled through LAC." />
 
       {dl.error ? (
-        <ErrorState message={`Couldn't load download history: ${dl.error}`} onRetry={dl.reload} />
+        <ErrorState message={`Couldn’t load download history: ${dl.error}`} onRetry={dl.reload} />
       ) : dl.loading ? (
         <Card className="p-3">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -26,7 +26,7 @@ export function Downloads() {
         <EmptyState
           icon={<DownloadIcon className="h-8 w-8" />}
           title="No downloads yet"
-          hint="Install a model from Browse or the Dashboard and it'll appear here."
+          hint="Install a model from Browse or the Dashboard and it’ll appear here."
         />
       ) : (
         <div className="overflow-hidden rounded-lg border border-line">
