@@ -17,8 +17,6 @@ const USE_CASES = [
   { v: "coding", l: "Coding" },
   { v: "chat", l: "Chat" },
   { v: "reasoning", l: "Reasoning" },
-  { v: "vision", l: "Vision" },
-  { v: "writing", l: "Writing" },
   { v: "general", l: "General" },
 ];
 
@@ -316,13 +314,19 @@ const SOURCE_META: Record<
 };
 
 function SourceBadge({ source, band }: { source: "measured" | "calibrated" | "estimated"; band: number }) {
-  const meta = SOURCE_META[source];
+  // Currently unreachable (apply_calibration only ever emits these 3
+  // literals) but there's no ErrorBoundary anywhere in the app, so an
+  // unexpected value from the API would otherwise white-screen the whole
+  // page. Matches verdict.tsx's MAP handling of its own "unknown" case.
+  const meta = SOURCE_META[source] ?? { variant: "neutral" as const, label: source };
   const tip =
     source === "measured"
       ? "Real tok/s — auto-benchmarked by LAC Pro on your exact hardware"
       : source === "calibrated"
       ? `Adjusted by your machine's regime factor (±${Math.round(band)}%)`
-      : `Theoretical estimate (±${Math.round(band)}%). LAC Pro auto-benchmarks every model you install for measured accuracy.`;
+      : source === "estimated"
+      ? `Theoretical estimate (±${Math.round(band)}%). LAC Pro auto-benchmarks every model you install for measured accuracy.`
+      : `Unrecognized speed source (±${Math.round(band)}%).`;
   return (
     <Badge variant={meta.variant} dot title={tip}>
       {meta.label}
