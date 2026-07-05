@@ -201,13 +201,26 @@ _ESTIMATED_BAND = 50.0
 def apply_calibration(theoretical_tps, catalog_id, quant_name, regime, calibration):
     """Turn a theoretical tok/s estimate into (tok_s, source, band_pct).
 
-    Precedence: exact measured (id,quant) > regime-level calibrated factor >
-    uncalibrated estimated. A None calibration always falls through to
-    "estimated".
+    Precedence: exact measured (id,quant) > ANY other measured quant for
+    the same model id (looser fallback -- see below) > regime-level
+    calibrated factor > uncalibrated estimated. A None calibration always
+    falls through to "estimated".
+
+    The fallback exists because recommend() scores every quant per model
+    but returns only the single best-SCORING one: a small model can have
+    F16 win on composite score even though a plain `ollama pull` actually
+    installs (and LAC Pro's autopilot benchmarks) Q4_K_M. Without this
+    fallback, a real measured run never surfaces as "measured" unless its
+    exact quant happens to also be the highest-scoring one.
     """
     if calibration is None:
         return round(theoretical_tps, 1), "estimated", _ESTIMATED_BAND
     stat = calibration.measured.get((catalog_id, quant_name))
+    if stat is None:
+        candidates = [(k, v) for k, v in calibration.measured.items() if k[0] == catalog_id]
+        if candidates:
+            candidates.sort(key=lambda kv: (-kv[1].n_runs, kv[0][1]))
+            stat = candidates[0][1]
     if stat is not None:
         band = stat.spread_pct if stat.n_runs > 1 else 25.0  # single-sample: flagged, not 0
         return stat.median_tps, "measured", band

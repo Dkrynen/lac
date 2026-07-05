@@ -170,3 +170,49 @@ def test_infer_backend_nvidia_cuda(monkeypatch):
                       gpus=[GPUInfo("NVIDIA RTX 4090", 24.0, backend="cuda")],
                       total_vram_gb=24.0, has_nvidia=True)
     assert _infer_backend(info) == "cuda"
+
+
+def test_apply_calibration_falls_back_to_any_measured_quant_for_same_model():
+    """recommend() scores every quant per model but returns only the
+    best-SCORING one -- for a small model, F16 can win on composite score
+    even though a plain `ollama pull` actually downloads (and gets
+    benchmarked at) Q4_K_M. An exact (id, quant) lookup then never sees the
+    Q4_K_M measured entry when scoring the F16 candidate, silently falling
+    back to 'calibrated'/'estimated' even though real measured data exists
+    for this model. Loosen the match: fall back to ANY measured quant for
+    the same model id."""
+    cal = Calibration(
+        measured={("qwen3:0.6b", "Q4_K_M"): MeasuredStat(417.0, 1, 25.0)},
+        regime_factor={}, regime_band_pct={}, n=1,
+    )
+    tps, src, band = apply_calibration(999.0, "qwen3:0.6b", "F16", "gpu", cal)
+    assert (tps, src) == (417.0, "measured")
+    assert band == 25.0
+
+
+def test_apply_calibration_exact_match_still_wins_over_fallback():
+    cal = Calibration(
+        measured={
+            ("m", "Q4_K_M"): MeasuredStat(50.0, 3, 4.0),
+            ("m", "F16"): MeasuredStat(20.0, 1, 25.0),
+        },
+        regime_factor={"gpu": 0.5}, regime_band_pct={"gpu": 10.0}, n=4,
+    )
+    tps, src, band = apply_calibration(200.0, "m", "Q4_K_M", "gpu", cal)
+    assert (tps, src) == (50.0, "measured")
+
+
+def test_apply_calibration_falls_back_when_multiple_other_quants_measured():
+    """When several other quants for the same model have measured data,
+    fall back deterministically (most runs first) rather than raising or
+    picking arbitrarily."""
+    cal = Calibration(
+        measured={
+            ("m", "Q8"): MeasuredStat(80.0, 1, 25.0),
+            ("m", "Q5_K_M"): MeasuredStat(90.0, 5, 6.0),
+        },
+        regime_factor={}, regime_band_pct={}, n=6,
+    )
+    tps, src, band = apply_calibration(999.0, "m", "F16", "gpu", cal)
+    assert src == "measured"
+    assert tps == 90.0  # the higher-n_runs entry wins the tie-break
