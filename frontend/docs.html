@@ -95,8 +95,10 @@
   "cpu": "AMD64 Family 25 Model 33",
   "cores": 16,
   "ram_gb": 32.0,
-  "gpus": [{"name": "NVIDIA GeForce RTX 4090", "vram_gb": 24.0, "backend": "cuda"}],
+  "gpus": [{"name": "NVIDIA GeForce RTX 4090", "vram_gb": 24.0, "backend": "cuda", "tier": "discrete", "device_index": 0}],
   "total_vram_gb": 24.0,
+  "combined_vram_gb": 24.0,
+  "compute_tiers": [{"name": "NVIDIA GeForce RTX 4090", "memory_gb": 24.0, "backend": "cuda", "kind": "discrete", "device_index": 0}],
   "is_apple_silicon": false,
   "in_container": false
 }</code></pre></details>
@@ -107,12 +109,16 @@
   <p>Get model recommendations based on VRAM, use case, and count. Uses live hardware scan if <code>vram</code> omitted.</p>
   <table>
     <tr><th>Param</th><th>Type</th><th>Description</th></tr>
-    <tr><td><code>vram</code></td><td>float</td><td>VRAM in GB (optional, defaults to scanned value)</td></tr>
+    <tr><td><code>vram</code></td><td>float</td><td>Manual VRAM override in GB (optional, defaults to scanned value)</td></tr>
     <tr><td><code>use_case</code></td><td>string</td><td>One of <code>coding</code>, <code>general</code>, <code>reasoning</code>, <code>chat</code></td></tr>
     <tr><td><code>top_k</code></td><td>int</td><td>Max recommendations (default 5)</td></tr>
+    <tr><td><code>gpu_mask</code></td><td>string</td><td>Comma-separated GPU device indices to include (e.g. <code>0</code> or <code>0,1</code>); a mask matching no real GPU is ignored</td></tr>
+    <tr><td><code>allow_spill</code></td><td>int</td><td><code>1</code> (default) allows RAM/CPU-offload split plans; <code>0</code> restricts recommendations to GPU-resident-only</td></tr>
+    <tr><td><code>no_calibration</code></td><td>int</td><td><code>1</code> ignores measured benchmarks in <code>results.jsonl</code> and always returns theoretical estimates; default <code>0</code> uses calibration when available</td></tr>
   </table>
   <details><summary>Example response</summary><pre><code>{
   "vram_gb": 24.0,
+  "combined_vram_gb": 24.0,
   "ram_gb": 32.0,
   "recommendations": [{
     "name": "Qwen3 14B",
@@ -125,20 +131,23 @@
     "context": 32768,
     "run_mode": "gpu",
     "ollama_cmd": "ollama run qwen3:14b",
-    "scores": {"quality": 9, "speed": 8, "fit": 10, "context": 9}
+    "speed_source": "calibrated",
+    "speed_band_pct": 12.5,
+    "scores": {"quality": 9, "speed": 8, "fit": 10, "context": 9},
+    "split_plan": null
   }]
 }</code></pre></details>
 </div>
 
 <div class="endpoint">
   <div class="head"><span class="method get">GET</span> <code>/api/models</code></div>
-  <p>List all models in the curated database (65+ models). Returns id, name, provider, params, architecture, context, VRAM estimates.</p>
+  <p>List all models in the curated database (91 models). Returns id, name, provider, params, architecture, context, VRAM estimates.</p>
 </div>
 
 <div class="endpoint">
   <div class="head"><span class="method get">GET</span> <code>/api/system/version</code></div>
   <p>Returns app name, version, GitHub URL, and download URL.</p>
-  <details><summary>Example</summary><pre><code>{"version": "2.2.0", "app_name": "LAC", "github_url": "https://github.com/Dkrynen/model-hub", "download_url": "https://github.com/Dkrynen/model-hub/releases"}</code></pre></details>
+  <details><summary>Example</summary><pre><code>{"version": "2.2.0", "app_name": "LAC", "github_url": "https://github.com/Dkrynen/lac", "download_url": "https://github.com/Dkrynen/lac/releases"}</code></pre></details>
 </div>
 
 <div class="endpoint">
@@ -365,7 +374,7 @@ python cli.py help               # Full command list</code></pre>
 <h3>VRAM override</h3>
 <p>In the web UI, you can set a manual VRAM value in the <strong>Scan &amp; Recommend</strong> page. This is useful when your GPU isn't detected automatically, you want to test different hardware, or you're sharing VRAM with other processes.</p>
 <h2 id="guide-recommendations">Recommendations</h2>
-<p>LAC scores 65+ models across four dimensions to find the best fit for your hardware:</p>
+<p>LAC scores 91 models across four dimensions to find the best fit for your hardware:</p>
 
 <table>
   <tr><th>Score</th><th>Weight</th><th>What it measures</th></tr>
@@ -409,10 +418,10 @@ python cli.py recommend --use-case reasoning</code></pre>
 python cli.py pull qwen3:14b-q4_K_M  # Specific quant</code></pre>
 
 <h3>Viewing installed models</h3>
-<p>The <strong>Installed</strong> page lists all local models with name, size, and last modified date. Use the search box to filter. The <strong>Currently Running</strong> section shows models loaded in GPU memory.</p>
+<p>The <strong>Installed</strong> page lists all local models with name, size, and last modified date. The <strong>Running now</strong> section at the top shows models currently loaded in memory.</p>
 
-<h3>Running a model</h3>
-<p>Click <kbd>Run</kbd> next to any installed model to copy the <code>ollama run &lt;name&gt;</code> command to your clipboard.</p>
+<h3>Chatting with an installed model</h3>
+<p>Click <kbd>Chat</kbd> next to any installed model to open it directly in the <strong>Chat</strong> page, ready to talk to.</p>
 
 <h3>Deleting a model</h3>
 <pre><code>python cli.py delete qwen3:14b
@@ -453,7 +462,7 @@ python cli.py chat --system "You are a helpful coding assistant."</code></pre>
 </table>
 
 <h3>Sessions</h3>
-<p>Sessions let you save and resume conversations. In the web UI, click <kbd>Sessions</kbd> to manage saved conversations. In the CLI, use <code>/save my-conversation</code> and <code>/load my-conversation</code>. Sessions are scoped to the current workspace.</p>
+<p>Sessions are a CLI/API feature today — the web <strong>Chat</strong> page always starts a fresh conversation and has no save/load UI yet. From the TUI (<code>lac chat</code>), use <code>/save my-conversation</code>, <code>/load my-conversation</code>, and <code>/list</code>. From the shell, <code>lac session list</code>, <code>lac session export &lt;id&gt;</code>, and <code>lac session import &lt;path&gt;</code> work against the same saved sessions, scoped to the current workspace.</p>
 
 <h2 id="guide-cli">CLI Reference</h2>
 
@@ -491,10 +500,8 @@ python cli.py chat --system "You are a helpful coding assistant."</code></pre>
 
 <h3>Web UI</h3>
 <ul>
-  <li>The workspace dropdown is in the sidebar, below the logo.</li>
-  <li>Select a workspace from the dropdown to switch.</li>
-  <li>Click the gear icon to create, rename, or delete workspaces.</li>
-  <li>Only the active workspace's sessions are shown.</li>
+  <li>The <strong>Settings</strong> page shows the currently active workspace (read-only).</li>
+  <li>Creating, switching, and deleting workspaces is CLI-only today — see below.</li>
 </ul>
 
 <h3>CLI</h3>
@@ -552,14 +559,14 @@ python server.py</code></pre>
 <p>First response may be slow while the model loads into GPU memory. If responses are consistently slow, try a smaller model or a lower quantization.</p>
 
 <p style="margin-top:36px;color:var(--docs-muted);font-size:0.9rem;border-top:1px solid var(--docs-border);padding-top:24px">
-Found a bug? <a href="https://github.com/Dkrynen/model-hub/issues" target="_blank">Open an issue on GitHub</a>.
+Found a bug? <a href="https://github.com/Dkrynen/lac/issues" target="_blank">Open an issue on GitHub</a>.
 </p>
 
 </div>
 
 <div class="docs-feedback">
-  <a href="https://github.com/Dkrynen/model-hub/issues" target="_blank">&#128220; Report an issue</a>
-  <a href="https://github.com/Dkrynen/model-hub" target="_blank">&#128279; View on GitHub</a>
+  <a href="https://github.com/Dkrynen/lac/issues" target="_blank">&#128220; Report an issue</a>
+  <a href="https://github.com/Dkrynen/lac" target="_blank">&#128279; View on GitHub</a>
   <span style="margin-left:auto;color:var(--docs-muted);font-size:0.78rem">v2.2.0</span>
 </div>
 
