@@ -530,48 +530,12 @@ def api_library_browse():
     except Exception:
         system_vram = None
 
-    # Cross-reference each library family against the curated catalog (the cookbook)
-    # to populate real VRAM/params and a hardware fit verdict.
-    catalog_by_family: dict[str, list] = {}
-    try:
-        for cm in load_models():
-            catalog_by_family.setdefault(cm.id.split(":")[0], []).append(cm)
-    except Exception:
-        pass
-
+    # Cross-reference each library family against the curated catalog to
+    # populate real VRAM/params and a hardware fit verdict (shared with the
+    # CLI's `lac browse`, which uses the exact same enrichment).
+    from .cookbook.library import enrich_library_models
+    models = enrich_library_models(models, system_vram)
     sv = system_vram or 0
-    for m in models:
-        fam = m.get("name", "")
-        variants = catalog_by_family.get(fam)
-        if variants:
-            variants = sorted(variants, key=lambda v: v.vram_q4 or 0)
-            fitting = [v for v in variants if (v.vram_q4 or 0) <= sv * 0.9]
-            if fitting:
-                rep = fitting[-1]
-                m["fit"] = "gpu"
-            else:
-                rep = variants[0]
-                m["fit"] = "offload" if (rep.vram_q4 or 0) <= sv * 2 else "too_big"
-            m["vram_q4"] = rep.vram_q4
-            m["params_b"] = rep.params_b
-        elif m.get("sizes"):
-            # No catalog match — rough estimate from advertised sizes (e.g. "3B").
-            try:
-                pb = float(re.sub(r"[^0-9.]", "", str(m["sizes"][0])) or 0)
-                if pb:
-                    vq4 = round(pb * 0.6, 1)
-                    m["params_b"] = pb
-                    m["vram_q4"] = vq4
-                    if sv:
-                        m["fit"] = "gpu" if vq4 <= sv * 0.9 else ("offload" if vq4 <= sv * 2 else "too_big")
-                    else:
-                        m["fit"] = "unknown"
-                else:
-                    m["fit"] = "unknown"
-            except Exception:
-                m["fit"] = "unknown"
-        else:
-            m["fit"] = "unknown"
 
     if q:
         models = [m for m in models if q in m["name"].lower() or q in m.get("display", m["name"]).lower() or q in m.get("description", "").lower()]

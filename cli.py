@@ -809,6 +809,11 @@ def cmd_recommend(args):
         from backend.cookbook.hardware import detect
         from backend.cookbook.recommend import recommend
 
+        top_k = args.top_k if args.top_k is not None else 10
+        if top_k < 1:
+            eprint(f"{C['red']}--top-k must be a positive integer (got {top_k}).{C['reset']}")
+            sys.exit(1)
+
         print(f"{C['yellow']}Scanning hardware and computing recommendations...{C['reset']}")
         info = detect()
         use_case = args.use_case or "coding"
@@ -821,7 +826,7 @@ def cmd_recommend(args):
             _results = str(Path.home() / ".model-hub" / "benchmarks" / "results.jsonl")
             _cal = load_calibration(info, _stack, _results)
 
-        recs = recommend(info, use_case=use_case, top_k=args.top_k or 10, calibration=_cal)
+        recs = recommend(info, use_case=use_case, top_k=top_k, calibration=_cal)
 
         if not recs:
             print(f"{C['yellow']}No models fit your hardware.{C['reset']}")
@@ -884,6 +889,17 @@ def cmd_browse(args):
         eprint(f"{C['yellow']}No model catalog available.{C['reset']}")
         sys.exit(1)
 
+    system_vram = None
+    try:
+        from backend.cookbook.hardware import detect
+        info = detect()
+        system_vram = info.total_vram_gb or (info.gpus[0].vram_gb if info.gpus else 0)
+    except Exception:
+        system_vram = None
+
+    from backend.cookbook.library import enrich_library_models
+    models = enrich_library_models(models, system_vram)
+
     if query:
         q = query.lower()
         models = [m for m in models if q in m.get("display", m.get("name", "")).lower() or q in m.get("description", "").lower()]
@@ -915,7 +931,7 @@ def cmd_browse(args):
         ctx = m.get("context", 0)
         if vram_q4:
             color = C["green"] if vram_q4 <= 16 else (C["yellow"] if vram_q4 <= 32 else C["red"])
-            print(f"  {C['bold']}{display:<40}{C['reset']} {color}{vram_q4:>5.1f}GB{C['reset']} Q4  {C['dim']}{vram_q8:>5.1f}GB Q8  {params:>5.1f}B  ctx={ctx:<6}  pulls={pulls}{C['reset']}")
+            print(f"  {C['bold']}{display:<40}{C['reset']} {color}{vram_q4:>5.1f}GB Q4{C['reset']}  {C['dim']}{vram_q8:>5.1f}GB Q8  {params:>5.1f}B  ctx={ctx:<6}  pulls={pulls}{C['reset']}")
         else:
             print(f"  {C['gray']}{display:<40}  no VRAM data{C['reset']}")
 
