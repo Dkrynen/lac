@@ -73,6 +73,10 @@ logic without needing `workerd`.
 Not part of the build task; run these when you're ready to go live. Requires
 `wrangler` (used on-demand via `npx`, so nothing extra is committed).
 
+> Deploying this Worker is one link in the chain. For the whole pipeline —
+> build the artifact → upload to R2 → deploy this Worker → wire the client →
+> end-to-end smoke — see [`../docs/PRO-DELIVERY.md`](../docs/PRO-DELIVERY.md).
+
 1. **Authenticate** to the Acend Cloudflare account:
    ```bash
    npx wrangler login
@@ -87,7 +91,7 @@ Not part of the build task; run these when you're ready to go live. Requires
    `lac-pro-0.1.0-cp311-win_amd64.zip`, but the R2 key is yours to choose):
    ```bash
    npx wrangler r2 object put lac-pro-artifacts/lac-pro-latest.zip \
-     --file ../../lac-pro/dist/lac-pro-0.1.0-cp311-win_amd64.zip
+     --file ../../lac-pro/build/dist/lac-pro-0.1.0-cp311-win_amd64.zip
    ```
 4. **Confirm the vars** in `wrangler.toml` (`POLAR_ORG_ID`, `ARTIFACT_KEY`,
    `ARTIFACT_FILENAME`). None are secret, so no `wrangler secret` is needed.

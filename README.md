@@ -48,6 +48,8 @@ The free tier is complete and stays free. **LAC Pro** adds the power tools:
 
 Cheap subscription, priced to be a no-brainer. Landing soon — the [waitlist](https://dkrynen.github.io/lac/) hears first.
 
+**After you buy,** Polar emails you a license key. Activate it with `lac unlock <key>` (CLI) or **Settings → Activate Pro** in the web UI, then restart LAC — the autopilot mounts on the next start. (Buying doesn't install Pro; the key does.)
+
 ## Hardware detection
 
 | GPU | Method | Verified |
