@@ -444,6 +444,7 @@ def cmd_pull(args):
     print(f"{C['gray']}(this may take a while depending on model size){C['reset']}\n")
 
     success = False
+    last_total = 0
     for chunk in ollama_stream("/api/pull", {"name": model}, timeout=3600):
         if "error" in chunk:
             eprint(f"\n{C['red']}Error: {chunk['error']}{C['reset']}")
@@ -453,6 +454,8 @@ def cmd_pull(args):
         if status:
             completed = chunk.get("completed", 0)
             total = chunk.get("total", 0)
+            if total:
+                last_total = total
             if total and completed:
                 pct = int(completed / total * 100)
                 bar = "█" * (pct // 2) + "░" * (50 - pct // 2)
@@ -461,9 +464,9 @@ def cmd_pull(args):
                 print(f"\r  {C['dim']}{status}{C['reset']}", end="", flush=True)
         if chunk.get("status") == "success":
             success = True
-            size_gb = 0
-            if chunk.get("total"):
-                size_gb = round(chunk["total"] / (1024**3), 2)
+            # The terminal "success" chunk never carries 'total' itself --
+            # use the last real total seen during the download.
+            size_gb = round(last_total / (1024**3), 2) if last_total else 0
             print(f"\n\n{C['green']}✓ {model} installed successfully!{C['reset']}")
             _log_download(model, "completed", size_gb)
             _notify_model_installed(model)
@@ -517,6 +520,15 @@ def cmd_inspect(args):
         eprint(f"{C['red']}{result['error']}{C['reset']}")
         sys.exit(1)
 
+    # /api/show has no top-level 'size' field -- only /api/tags does.
+    size_bytes = 0
+    tags = ollama("GET", "/api/tags")
+    if "error" not in tags:
+        for m in tags.get("models", []):
+            if m.get("name") == model:
+                size_bytes = m.get("size", 0)
+                break
+
     print_header(f"Model: {model}")
     details = result.get("details", {})
     info_rows = [
@@ -524,7 +536,7 @@ def cmd_inspect(args):
         ["Quantization", details.get("quantization_level", "?")],
         ["Family", details.get("family", "?")],
         ["Format", details.get("format", "?")],
-        ["Size", f"{round(result.get('size', 0) / (1024**3), 2)} GB"],
+        ["Size", f"{round(size_bytes / (1024**3), 2)} GB"],
         ["Modified", result.get("modified_at", "?")],
     ]
     modelfile = result.get("modelfile", "")
@@ -674,7 +686,11 @@ def cmd_session(args):
         if not args.path:
             eprint(f"{C['red']}session import requires <path>{C['reset']}")
             sys.exit(1)
-        data = import_session(args.path)
+        try:
+            data = import_session(args.path)
+        except FileNotFoundError:
+            eprint(f"{C['red']}File not found: {args.path}{C['reset']}")
+            sys.exit(1)
         sid = data.get("id") or create_session(model=data.get("model", ""))
         save_session(sid, model=data.get("model", ""), messages=data.get("messages", []))
         print(f"{C['green']}Imported session {sid[:12]}{C['reset']}  {C['dim']}({len(data.get('messages', []))} messages, model={data.get('model','')}){C['reset']}")
