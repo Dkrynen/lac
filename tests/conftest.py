@@ -21,10 +21,12 @@ def isolated_home(tmp_path, monkeypatch):
 
     import backend.cookbook.config as cfg
     import backend.cookbook.persistence as pers
+    import backend.cookbook.downloads as downloads
 
     new_cfg_dir = home / ".model-hub"
     monkeypatch.setattr(cfg, "CONFIG_DIR", new_cfg_dir)
     monkeypatch.setattr(cfg, "CONFIG_FILE", new_cfg_dir / "config.json")
+    monkeypatch.setattr(downloads, "CONFIG_DIR", new_cfg_dir)
     new_cfg_dir.mkdir(parents=True, exist_ok=True)
 
     new_db_dir = new_cfg_dir

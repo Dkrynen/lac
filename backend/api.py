@@ -250,10 +250,12 @@ def ollama_pull():
     def generate():
         import urllib.request
         import urllib.error
+        from .cookbook.downloads import log_download
         url = f"{OLLAMA_HOST}/api/pull"
         body = json.dumps({"name": model_name}).encode()
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
+        last_total = 0
         try:
             resp = urllib.request.urlopen(req, timeout=3600)
             for line in resp:
@@ -264,7 +266,11 @@ def ollama_pull():
                         chunk = json.loads(decoded)
                     except json.JSONDecodeError:
                         chunk = {}
+                    if chunk.get("total"):
+                        last_total = chunk["total"]
                     if chunk.get("status") == "success":
+                        size_gb = round(last_total / (1024**3), 2) if last_total else 0
+                        log_download(model_name, "completed", size_gb)
                         _notify_model_installed_async(model_name)
         except urllib.error.HTTPError as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -615,22 +621,8 @@ def ollama_ps():
 
 @app.route("/api/config/downloads")
 def api_config_downloads():
-    log_file = Path.home() / ".model-hub" / "downloads" / "history.jsonl"
-    if not log_file.exists():
-        return jsonify([])
-    entries = []
-    try:
-        with open(log_file) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-    except Exception:
-        pass
-    return jsonify(entries)
+    from .cookbook.downloads import download_history
+    return jsonify(download_history())
 
 
 @app.route("/api/config", methods=["GET"])

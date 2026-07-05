@@ -116,39 +116,13 @@ def print_table(headers, rows):
 
 
 def _log_download(model_name: str, status: str = "completed", size_gb: float = 0):
-    try:
-        log_dir = Path.home() / ".model-hub" / "downloads"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "history.jsonl"
-        entry = {
-            "model": model_name,
-            "status": status,
-            "size_gb": size_gb,
-            "timestamp": time.time(),
-        }
-        with open(log_file, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except Exception:
-        pass
+    from backend.cookbook.downloads import log_download
+    log_download(model_name, status, size_gb)
 
 
 def _download_history() -> list[dict]:
-    log_file = Path.home() / ".model-hub" / "downloads" / "history.jsonl"
-    if not log_file.exists():
-        return []
-    history = []
-    try:
-        with open(log_file) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        history.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-    except Exception:
-        pass
-    return history
+    from backend.cookbook.downloads import download_history
+    return download_history()
 
 
 def _notify_model_installed(model_name: str) -> None:
