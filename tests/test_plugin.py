@@ -5,6 +5,7 @@ from pathlib import Path
 from backend.plugin import PluginHostImpl, load_plugins
 from backend.plugin.base import PluginManifest
 from backend.plugin.manager import PluginManager
+from backend.version import __version__
 
 
 def test_discover_finds_builtin_tools():
@@ -29,7 +30,7 @@ def test_builtin_tool_read_file_executes():
     load_plugins(host, start_dir=Path.cwd())
     handler = host.tools["read_file"]["handler"]
     result = handler({"path": "backend/version.py"}, {"cwd": "."})
-    assert "2.2.0" in result
+    assert __version__ in result
 
 
 def test_list_files_tool():

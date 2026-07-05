@@ -7,6 +7,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from backend.version import __version__
+
 ToolHandler = Callable[[dict, dict], str]
 
 
@@ -76,7 +78,7 @@ def _web_search(args: dict, ctx: dict) -> str:
     if not query:
         return "error: no query"
     url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
-    req = urllib.request.Request(url, headers={"User-Agent": "LAC/2.2.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"LAC/{__version__}"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             html = resp.read().decode(errors="replace")
