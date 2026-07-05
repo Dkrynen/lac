@@ -697,7 +697,7 @@ def api_delete_workspace(workspace_id):
 
 @app.route("/api/workspaces/<workspace_id>/switch", methods=["POST"])
 def api_switch_workspace(workspace_id):
-    from .cookbook.config import switch_workspace, list_sessions
+    from .cookbook.config import switch_workspace
     if not switch_workspace(workspace_id):
         return jsonify({"error": "Workspace not found"}), 404
     return jsonify({"success": True, "workspace": workspace_id})

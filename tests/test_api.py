@@ -194,3 +194,17 @@ def test_recommend_gpu_mask_malformed_entries_dropped_then_ignored(monkeypatch, 
     r = client.get("/api/recommend?use_case=general&top_k=3&gpu_mask=abc,,-1")
     assert r.status_code == 200
     assert r.get_json()["combined_vram_gb"] == 20.0
+
+
+def test_switch_workspace_succeeds_for_valid_id(flask_app, isolated_home):
+    client = flask_app.test_client()
+    client.get("/api/workspaces")  # ensures the default workspace exists on disk
+    r = client.post("/api/workspaces/default/switch")
+    assert r.status_code == 200
+    assert r.get_json() == {"success": True, "workspace": "default"}
+
+
+def test_switch_workspace_404_for_unknown_id(flask_app, isolated_home):
+    client = flask_app.test_client()
+    r = client.post("/api/workspaces/does-not-exist/switch")
+    assert r.status_code == 404
