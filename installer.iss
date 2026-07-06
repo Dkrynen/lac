@@ -36,7 +36,9 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Name: "autostart"; Description: "Start {#MyAppName} when &Windows starts"; GroupDescription: "Startup options:"; Flags: unchecked
 
 [Files]
-Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; One-dir PyInstaller build: dist\lac\ is a folder (lac.exe + its deps), not
+; a single exe — ship the whole folder so lac.exe finds its deps next to it.
+Source: "dist\lac\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion

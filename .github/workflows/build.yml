@@ -59,7 +59,7 @@ jobs:
           name: windows-build
           path: |
             dist/LAC-Setup-*.exe
-            dist/lac.exe
+            dist/lac/lac.exe
 
   # Linux/macOS legs stay as COMPILE PROOF only — their binaries are NOT
   # attached to releases (v1 launch is Windows-first; macOS/Linux are teased

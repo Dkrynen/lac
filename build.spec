@@ -2,7 +2,11 @@
 """
 PyInstaller build spec for LAC.
 
-Produces a single portable .exe with embedded frontend.
+Produces a one-dir build (dist/lac/lac.exe + a folder of deps) with the
+frontend bundled as data files. One-dir instead of one-file: a one-file exe
+re-extracts its whole ~33MB bundle to a temp dir on EVERY launch (~4.5s
+steady-state); one-dir just execs lac.exe next to its already-unpacked deps
+(~1.5s), with zero code change.
 
 Usage:
     pyinstaller build.spec
@@ -99,20 +103,23 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# One-dir build (COLLECT), not one-file: a one-file exe re-extracts its
+# entire bundle to a temp dir on EVERY launch (~4.5s steady-state). One-dir
+# ships the exe next to its deps in a folder so launch just execs the exe
+# (~1.5s). exclude_binaries=True keeps binaries/zipfiles/datas OUT of the EXE
+# itself; COLLECT gathers them into the sibling dist/lac/ folder instead.
+# upx=False deliberately: UPX-compressing the launch path adds decompression
+# cost on every start and increases Defender false-positive risk.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="lac",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,
     disable_windowed_travis=False,
     argv_emulation=False,
@@ -122,25 +129,13 @@ exe = EXE(
     icon="assets/app-icon.ico",
 )
 
-exe_debug = EXE(
-    pyz,
-    a.scripts,
+coll = COLLECT(
+    exe,
     a.binaries,
     a.zipfiles,
     a.datas,
-    [],
-    name="lac-console",
-    debug=True,
-    bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,
-    disable_windowed_travis=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon="assets/app-icon.ico",
+    name="lac",
 )
