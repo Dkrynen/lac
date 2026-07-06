@@ -40,21 +40,34 @@ export function Topbar() {
       </form>
 
       <div className="ml-auto flex items-center gap-2">
-        <div
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-1 text-[12px] font-medium",
-            online
-              ? "border-line bg-panel-2 text-fg-muted"
-              : "border-warning/30 bg-warning-soft text-warning"
-          )}
-          title={online ? `Ollama ${status.data?.version ?? ""}` : "Ollama offline"}
-        >
-          <Activity className="h-3.5 w-3.5" />
-          <span
-            className={cn("h-1.5 w-1.5 rounded-full", online ? "bg-success" : "bg-warning")}
-          />
-          {online ? "Ollama online" : "Ollama offline"}
-        </div>
+        {online ? (
+          <div
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-1 text-[12px] font-medium",
+              "border-line bg-panel-2 text-fg-muted"
+            )}
+            title={`Ollama ${status.data?.version ?? ""}`}
+          >
+            <Activity className="h-3.5 w-3.5" />
+            <span className={cn("h-1.5 w-1.5 rounded-full", "bg-success")} />
+            Ollama online
+          </div>
+        ) : (
+          <a
+            href="https://ollama.com/download"
+            target="_blank"
+            rel="noreferrer"
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-1 text-[12px] font-medium",
+              "border-warning/30 bg-warning-soft text-warning"
+            )}
+            title="Ollama offline — click to install"
+          >
+            <Activity className="h-3.5 w-3.5" />
+            <span className={cn("h-1.5 w-1.5 rounded-full", "bg-warning")} />
+            Ollama offline — install
+          </a>
+        )}
 
         <Button variant="ghost" size="icon" onClick={toggle} aria-label="Toggle theme">
           {theme === "dark" ? <Sun /> : <Moon />}

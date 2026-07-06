@@ -52,21 +52,3 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
 
 [UninstallRun]
 Filename: "taskkill"; Parameters: "/f /im {#MyAppExeName}"; Flags: runhidden
-
-[Code]
-var
-  OpenResult: Integer;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep = ssPostInstall then
-  begin
-    if not RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\Ollama') then
-    begin
-      if MsgBox('Ollama was not detected. Download it?', mbConfirmation, MB_YESNO) = IDYES then
-      begin
-        Exec('rundll32.exe', 'url.dll,FileProtocolHandler https://ollama.com/download', '', SW_SHOW, ewNoWait, OpenResult);
-      end;
-    end;
-  end;
-end;
