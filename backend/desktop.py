@@ -63,12 +63,43 @@ def _show_startup_error(host: str, port: int) -> None:
             pass
 
 
-def acquire_single_instance() -> bool:  # replaced/expanded in Task B2
-    return True
+_MUTEX_HANDLE = None  # kept alive for the process lifetime
 
 
-def focus_existing_window() -> None:  # replaced/expanded in Task B2
-    return None
+def acquire_single_instance(name: str = "LAC_SINGLE_INSTANCE") -> bool:
+    """True if we are the first instance; False if another already holds the mutex."""
+    global _MUTEX_HANDLE
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        ERROR_ALREADY_EXISTS = 183
+        handle = kernel32.CreateMutexW(None, wintypes.BOOL(True), name)
+        if not handle:
+            return True  # fail-open: a mutex error must not block launch
+        if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            return False
+        _MUTEX_HANDLE = handle
+        return True
+    except Exception:
+        return True  # fail-open
+
+
+def focus_existing_window(title: str = WINDOW_TITLE) -> None:
+    """Best-effort raise of the already-running LAC window. Never raises."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, title)
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
 
 
 def launch_desktop(host: str = HOST, port: int = PORT) -> int:
