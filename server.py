@@ -137,6 +137,14 @@ def clear_port(port: int, force: bool) -> bool:
     return not find_port_pids(port)
 
 
+def _should_use_window(args) -> bool:
+    if getattr(args, "no_window", False):
+        return False
+    if getattr(args, "window", False):
+        return True
+    return getattr(sys, "frozen", False)
+
+
 def main():
     import argparse
 
@@ -146,6 +154,8 @@ def main():
     parser.add_argument("--force", action="store_true", help="Kill any process already using the port, then start")
     parser.add_argument("--kill-port", action="store_true", help="Kill whatever holds the port and exit")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser")
+    parser.add_argument("--window", action="store_true", help="Open the native desktop window")
+    parser.add_argument("--no-window", action="store_true", help="Force headless server (no window)")
     args = parser.parse_args()
 
     host = args.host
@@ -159,6 +169,10 @@ def main():
             killed = kill_pids(pids)
             print(f"  Killed: {', '.join(killed)}")
         return
+
+    if _should_use_window(args):
+        from backend import desktop
+        sys.exit(desktop.launch_desktop(host=host, port=port))
 
     version = get_version()
     from backend.api import run_server
