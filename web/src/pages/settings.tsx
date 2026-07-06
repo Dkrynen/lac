@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Save, Github, Info, Sparkles } from "lucide-react";
+import { Save, Github, Info } from "lucide-react";
 import { PageHeader, ErrorState } from "@/components/page";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAsync } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { useTheme } from "@/components/theme";
+import { ProActivation } from "@/components/pro-activation";
 
 export function Settings() {
   const cfg = useAsync(() => api.config());
@@ -19,8 +20,6 @@ export function Settings() {
   const [host, setHost] = useState("");
   const [defaultModel, setDefaultModel] = useState("");
   const [saving, setSaving] = useState(false);
-  const [licenseKey, setLicenseKey] = useState("");
-  const [unlocking, setUnlocking] = useState(false);
 
   useEffect(() => {
     if (cfg.data) {
@@ -43,23 +42,6 @@ export function Settings() {
       toast.error("Save failed", { description: e instanceof Error ? e.message : String(e) });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const unlock = async () => {
-    setUnlocking(true);
-    try {
-      const result = await api.unlockPro(licenseKey);
-      if (result.state === "installed") {
-        toast.success("Pro activated — restart LAC to use it");
-      } else {
-        // Surface the installer's honest message, not a generic string.
-        toast.error(result.message);
-      }
-    } catch (e) {
-      toast.error("Activation failed", { description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setUnlocking(false);
     }
   };
 
@@ -118,28 +100,7 @@ export function Settings() {
         </Card>
 
         {/* LAC Pro */}
-        <Card className="p-5">
-          <h2 className="flex items-center gap-2 text-sm font-semibold">
-            <Sparkles className="h-4 w-4 text-verdant" /> LAC Pro
-          </h2>
-          <p className="mt-0.5 text-[13px] text-fg-muted">
-            Enter your license key to activate Pro — the plugin is fetched and installed automatically.
-          </p>
-          <div className="mt-4">
-            <Field label="License key">
-              <Input
-                value={licenseKey}
-                onChange={(e) => setLicenseKey(e.target.value)}
-                placeholder="LAC-PRO-…"
-              />
-            </Field>
-          </div>
-          <div className="mt-4 flex justify-end">
-            <Button onClick={unlock} disabled={unlocking || !licenseKey.trim()}>
-              <Sparkles /> {unlocking ? "Activating…" : "Activate Pro"}
-            </Button>
-          </div>
-        </Card>
+        <ProActivation />
 
         {/* About */}
         <Card className="p-5">

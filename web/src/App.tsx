@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { Sidebar } from "@/components/sidebar";
 import { Topbar } from "@/components/topbar";
@@ -15,6 +15,15 @@ import { Settings } from "@/pages/settings";
 
 export default function App() {
   const { theme } = useTheme();
+  const navigate = useNavigate();
+
+  // On boot, a relaunch after Pro activation passes `?view=<path>` so the
+  // window lands back where it left off instead of the dashboard.
+  useEffect(() => {
+    const view = new URLSearchParams(location.search).get("view");
+    if (view) navigate(`/${view}`, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Global keybind: "/" focuses the search box.
   useEffect(() => {
