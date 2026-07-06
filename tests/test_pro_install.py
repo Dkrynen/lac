@@ -294,3 +294,27 @@ def test_discover_skips_cleanly_when_plugin_dir_absent(plugin_dir, guarded_sys_p
     assert not plugin_dir.exists()
     assert plugins_mod.discover() == []
     assert str(plugin_dir) not in sys.path
+
+
+def test_http_post_sends_a_real_user_agent(monkeypatch):
+    """Regression: the gate is behind Cloudflare bot protection, which 403s the
+    default Python-urllib UA before it reaches the Worker. _http_post MUST send a
+    real User-Agent (mirrors ls.py's Polar client). Without this, every unlock
+    fails as invalid_key."""
+    captured = {}
+
+    class _Resp:
+        def read(self): return b"ok"
+        def getcode(self): return 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _capture(req, timeout=None):
+        captured["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", _capture)
+    code, body = pro_install._http_post("https://g.test/d", {"license_key": "K"})
+    assert code == 200
+    assert captured["ua"], "no User-Agent set — urllib default would be 403'd by the gate WAF"
+    assert "urllib" not in captured["ua"].lower(), f"default urllib UA leaked: {captured['ua']}"

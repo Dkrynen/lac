@@ -59,6 +59,13 @@ def _gate_url(explicit: str | None) -> str:
     return explicit or os.environ.get("LAC_PRO_GATE_URL") or PRO_GATE_URL
 
 
+# The delivery gate sits behind Cloudflare bot protection, which 403s the
+# default "Python-urllib/x.y" User-Agent BEFORE the request ever reaches the
+# Worker (the same WAF gotcha ls.py documents for the Polar client). Without a
+# real UA, EVERY unlock — web and CLI — fails as "invalid_key". Send a real one.
+_USER_AGENT = "LAC-Pro-Client/1.0"
+
+
 def _http_post(url: str, payload: dict) -> tuple[int, bytes]:
     """POST JSON to the gate, return ``(status, body)``.
 
@@ -69,7 +76,9 @@ def _http_post(url: str, payload: dict) -> tuple[int, bytes]:
     """
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        url, data=data,
+        headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
+        method="POST",
     )
     try:
         resp = urllib.request.urlopen(req, timeout=GATE_TIMEOUT_S)
