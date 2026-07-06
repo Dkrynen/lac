@@ -79,7 +79,7 @@ def kill_pids(pids: list[str]) -> list[str]:
     for pid in pids:
         try:
             if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True, timeout=10)  # proc-noqa: kill_pids rewritten (not re-routed) in Task A3
+                proc.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True, timeout=10)
             else:
                 os.kill(int(pid), 9)
             killed.append(pid)
