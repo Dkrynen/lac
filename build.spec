@@ -22,6 +22,12 @@ PROJECT_ROOT = Path.cwd()
 # extension. Without this the exe silently omits it and Pro activation fails.
 crypto_datas, crypto_binaries, crypto_hidden = collect_all("cryptography")
 
+# pywebview + its WebView2 (EdgeChromium) backend are imported only at runtime
+# by backend/desktop.py; PyInstaller's graph from server.py cannot fully
+# discover the native loader/assemblies, so collect them explicitly. Same class
+# of ship-blocker as the cryptography omission above.
+webview_datas, webview_binaries, webview_hidden = collect_all("webview")
+
 # -- Collect backend Python files --
 backend_dirs = [
     "backend",
@@ -67,14 +73,15 @@ for extra in ["requirements.txt", "CHANGELOG.md", "LICENSE"]:
 a = Analysis(
     ["server.py"],
     pathex=[str(PROJECT_ROOT)],
-    binaries=crypto_binaries,
-    datas=datas + crypto_datas,
+    binaries=crypto_binaries + webview_binaries,
+    datas=datas + crypto_datas + webview_datas,
     hiddenimports=[
         "flask",
         "json", "os", "platform", "subprocess",
         "threading", "time", "webbrowser", "urllib",
         "shutil", "pathlib", "dataclasses", "re", "typing",
         *crypto_hidden,  # cryptography submodules + native _rust (see collect_all above)
+        *webview_hidden,
     ],
     hookspath=[],
     hooksconfig={},

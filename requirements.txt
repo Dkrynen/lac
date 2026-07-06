@@ -10,5 +10,6 @@ mcp>=1.0
 apispec>=6.0
 packaging>=24.0
 cryptography>=42
+pywebview>=5.0
 # Build tooling (not runtime): pip install pyinstaller
 # Installer (Windows): https://jrsoftware.org/isdl.php
