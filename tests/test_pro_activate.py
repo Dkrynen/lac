@@ -48,3 +48,27 @@ def test_activate_subprocess_failure(monkeypatch):
 
 def test_activate_missing_key():
     assert _client().post("/api/pro/activate", json={}).status_code == 400
+
+
+def test_activate_whitespace_only_output_does_not_crash(monkeypatch):
+    monkeypatch.setattr(api, "install_pro_plugin", lambda k: {"state": "installed", "path": "x"})
+    class R:
+        returncode = 1
+        stdout = "   \n"
+        stderr = ""
+    monkeypatch.setattr(api.proc, "run", lambda cmd, **kw: R())
+    r = _client().post("/api/pro/activate", json={"key": "x"})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["state"] == "activation_failed"
+    assert body["message"] == "activation failed"
+
+
+def test_activate_subprocess_spawn_exception(monkeypatch):
+    monkeypatch.setattr(api, "install_pro_plugin", lambda k: {"state": "installed", "path": "x"})
+    def boom(cmd, **kw):
+        raise FileNotFoundError("no such executable")
+    monkeypatch.setattr(api.proc, "run", boom)
+    r = _client().post("/api/pro/activate", json={"key": "x"})
+    assert r.status_code == 200
+    assert r.get_json()["state"] == "activation_failed"

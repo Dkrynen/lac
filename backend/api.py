@@ -801,7 +801,8 @@ def api_pro_activate():
         return jsonify({"state": "activation_failed",
                         "message": f"Could not run activation: {e}"})
     if r.returncode != 0:
-        msg = (r.stdout or r.stderr or "activation failed").strip().splitlines()[-1].strip()
+        lines = (r.stdout or r.stderr or "activation failed").strip().splitlines()
+        msg = lines[-1].strip() if lines else "activation failed"
         return jsonify({"state": "activation_failed", "message": msg})
     return jsonify({"state": "activated"})
 
