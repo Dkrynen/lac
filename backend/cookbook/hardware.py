@@ -3,7 +3,8 @@ import platform
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import Optional
 
 from backend.cookbook import proc
@@ -70,13 +71,17 @@ def _run_cmd(cmd: list[str], timeout: int = 10) -> Optional[str]:
         return None
 
 
-def _detect_nvidia() -> list[GPUInfo]:
+@lru_cache(maxsize=1)
+def _detect_nvidia() -> tuple[GPUInfo, ...]:
+    """Raw nvidia-smi probe. Cached: the subprocess call is the expensive part,
+    and this returns a tuple of GPUInfo so the cached result can't be mutated
+    in place by a caller (see detect()'s _clone_gpus for the per-call copy)."""
     out = _run_cmd([
         "nvidia-smi", "--query-gpu=name,memory.total,driver_version",
         "--format=csv,noheader,nounits"
     ])
     if not out:
-        return []
+        return ()
 
     gpus = []
     for line in out.strip().split("\n"):
@@ -93,14 +98,17 @@ def _detect_nvidia() -> list[GPUInfo]:
                 ))
             except ValueError:
                 pass
-    return gpus
+    return tuple(gpus)
 
 
-def _detect_amd_linux() -> list[GPUInfo]:
+@lru_cache(maxsize=1)
+def _detect_amd_linux() -> tuple[GPUInfo, ...]:
+    """Raw /sys/class/drm probe for AMD GPUs on Linux. Cached like
+    _detect_nvidia() -- see its docstring."""
     gpus = []
     drm = "/sys/class/drm"
     if not os.path.exists(drm):
-        return gpus
+        return tuple(gpus)
 
     for entry in sorted(os.listdir(drm)):
         if not entry.startswith("card") or "-" in entry:
@@ -145,16 +153,20 @@ def _detect_amd_linux() -> list[GPUInfo]:
             backend = "vulkan"
 
         gpus.append(GPUInfo(name=name, vram_gb=round(vram, 1), backend=backend))
-    return gpus
+    return tuple(gpus)
 
 
-def _detect_apple_silicon() -> tuple[bool, list[GPUInfo], float]:
+@lru_cache(maxsize=1)
+def _detect_apple_silicon() -> tuple[bool, tuple[GPUInfo, ...], float]:
+    """Raw sysctl probe for Apple Silicon. Cached: the sysctl subprocess calls
+    are the expensive part; detect() rebuilds a fresh SystemInfo/GPUInfo set
+    from this cached tuple on every call (see _clone_gpus)."""
     try:
         out = _run_cmd(["sysctl", "-n", "machdep.cpu.brand_string"])
         if not out or "Apple" not in out:
-            return False, [], 0.0
+            return False, (), 0.0
     except Exception:
-        return False, [], 0.0
+        return False, (), 0.0
 
     total_ram = 0.0
     try:
@@ -174,10 +186,20 @@ def _detect_apple_silicon() -> tuple[bool, list[GPUInfo], float]:
         gpu_budget = total_ram * 0.80
 
     gpus = [GPUInfo(name=chip, vram_gb=round(gpu_budget, 1), backend="metal")]
-    return True, gpus, total_ram
+    return True, tuple(gpus), total_ram
 
 
-def _detect_windows() -> tuple[list[GPUInfo], float, str, int]:
+@lru_cache(maxsize=1)
+def _detect_windows() -> tuple[tuple[GPUInfo, ...], float, str, int]:
+    """Raw Windows hardware probe. This is THE expensive call in the whole
+    detect() path: it shells out to `powershell -Command <script>` which runs
+    Get-CimInstance (WMI) + optionally nvidia-smi/vulkaninfo, ~1s per call.
+    detect() is invoked on every /api/scan, /api/recommend, and Autopilot
+    benchmark step, so without this cache the probe reruns on nearly every
+    request. Cached here (raw, immutable-ish tuple result); detect() clones
+    fresh GPUInfo instances from it on every call via _clone_gpus() so a
+    caller mutating its SystemInfo (e.g. /api/recommend?vram=) can never
+    corrupt what the next detect() call sees."""
     ps_cmd = r"""
 function Get-VramFromVulkan($gpuName) {
     $vkOut = vulkaninfo 2>&1 | Out-String
@@ -295,7 +317,7 @@ return $result | ConvertTo-Json -Compress
             capture_output=True, text=True, timeout=15
         )
         if r.returncode != 0:
-            return [], 0, "", 0
+            return (), 0, "", 0
         import json
         data = json.loads(r.stdout.strip())
 
@@ -317,9 +339,9 @@ return $result | ConvertTo-Json -Compress
             backend = g.get("Backend", "directx")
             gpus.append(GPUInfo(name=name, vram_gb=vram_gb, driver=driver, backend=backend))
 
-        return gpus, ram_gb, cpu_name, cpu_cores
+        return tuple(gpus), ram_gb, cpu_name, cpu_cores
     except Exception:
-        return [], 0, "", 0
+        return (), 0, "", 0
 
 
 # Names that indicate an integrated GPU (shares system RAM).
@@ -390,12 +412,29 @@ def build_compute_tiers(gpus: list[GPUInfo], ram_gb: float,
     return tiers
 
 
+def _clone_gpus(gpus) -> list[GPUInfo]:
+    """Return a fresh, independent list of fresh GPUInfo instances.
+
+    The raw per-OS probes (_detect_windows, _detect_apple_silicon,
+    _detect_nvidia, _detect_amd_linux) are lru_cache'd so the expensive
+    subprocess only runs once per session -- but that means their return
+    values are shared across every detect() call. Callers of detect() mutate
+    the SystemInfo they get back in place (e.g. /api/recommend?vram=
+    overwrites info.gpus / info.combined_vram_gb; detect() itself sets
+    g.tier and gpu.device_index on each GPUInfo). Without this clone, those
+    mutations would land on the cached objects and corrupt every subsequent
+    detect() call. dataclasses.replace() is enough here since every GPUInfo
+    field is a plain str/float/int/bool.
+    """
+    return [replace(g) for g in gpus]
+
+
 def detect() -> SystemInfo:
     info = SystemInfo(os=platform.system(), in_container=_in_container())
 
     if info.os == "Windows":
         gpus, ram_gb, cpu_name, cpu_cores = _detect_windows()
-        info.gpus = gpus
+        info.gpus = _clone_gpus(gpus)
         info.ram_gb = ram_gb
         info.cpu = cpu_name
         info.cpu_cores = cpu_cores
@@ -405,7 +444,7 @@ def detect() -> SystemInfo:
     elif info.os == "Darwin":
         is_apple, gpus, total_ram = _detect_apple_silicon()
         info.is_apple_silicon = is_apple
-        info.gpus = gpus
+        info.gpus = _clone_gpus(gpus)
         if total_ram:
             info.ram_gb = round(total_ram, 1)
         else:
@@ -419,7 +458,7 @@ def detect() -> SystemInfo:
     else:
         nv_gpus = _detect_nvidia()
         amd_gpus = _detect_amd_linux()
-        info.gpus = nv_gpus + amd_gpus
+        info.gpus = _clone_gpus(nv_gpus) + _clone_gpus(amd_gpus)
         info.has_nvidia = len(nv_gpus) > 0
         info.has_amd = len(amd_gpus) > 0
 
