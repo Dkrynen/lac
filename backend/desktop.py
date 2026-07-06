@@ -12,11 +12,13 @@ import sys
 import threading
 import time
 import urllib.request
+import webbrowser
 
 HOST = "127.0.0.1"
 PORT = 5050
 WINDOW_TITLE = "LAC"
 APP_USER_MODEL_ID = "Acend.LAC"
+WEBVIEW2_RUNTIME_URL = "https://developer.microsoft.com/microsoft-edge/webview2/"
 
 
 def _serving(host: str, port: int) -> bool:
@@ -119,8 +121,33 @@ def launch_desktop(host: str = HOST, port: int = PORT) -> int:
 
 
 def _open_window(host: str, port: int) -> int:
-    # Real implementation of window open + WebView2 fallback lands in Task B3.
-    import webview
-    webview.create_window(WINDOW_TITLE, f"http://{host}:{port}", min_size=(1024, 700))
-    webview.start()
+    url = f"http://{host}:{port}"
+    try:
+        import webview
+        if webview is None:
+            raise ImportError("webview unavailable")
+        webview.create_window(WINDOW_TITLE, url, min_size=(1024, 700))
+        webview.start()
+        return 0
+    except Exception as e:
+        return _fallback_to_browser(host, port, str(e))
+
+
+def _fallback_to_browser(host: str, port: int, reason: str) -> int:
+    print(f"  ! Native window unavailable ({reason}).")
+    print(f"  ! Opening LAC in your browser instead.")
+    print(f"  ! For the desktop app, install the WebView2 runtime: {WEBVIEW2_RUNTIME_URL}")
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "The desktop window needs the Microsoft WebView2 runtime.\n\n"
+                "LAC will open in your browser now. Install WebView2 for the app window:\n"
+                + WEBVIEW2_RUNTIME_URL,
+                "LAC", 0x40,
+            )
+        except Exception:
+            pass
+    webbrowser.open(f"http://{host}:{port}")
     return 0
