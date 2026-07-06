@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 2.5.0 (2026-07-06)
+
+- **Pro license encrypted at rest** — the license grant in `~/.model-hub/license.json` is now sealed with AES-256-GCM under a key derived (HKDF) from a stable machine id, instead of sitting in plaintext. The key never lands on disk in the clear, hand-editing the grant is detected (GCM auth tag), and a grant copied to another machine won't decrypt. Existing plaintext grants keep working and transparently upgrade to the encrypted form on the next write. Honest casual-bypass hardening — the client-side check isn't DRM.
+- **Custom-import input validation** — `lac pro import <repo_id>` now validates the Hugging Face id against HF's real `org/model` grammar at the entrypoint, rejecting traversal/URL/injection payloads before any network or filesystem work.
+- **Dev override compiled out of releases** — `LAC_PRO_DEV=1` is honored only in source/dev builds; release builds ignore it and no longer advertise it. Your source venv is unchanged.
+- **Build** — the shipped executable now bundles `cryptography` (with its native backend) so the Pro plugin's at-rest encryption works in the packaged app.
+
 ## 2.4.0 (2026-07-06)
 
 - **LAC Pro delivery & activation** — buy on Polar → receive the compiled Pro plugin through a license-gated download: `lac unlock <key>` (or **Settings → Activate Pro** in the web UI) installs it, then `lac pro activate <key>` licenses it. The Pro plugin is Nuitka-compiled and served from a private store only to validated license keys; the open-source core stays Pro-logic-unaware (generic licensed-plugin bootstrap, no `lac_pro` import). Hardening against casual bypass — honestly not DRM.
