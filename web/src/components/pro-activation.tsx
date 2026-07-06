@@ -21,6 +21,8 @@ type ActivateResult =
   | { state: "install_failed"; message: string; error_type?: string }
   | { state: "activation_failed"; message: string };
 
+type RelaunchResult = { state: "ok" } | { state: "failed"; message: string };
+
 const UNLOCKED_FEATURES = [
   "Autopilot auto-tuning",
   "Model tuning cockpit",
@@ -54,15 +56,23 @@ export function ProActivation() {
     }
   };
 
-  const enterPro = () => {
+  const enterPro = async () => {
     setCelebrating(false);
     setRelaunching(true);
     // The desktop process exits mid-request on a successful relaunch, so this
     // call typically never resolves — the overlay just persists until the
-    // window comes back up. Guard against the rare failure path anyway.
-    api.appRelaunch("settings").catch(() => {
+    // window comes back up. But the backend can also gracefully fail (still
+    // running) and resolve with `{ state: "failed" }` — handle that so the
+    // overlay doesn't hang forever with no way out.
+    try {
+      const result = (await api.appRelaunch("settings")) as RelaunchResult;
+      if (result?.state === "failed") {
+        setRelaunching(false);
+        setError(result.message ?? "Could not relaunch. Please restart LAC manually.");
+      }
+    } catch {
       /* process likely already exited; nothing to surface */
-    });
+    }
   };
 
   return (
