@@ -145,8 +145,18 @@ def _should_use_window(args) -> bool:
     return getattr(sys, "frozen", False)
 
 
+def _is_cli_invocation(argv: list[str]) -> bool:
+    """The exe is being used as a CLI when the first token is a subcommand
+    (a bare word), not a server flag (--host/--window/...) and not empty."""
+    return bool(argv) and not argv[0].startswith("-")
+
+
 def main():
     import argparse
+
+    if _is_cli_invocation(sys.argv[1:]):
+        import cli  # bundled into the exe so `lac.exe pro activate` / `lac.exe scan` work
+        sys.exit(cli.main())
 
     parser = argparse.ArgumentParser(description="LAC web UI server")
     parser.add_argument("--host", default=HOST, help="Bind host")

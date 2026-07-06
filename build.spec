@@ -76,6 +76,7 @@ a = Analysis(
     binaries=crypto_binaries + webview_binaries,
     datas=datas + crypto_datas + webview_datas,
     hiddenimports=[
+        "cli",  # CLI subcommand dispatch (lac.exe pro activate / scan) — see server._is_cli_invocation
         "flask",
         "json", "os", "platform", "subprocess",
         "threading", "time", "webbrowser", "urllib",
