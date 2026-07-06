@@ -8,6 +8,8 @@ import { api } from "@/lib/api";
 import { TuneHero } from "@/components/pro/tune-hero";
 import { InsightsPanel } from "@/components/pro/insights-panel";
 import { AutopilotPanel } from "@/components/pro/autopilot-panel";
+import { BenchmarkPanel } from "@/components/pro/benchmark-panel";
+import { ImportPanel } from "@/components/pro/import-panel";
 
 export function Pro() {
   const status = useAsync(() => api.proStatus());
@@ -41,12 +43,4 @@ export function Pro() {
       </div>
     </>
   );
-}
-
-function BenchmarkPanel() {
-  return <Card className="p-5 text-[13px] text-fg-muted">Benchmark panel — coming in the next task…</Card>;
-}
-
-function ImportPanel() {
-  return <Card className="p-5 text-[13px] text-fg-muted">Import panel — coming in the next task…</Card>;
 }
