@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from backend.cookbook import proc
 
 from .version import __version__ as CURRENT_VERSION, __github_url__, __download_url__
 
@@ -121,7 +122,7 @@ def do_update(mode: UpdateMode = UpdateMode.CHECK_ONLY) -> dict:
         return result
     if method == "source":
         try:
-            subprocess.run(["git", "pull"], check=True, capture_output=True, text=True, timeout=60)
+            proc.run(["git", "pull"], check=True, capture_output=True, text=True, timeout=60)
             result["applied"] = True
         except Exception as e:
             result["applied"] = False
@@ -130,10 +131,10 @@ def do_update(mode: UpdateMode = UpdateMode.CHECK_ONLY) -> dict:
     if method in ("pip", "uv"):
         cmd = upgrade_command(method).split()
         try:
-            proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=120)
-            result["applied"] = proc.returncode == 0
-            if proc.returncode != 0:
-                result["error"] = (proc.stderr or proc.stdout or "")[:300]
+            proc_result = proc.run(cmd, check=False, capture_output=True, text=True, timeout=120)
+            result["applied"] = proc_result.returncode == 0
+            if proc_result.returncode != 0:
+                result["error"] = (proc_result.stderr or proc_result.stdout or "")[:300]
         except Exception as e:
             result["applied"] = False
             result["error"] = str(e)

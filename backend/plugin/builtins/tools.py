@@ -7,6 +7,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from backend.cookbook import proc
 from backend.version import __version__
 
 ToolHandler = Callable[[dict, dict], str]
@@ -62,11 +63,11 @@ def _run_bash(args: dict, ctx: dict) -> str:
         return "error: no command"
     cwd = ctx.get("cwd", ".")
     try:
-        proc = subprocess.run(
+        proc_result = proc.run(
             cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=60
         )
-        out = (proc.stdout or "") + (proc.stderr or "")
-        return f"[exit {proc.returncode}]\n{out.strip()}"
+        out = (proc_result.stdout or "") + (proc_result.stderr or "")
+        return f"[exit {proc_result.returncode}]\n{out.strip()}"
     except subprocess.TimeoutExpired:
         return "error: command timed out (60s)"
     except Exception as e:

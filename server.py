@@ -11,6 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from backend.cookbook import proc
+
 HOST = "127.0.0.1"
 PORT = 5050
 
@@ -50,10 +52,9 @@ def ollama_is_installed() -> bool:
 
 
 def find_port_pids(port: int) -> list[str]:
-    import subprocess
     pids = set()
     try:
-        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10).stdout
+        out = proc.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10).stdout
     except Exception:
         return []
     for line in out.splitlines():
@@ -78,7 +79,7 @@ def kill_pids(pids: list[str]) -> list[str]:
     for pid in pids:
         try:
             if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True, timeout=10)
+                subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True, timeout=10)  # proc-noqa: kill_pids rewritten (not re-routed) in Task A3
             else:
                 os.kill(int(pid), 9)
             killed.append(pid)

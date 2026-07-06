@@ -6,6 +6,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
+from backend.cookbook import proc
+
 
 @dataclass
 class GPUInfo:
@@ -62,7 +64,7 @@ def _in_container() -> bool:
 
 def _run_cmd(cmd: list[str], timeout: int = 10) -> Optional[str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = proc.run(cmd, capture_output=True, text=True, timeout=timeout)
         return r.stdout.strip() if r.returncode == 0 else None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -288,7 +290,7 @@ $result = @{
 return $result | ConvertTo-Json -Compress
 """
     try:
-        r = subprocess.run(
+        r = proc.run(
             ["powershell", "-NoProfile", "-Command", ps_cmd],
             capture_output=True, text=True, timeout=15
         )

@@ -11,6 +11,7 @@ from typing import Optional
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 
+from .cookbook import proc
 from .cookbook.hardware import detect, print_system
 from .cookbook.recommend import recommend, load_models
 from .pro_install import install_pro_plugin
@@ -407,7 +408,7 @@ def ollama_check_detailed():
     path = shutil.which("ollama")
     if path:
         try:
-            r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5)
+            r = proc.run([path, "--version"], capture_output=True, text=True, timeout=5)
             version = r.stdout.strip() or r.stderr.strip() or "unknown"
         except Exception:
             version = "unknown"
