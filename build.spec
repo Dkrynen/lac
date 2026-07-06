@@ -9,9 +9,18 @@ Usage:
 """
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 PROJECT_ROOT = Path.cwd()
+
+# `cryptography` is imported ONLY by the separately-delivered Pro plugin
+# (lac_pro.grant_crypto), never by model-hub's own code — so PyInstaller's import
+# graph from server.py cannot discover it, and putting it in requirements.txt is
+# not enough. Collect it explicitly so the shipped exe can decrypt the Pro license
+# grant at runtime, INCLUDING the native cryptography.hazmat.bindings._rust
+# extension. Without this the exe silently omits it and Pro activation fails.
+crypto_datas, crypto_binaries, crypto_hidden = collect_all("cryptography")
 
 # -- Collect backend Python files --
 backend_dirs = [
@@ -58,13 +67,14 @@ for extra in ["requirements.txt", "CHANGELOG.md", "LICENSE"]:
 a = Analysis(
     ["server.py"],
     pathex=[str(PROJECT_ROOT)],
-    binaries=[],
-    datas=datas,
+    binaries=crypto_binaries,
+    datas=datas + crypto_datas,
     hiddenimports=[
         "flask",
         "json", "os", "platform", "subprocess",
         "threading", "time", "webbrowser", "urllib",
         "shutil", "pathlib", "dataclasses", "re", "typing",
+        *crypto_hidden,  # cryptography submodules + native _rust (see collect_all above)
     ],
     hookspath=[],
     hooksconfig={},
