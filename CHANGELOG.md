@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 2.6.2 (2026-07-07)
+
+- **Settings depth pass** - Settings now has clearer Engine, Appearance, Account & Pro, Diagnostics, and About sections instead of a thin form stack.
+- **Richer theming** - Appearance now supports System/Dark/Light theme mode, local accent presets, a live preview, reset controls, and Comfortable/Compact density.
+- **Storage clarity** - Settings now shows that models are pulled on demand through Ollama, where Ollama stores model weights, and whether any model-weight files accidentally landed inside the app payload.
+- **Polished app chrome** - Density now affects the main page padding, top bar, sidebar width, and shared input/select controls for a tighter Windows desktop feel.
+- **Hugging Face import fix** - Pro import now accepts pasted full `https://huggingface.co/...` URLs by normalizing them to `org/model`.
+- **Warm Pro model selection** - Tune and Benchmark now warm selected models before measuring so tok/s and TTFT reflect warm-path behavior.
+
 ## 2.6.1 (2026-07-06)
 
 - **Much faster launch** — the app no longer re-extracts itself to a temp folder on every start (one-dir packaging). Warm launches drop from several seconds to well under one.

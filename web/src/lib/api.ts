@@ -111,6 +111,7 @@ export const api = {
   saveConfig: (patch: Partial<import("./types").AptConfig>) => putJSON("/api/config", patch),
 
   version: () => getJSON<import("./types").VersionInfo>("/api/system/version"),
+  storage: () => getJSON<import("./types").StorageInfo>("/api/system/storage"),
 
   /** Stream a model pull. Yields progress payloads ({status,completed,total,...} or {error}). */
   pull(model: string, signal?: AbortSignal) {

@@ -19,7 +19,7 @@ export function Topbar() {
   const online = status.data?.running;
 
   return (
-    <header className="glass sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-line px-5">
+    <header className="glass sticky top-0 z-30 flex h-[var(--topbar-h)] items-center gap-3 border-b border-line px-5">
       <form
         className="relative max-w-md flex-1"
         onSubmit={(e) => {
@@ -32,7 +32,7 @@ export function Topbar() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search models…"
-          className="h-9 pl-9 pr-16"
+          className="h-[var(--control-h)] pl-9 pr-16"
         />
         <kbd className="pointer-events-none absolute right-2.5 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded border border-line bg-panel-3 px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline-flex">
           /

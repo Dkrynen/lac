@@ -27,7 +27,7 @@ const NAV = [
 export function Sidebar() {
   const { data: version } = useAsync(() => api.version().catch(() => null));
   return (
-    <aside className="sticky top-0 flex h-screen w-[232px] shrink-0 flex-col border-r border-line bg-panel">
+    <aside className="sticky top-0 flex h-screen w-[var(--sidebar-w)] shrink-0 flex-col border-r border-line bg-panel">
       <Link to="/" className="block px-4 pb-4 pt-[18px]">
         <div className="font-mono text-[19px] font-semibold leading-none tracking-tight">
           lac<span className="ml-0.5 inline-block h-[16px] w-[7px] translate-y-[2px] animate-blink rounded-[1px] bg-verdant" />

@@ -48,7 +48,7 @@ export default function App() {
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[1180px] px-6 py-6">
+          <div className="mx-auto w-full max-w-[1180px] px-[var(--app-pad-x)] py-[var(--app-pad-y)]">
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/browse" element={<Browse />} />

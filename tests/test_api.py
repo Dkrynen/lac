@@ -25,6 +25,17 @@ def test_system_version(flask_app):
     assert data["version"]
 
 
+def test_system_storage_reports_on_demand_model_policy(flask_app, isolated_home):
+    client = flask_app.test_client()
+    r = client.get("/api/system/storage")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["model_install_mode"] == "on_demand_ollama_pull"
+    assert data["models_are_bundled"] is False
+    assert data["model_weight_files_in_app"] == []
+    assert data["ollama_models_dir"]
+
+
 def test_system_check_update(flask_app):
     client = flask_app.test_client()
     r = client.get("/api/system/check-update")

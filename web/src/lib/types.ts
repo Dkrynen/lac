@@ -154,3 +154,14 @@ export interface VersionInfo {
   download_url: string;
   app_name: string;
 }
+
+export interface StorageInfo {
+  app_dir: string;
+  app_size_bytes: number | null;
+  ollama_models_dir: string;
+  ollama_models_size_bytes: number | null;
+  ollama_models_configured: boolean;
+  model_weight_files_in_app: { path: string; size_bytes: number }[];
+  models_are_bundled: boolean;
+  model_install_mode: "on_demand_ollama_pull";
+}

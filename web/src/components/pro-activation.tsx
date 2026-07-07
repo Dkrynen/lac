@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { CheckCircle2, Sparkles } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -30,7 +30,7 @@ const UNLOCKED_FEATURES = [
   "Calibration insights",
 ];
 
-export function ProActivation() {
+export function ProActivation({ embedded = false }: { embedded?: boolean }) {
   const status = useAsync(() => api.proStatus() as Promise<ProStatus>);
 
   const [licenseKey, setLicenseKey] = useState("");
@@ -83,7 +83,7 @@ export function ProActivation() {
 
   return (
     <>
-      <Card className="p-5">
+      <ProActivationFrame embedded={embedded}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <Sparkles className="h-4 w-4 text-verdant" /> LAC Pro
         </h2>
@@ -132,7 +132,7 @@ export function ProActivation() {
             </div>
           </>
         )}
-      </Card>
+      </ProActivationFrame>
 
       {celebrating && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -165,4 +165,15 @@ export function ProActivation() {
       )}
     </>
   );
+}
+
+function ProActivationFrame({
+  embedded,
+  children,
+}: {
+  embedded: boolean;
+  children: ReactNode;
+}) {
+  if (embedded) return <div>{children}</div>;
+  return <Card className="p-5">{children}</Card>;
 }

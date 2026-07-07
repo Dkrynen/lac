@@ -33,6 +33,57 @@ PULL_PROGRESS = {}
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
+MODEL_WEIGHT_EXTS = {".gguf", ".safetensors", ".bin", ".onnx", ".pt", ".pth"}
+
+
+def _safe_dir_size(path: Path) -> int | None:
+    if not path.exists():
+        return 0
+    try:
+        total = 0
+        for child in path.rglob("*"):
+            if child.is_file():
+                try:
+                    total += child.stat().st_size
+                except OSError:
+                    continue
+        return total
+    except OSError:
+        return None
+
+
+def _default_ollama_models_dir() -> Path:
+    configured = os.environ.get("OLLAMA_MODELS")
+    if configured:
+        return Path(configured).expanduser()
+    if platform.system().lower() == "linux":
+        return Path("/usr/share/ollama/.ollama/models")
+    return Path.home() / ".ollama" / "models"
+
+
+def _app_payload_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def _find_model_weight_files(path: Path, limit: int = 10) -> list[dict]:
+    if not getattr(sys, "frozen", False) or not path.exists():
+        return []
+    found = []
+    try:
+        for child in path.rglob("*"):
+            if child.is_file() and child.suffix.lower() in MODEL_WEIGHT_EXTS:
+                found.append({
+                    "path": str(child.relative_to(path)),
+                    "size_bytes": child.stat().st_size,
+                })
+                if len(found) >= limit:
+                    break
+    except OSError:
+        return found
+    return found
+
 
 def _serialize_split_plan(plan) -> dict:
     """Serialize a SplitPlan dataclass to a JSON-safe dict for the API."""
@@ -398,6 +449,24 @@ def api_version():
         "github_url": __github_url__,
         "download_url": __download_url__,
         "app_name": "LAC",
+    })
+
+
+@app.route("/api/system/storage")
+def api_storage():
+    app_dir = _app_payload_dir()
+    models_dir = _default_ollama_models_dir()
+    app_size = _safe_dir_size(app_dir) if getattr(sys, "frozen", False) else None
+    model_files = _find_model_weight_files(app_dir)
+    return jsonify({
+        "app_dir": str(app_dir),
+        "app_size_bytes": app_size,
+        "ollama_models_dir": str(models_dir),
+        "ollama_models_size_bytes": _safe_dir_size(models_dir),
+        "ollama_models_configured": bool(os.environ.get("OLLAMA_MODELS")),
+        "model_weight_files_in_app": model_files,
+        "models_are_bundled": bool(model_files),
+        "model_install_mode": "on_demand_ollama_pull",
     })
 
 
