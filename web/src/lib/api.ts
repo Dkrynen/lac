@@ -1,9 +1,35 @@
 // Thin client for the LAC Flask API. In dev Vite proxies /api -> :5050;
 // in prod Flask serves the built bundle on the same origin.
 
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+
+  constructor(status: number, statusText: string, body: unknown) {
+    const message =
+      body && typeof body === "object" && "error" in body
+        ? String((body as { error?: unknown }).error)
+        : `${status} ${statusText}`;
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function readErrorBody(res: Response): Promise<unknown> {
+  const text = await res.text().catch(() => "");
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 export async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) throw new ApiError(res.status, res.statusText, await readErrorBody(res));
   return res.json() as Promise<T>;
 }
 
@@ -13,7 +39,7 @@ export async function postJSON<T>(url: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) throw new ApiError(res.status, res.statusText, await readErrorBody(res));
   return res.json() as Promise<T>;
 }
 
@@ -23,7 +49,7 @@ export async function putJSON<T>(url: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) throw new ApiError(res.status, res.statusText, await readErrorBody(res));
   return res.json() as Promise<T>;
 }
 
@@ -134,9 +160,43 @@ export const api = {
     }),
   /** Poll a custom-model import's progress. */
   importStatus: (repoId: string) =>
-    getJSON<{ state: string; error_type?: string; message?: string; model_name?: string; quant?: string }>(
+    getJSON<{
+      state: string;
+      error_type?: string;
+      message?: string;
+      model_name?: string;
+      quant?: string;
+      current_file?: string;
+      bytes_done?: number;
+      bytes_total?: number;
+      stage?: string;
+    }>(
       `/api/pro/import-status?repo_id=${encodeURIComponent(repoId)}`
     ),
+  resolveImport: (repoId: string, quant?: string) => {
+    const q = new URLSearchParams({ repo_id: repoId });
+    if (quant) q.set("quant", quant);
+    return getJSON<{
+      state: string;
+      repo_id?: string;
+      strategy?: "gguf" | "safetensors";
+      selected_file?: string;
+      selected_size?: number;
+      quant?: string;
+      params_b?: number;
+      context?: number;
+      suggested_gguf_repos?: string[];
+      error_type?: string;
+      message?: string;
+    }>(`/api/pro/import-resolve?${q}`);
+  },
+  cancelImport: (repoId: string) =>
+    postJSON<{ state: string; message?: string }>("/api/pro/import-cancel", { repo_id: repoId }),
+  hfTokenStatus: () => getJSON<{ state: string; configured?: boolean }>("/api/pro/hf-token"),
+  saveHfToken: (token: string) =>
+    postJSON<{ state: string; configured?: boolean; error?: string }>("/api/pro/hf-token", { token }),
+  clearHfToken: () =>
+    fetch("/api/pro/hf-token", { method: "DELETE", headers: { Accept: "application/json" } }).then((r) => r.json()),
   /** Activate LAC Pro: send a license key → the core route bootstrap-installs the
    *  plugin. Returns the installer's honest result (200 for both outcomes; the
    *  frontend branches on `state`). */

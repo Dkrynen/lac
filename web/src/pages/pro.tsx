@@ -23,7 +23,7 @@ export function Pro() {
         <PageHeader title="LAC Pro" subtitle="The tuning cockpit — model tuning, insights, benchmarking, autopilot, and custom imports." />
         <Card className="max-w-2xl p-6">
           <div className="flex items-center gap-2 text-sm font-semibold"><Sparkles className="h-4 w-4 text-verdant" /> Unlock the Pro cockpit</div>
-          <p className="mt-2 text-[13px] text-fg-muted">Tune any model to your exact hardware with before→after proof, track measured speed over time, and import any Hugging Face model. Activate Pro to turn it on.</p>
+          <p className="mt-2 text-[13px] text-fg-muted">Tune models to your exact hardware with before→after proof, track measured speed over time, and import compatible Hugging Face GGUF or safetensors models. Activate Pro to turn it on.</p>
           <Button className="mt-4" asChild><Link to="/settings">Activate Pro</Link></Button>
         </Card>
       </>

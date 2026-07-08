@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 
 /** Track active pulls so they can be cancelled from the UI. */
 const activePulls = new Map<string, AbortController>();
@@ -178,23 +178,35 @@ export function normalizeRepoId(raw: string): string {
   return s.replace(/\/+$/, "");
 }
 
-export async function importModelWithToast(repoId: string, quant: string | undefined, onDone?: () => void) {
+export async function importModelWithToast(
+  repoId: string,
+  quant: string | undefined,
+  onDone?: () => void,
+  onSettled?: () => void
+) {
   repoId = normalizeRepoId(repoId);
   let kickoff: { accepted?: boolean; state?: string; error?: string };
   try {
     kickoff = await api.importModel(repoId, quant);
-  } catch {
+  } catch (e) {
     // Route unreachable (404 = Pro not installed at all, or transient) --
     // same "no Pro" outcome as an explicit not_licensed, same one-time upsell.
-    maybeShowImportUpsellToast();
+    if (e instanceof ApiError && e.status !== 404) {
+      toast.error("Couldn't start import", { description: e.message });
+    } else {
+      maybeShowImportUpsellToast();
+    }
+    onSettled?.();
     return;
   }
   if (kickoff.state === "not_licensed") {
     maybeShowImportUpsellToast();
+    onSettled?.();
     return;
   }
   if (kickoff.error) {
     toast.error(`Couldn't start import: ${kickoff.error}`);
+    onSettled?.();
     return;
   }
 
@@ -204,32 +216,117 @@ export async function importModelWithToast(repoId: string, quant: string | undef
   });
 
   while (Date.now() - started < IMPORT_POLL_TIMEOUT_MS) {
-    let status: { state: string; error_type?: string; message?: string; model_name?: string; quant?: string };
+    let status: {
+      state: string;
+      error_type?: string;
+      message?: string;
+      model_name?: string;
+      quant?: string;
+      current_file?: string;
+      bytes_done?: number;
+      bytes_total?: number;
+      stage?: string;
+    };
     try {
       status = await api.importStatus(repoId);
-    } catch {
-      toast.dismiss(toastId);
-      maybeShowImportUpsellToast();
+    } catch (e) {
+      if (e instanceof ApiError && e.status !== 404) {
+        toast.error("Import status failed", { id: toastId, description: e.message });
+      } else {
+        toast.dismiss(toastId);
+        maybeShowImportUpsellToast();
+      }
+      onSettled?.();
       return;
     }
     if (status.state === "not_licensed") {
       toast.dismiss(toastId);
       maybeShowImportUpsellToast();
+      onSettled?.();
       return;
     }
     if (status.state === "done") {
       toast.success(`Imported ${status.model_name} (${status.quant})`, { id: toastId });
       onDone?.();
+      onSettled?.();
+      return;
+    }
+    if (status.state === "cancelled") {
+      toast.info(`Cancelled import of ${repoId}`, { id: toastId });
+      onSettled?.();
       return;
     }
     if (status.state === "failed") {
-      toast.error(`Import failed: ${status.message ?? status.error_type}`, { id: toastId });
+      toast.error(importFailureTitle(status.error_type), {
+        id: toastId,
+        description: status.message ?? status.error_type,
+      });
+      onSettled?.();
       return;
     }
-    toast.loading(`Importing ${repoId} — ${status.state}…`, { id: toastId });
+    toast.loading(`Importing ${repoId} - ${status.state}...`, {
+      id: toastId,
+      description: importProgressDescription(status),
+      action: {
+        label: "Cancel",
+        onClick: () => {
+          api.cancelImport(repoId).catch(() => {});
+        },
+      },
+    });
     await new Promise((resolve) => setTimeout(resolve, IMPORT_POLL_MS));
   }
   toast.dismiss(toastId);
+  onSettled?.();
+}
+
+function importProgressDescription(status: {
+  current_file?: string;
+  bytes_done?: number;
+  bytes_total?: number;
+  stage?: string;
+}) {
+  const file = status.current_file;
+  const total = Number(status.bytes_total ?? 0);
+  const done = Number(status.bytes_done ?? 0);
+  const stage = status.stage ? `${status.stage}: ` : "";
+  if (!file) return undefined;
+  if (total > 0) return `${stage}${file} - ${formatBytes(done)} / ${formatBytes(total)}`;
+  return `${stage}${file}`;
+}
+
+function importFailureTitle(errorType?: string) {
+  switch (errorType) {
+    case "auth_required":
+      return "Hugging Face access required";
+    case "architecture_unsupported":
+      return "Unsupported model architecture";
+    case "no_importable_files":
+      return "No importable model files";
+    case "insufficient_disk":
+      return "Not enough disk space";
+    case "quant_unsupported":
+      return "No compatible quant for this hardware";
+    case "conversion_failed":
+      return "Ollama conversion failed";
+    case "invalid_repo_id":
+      return "Invalid Hugging Face repo";
+    default:
+      return "Import failed";
+  }
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = n;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
 function maybeShowImportUpsellToast() {

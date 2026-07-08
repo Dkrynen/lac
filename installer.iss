@@ -43,6 +43,10 @@ Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+; Vite hashes web assets, so remove stale bundles before copying the fresh UI.
+Type: files; Name: "{app}\_internal\web\dist\assets\*"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"

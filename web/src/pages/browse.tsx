@@ -28,6 +28,10 @@ const SORTS = [
   { v: "params", l: "Params (high)" },
 ];
 
+function isHuggingFacePageUrl(value: string): boolean {
+  return /^https?:\/\/(www\.)?huggingface\.co\//i.test(value.trim());
+}
+
 export function Browse() {
   const [params, setParams] = useSearchParams();
   const [q, setQ] = useState(params.get("q") ?? "");
@@ -45,6 +49,17 @@ export function Browse() {
 
   const totalVram = lib.data?.system_vram ?? undefined;
   const models = (lib.data?.models ?? []).slice(0, limit);
+
+  function pullOrImport(value: string) {
+    const target = value.trim();
+    if (!target) return;
+    if (isHuggingFacePageUrl(target)) {
+      importModelWithToast(target, undefined, lib.reload);
+    } else {
+      pullWithToast(target, lib.reload);
+    }
+    setNewModel("");
+  }
 
   return (
     <>
@@ -113,15 +128,14 @@ export function Browse() {
       {/* Pull any model:tag from the Ollama registry — full availability */}
       <Card className="mb-4 flex flex-wrap items-center gap-2 p-2.5">
         <Plus className="ml-1 h-4 w-4 text-fg-muted" />
-        <span className="text-[13px] text-fg-muted">Pull any model</span>
+        <span className="text-[13px] text-fg-muted">Pull Ollama/GGUF ref</span>
         <Input
-          placeholder="namespace/model:tag (e.g. hf.co/bartowski/Qwen3-30B-A3B:Q4_K_M)"
+          placeholder="llama3.2:3b or hf.co/bartowski/Qwen3-30B-A3B:Q4_K_M"
           value={newModel}
           onChange={(e) => setNewModel(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && newModel.trim()) {
-              pullWithToast(newModel.trim(), lib.reload);
-              setNewModel("");
+              pullOrImport(newModel);
             }
           }}
           className="h-9 max-w-[420px] flex-1"
@@ -130,8 +144,7 @@ export function Browse() {
           size="sm"
           disabled={!newModel.trim()}
           onClick={() => {
-            pullWithToast(newModel.trim(), lib.reload);
-            setNewModel("");
+            pullOrImport(newModel);
           }}
         >
           Pull
@@ -142,7 +155,7 @@ export function Browse() {
       <Card className="p-4 mb-4">
         <h3 className="text-sm font-semibold mb-2">Import from Hugging Face</h3>
         <p className="text-xs text-fg-muted mb-3">
-          LAC Pro can download, convert, and install any compatible model straight from a Hugging Face repo ID.
+          LAC Pro can install compatible GGUF repos directly, or convert supported safetensors repos into Ollama models.
         </p>
         <div className="flex gap-2">
           <Input
