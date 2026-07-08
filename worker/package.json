@@ -7,10 +7,11 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "deploy": "npx wrangler deploy"
+    "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260702.1",
-    "vitest": "^4.1.9"
+    "@cloudflare/workers-types": "^5.20260708.1",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.108.0"
   }
 }
