@@ -117,8 +117,12 @@ export const api = {
   ps: () => getJSON<import("./types").PsResponse>("/api/ollama/ps"),
   delete: (model: string) => postJSON<{ success?: boolean; error?: string }>("/api/ollama/delete", { model }),
   /** Preload a model into VRAM (fire-and-forget) so the first chat message isn't slow. */
-  warm: (model: string) =>
-    fetch("/api/ollama/warm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) }).catch(() => {}),
+  warm: (model: string, wait = false) =>
+    fetch("/api/ollama/warm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, wait }),
+    }).then((r) => r.json()).catch(() => undefined),
 
   library: (params: { q?: string; capability?: string; sort?: string; compatible?: string } = {}) => {
     const q = new URLSearchParams();
@@ -130,6 +134,10 @@ export const api = {
   },
   tags: (name: string) =>
     getJSON<import("./types").TagsResponse>(`/api/library/tags?name=${encodeURIComponent(name)}`),
+  hfGgufSearch: (q: string, limit = 12) =>
+    getJSON<import("./types").HfGgufSearchResponse>(
+      `/api/hf/gguf-search?q=${encodeURIComponent(q)}&limit=${limit}`
+    ),
 
   downloads: () => getJSON<import("./types").DownloadEntry[]>("/api/config/downloads"),
 

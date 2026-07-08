@@ -38,6 +38,26 @@ def test_warm_accepts_and_runs_in_background(monkeypatch, flask_app):
     assert captured["model"] == "m"
 
 
+def test_warm_waits_when_requested(monkeypatch, flask_app):
+    captured = {}
+
+    def fake_warm(model):
+        captured["model"] = model
+        return {"state": "warm", "model": model, "load_ms": 12.3, "total_ms": 45.6}
+
+    monkeypatch.setattr(api_mod, "_warm_ollama", fake_warm)
+
+    def fail_thread(*args, **kwargs):
+        raise AssertionError("wait=true must warm inline, not in a background thread")
+
+    monkeypatch.setattr(api_mod.threading, "Thread", fail_thread)
+
+    r = flask_app.test_client().post("/api/ollama/warm", json={"model": "m", "wait": True})
+    assert r.status_code == 200
+    assert r.get_json() == {"state": "warm", "model": "m", "load_ms": 12.3, "total_ms": 45.6}
+    assert captured["model"] == "m"
+
+
 def test_warm_ollama_sends_keep_alive_to_generate_endpoint(monkeypatch):
     import urllib.request as real_urllib_request
 
@@ -45,7 +65,7 @@ def test_warm_ollama_sends_keep_alive_to_generate_endpoint(monkeypatch):
 
     class FakeResp:
         def read(self):
-            return b"{}"
+            return b'{"load_duration":12500000,"total_duration":34000000}'
 
     def fake_urlopen(req, timeout=120):
         captured["url"] = req.full_url
@@ -54,11 +74,12 @@ def test_warm_ollama_sends_keep_alive_to_generate_endpoint(monkeypatch):
 
     monkeypatch.setattr(real_urllib_request, "urlopen", fake_urlopen)
 
-    api_mod._warm_ollama("m")
+    result = api_mod._warm_ollama("m")
 
     assert captured["url"].endswith("/api/generate")
     assert captured["data"]["keep_alive"] == "30m"
     assert captured["data"]["model"] == "m"
+    assert result == {"state": "warm", "model": "m", "load_ms": 12.5, "total_ms": 34.0}
 
 
 def test_warm_ollama_never_raises_on_failure(monkeypatch):
@@ -70,7 +91,10 @@ def test_warm_ollama_never_raises_on_failure(monkeypatch):
     monkeypatch.setattr(real_urllib_request, "urlopen", fake_urlopen)
 
     # Must not raise.
-    api_mod._warm_ollama("m")
+    result = api_mod._warm_ollama("m")
+    assert result["state"] == "failed"
+    assert result["model"] == "m"
+    assert "connection refused" in result["error"]
 
 
 # --- POST /api/ollama/chat keeps the model resident ---------------------

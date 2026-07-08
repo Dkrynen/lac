@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { SlidersHorizontal, Plus } from "lucide-react";
+import { ExternalLink, SlidersHorizontal, Plus } from "lucide-react";
 import { PageHeader, ErrorState, EmptyState } from "@/components/page";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,11 @@ export function Browse() {
   const lib = useAsync(
     () => api.library({ q, capability, sort, compatible: compatible ? "gpu" : "" }),
     [q, capability, sort, compatible]
+  );
+  const hfQuery = q.trim();
+  const hf = useAsync(
+    () => hfQuery.length >= 2 ? api.hfGgufSearch(hfQuery, 12) : Promise.resolve({ query: hfQuery, total: 0, models: [] }),
+    [hfQuery]
   );
 
   const totalVram = lib.data?.system_vram ?? undefined;
@@ -173,6 +178,64 @@ export function Browse() {
           </Button>
         </div>
       </Card>
+
+      {hfQuery.length >= 2 && (
+        <section className="mb-4">
+          <div className="mb-2 flex items-center gap-2">
+            <h3 className="text-sm font-semibold">Hugging Face GGUF</h3>
+            <Badge variant="neutral">{hf.data?.total ?? 0} repos</Badge>
+          </div>
+          {hf.error || hf.data?.error ? (
+            <ErrorState message={`Could not search Hugging Face: ${hf.error ?? hf.data?.error}`} onRetry={hf.reload} />
+          ) : hf.loading ? (
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Card key={i} className="h-[150px] p-4">
+                  <Skeleton className="h-4 w-44" />
+                  <Skeleton className="mt-3 h-3 w-full" />
+                  <Skeleton className="mt-2 h-3 w-2/3" />
+                </Card>
+              ))}
+            </div>
+          ) : (hf.data?.models.length ?? 0) === 0 ? (
+            <Card className="p-4 text-[13px] text-fg-muted">
+              No importable GGUF repos found on Hugging Face for "{hfQuery}".
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
+              {hf.data?.models.map((m) => (
+                <Card key={m.repo_id} className="flex min-h-[150px] flex-col justify-between p-4">
+                  <div>
+                    <div className="break-all font-mono text-sm font-semibold text-fg">{m.repo_id}</div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {m.gated && <Badge variant="warning">gated</Badge>}
+                      <Badge variant="neutral">{m.gguf_files} GGUF</Badge>
+                      <Badge variant="neutral">{Number(m.downloads ?? 0).toLocaleString()} downloads</Badge>
+                    </div>
+                    {m.quants.length ? (
+                      <div className="mt-3 flex flex-wrap gap-1">
+                        {m.quants.slice(0, 6).map((q) => (
+                          <span key={q} className="rounded border border-line bg-panel-2 px-1.5 py-0.5 text-[11px] text-fg-muted">
+                            {q}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="mt-4 flex gap-2">
+                    <Button size="sm" onClick={() => importModelWithToast(m.repo_id, undefined, lib.reload)}>
+                      Import
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => window.open(`https://huggingface.co/${m.repo_id}`, "_blank")}>
+                      <ExternalLink /> Open
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {lib.error ? (
         <ErrorState message={`Couldn’t load library: ${lib.error}`} onRetry={lib.reload} />

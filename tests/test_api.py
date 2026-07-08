@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -320,6 +322,67 @@ def test_check_update_uses_lac_repo_and_useragent(monkeypatch, flask_app):
     assert captured["url"] == "https://api.github.com/repos/Dkrynen/lac/releases/latest"
     assert captured["ua"].startswith("LAC/")
     assert captured["ua"] != "model-hub/1.0"
+
+
+def test_hf_gguf_search_maps_public_metadata(monkeypatch, flask_app):
+    import urllib.request as real_urllib_request
+
+    captured = {}
+    body = json.dumps([
+        {
+            "id": "org/model-GGUF",
+            "author": "org",
+            "downloads": 123,
+            "likes": 4,
+            "gated": False,
+            "lastModified": "2026-01-01T00:00:00Z",
+            "tags": ["gguf", "text-generation", "license:apache-2.0"],
+            "siblings": [
+                {"rfilename": "model-Q4_K_M.gguf"},
+                {"rfilename": "model-Q8_0.gguf"},
+                {"rfilename": "README.md"},
+            ],
+        },
+        {
+            "id": "org/not-gguf",
+            "tags": ["safetensors"],
+            "siblings": [{"rfilename": "model.safetensors"}],
+        },
+    ]).encode()
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return body
+
+    def fake_urlopen(req, timeout=12):
+        captured["url"] = req.full_url
+        captured["ua"] = req.get_header("User-agent")
+        return FakeResp()
+
+    monkeypatch.setattr(real_urllib_request, "urlopen", fake_urlopen)
+
+    r = flask_app.test_client().get("/api/hf/gguf-search?q=qwen&limit=5")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["query"] == "qwen"
+    assert data["total"] == 1
+    assert data["models"][0]["repo_id"] == "org/model-GGUF"
+    assert data["models"][0]["gguf_files"] == 2
+    assert data["models"][0]["quants"] == ["Q4_K_M", "Q8_0"]
+    assert "qwen+gguf" in captured["url"]
+    assert captured["ua"].startswith("LAC/")
+
+
+def test_hf_gguf_search_empty_query_is_local_only(flask_app):
+    r = flask_app.test_client().get("/api/hf/gguf-search")
+    assert r.status_code == 200
+    assert r.get_json() == {"query": "", "total": 0, "models": []}
 
 
 # --- POST /api/pro/unlock (web "Activate Pro" -> bootstrap-install the plugin) ---

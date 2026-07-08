@@ -34,6 +34,7 @@ export function Chat() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [warming, setWarming] = useState(false);
   const [system, setSystem] = useState("");
   const [showSystem, setShowSystem] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -44,7 +45,22 @@ export function Chat() {
   }, [model, models]);
 
   useEffect(() => {
-    if (model) api.warm(model);
+    if (!model) return;
+    let cancelled = false;
+    setWarming(true);
+    api.warm(model, true)
+      .then((res) => {
+        if (cancelled) return;
+        if (res?.state === "failed") {
+          toast.error("Model warm-up failed", { description: res.error ?? "Ollama did not load the model." });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setWarming(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [model]);
 
   useEffect(() => {
@@ -56,7 +72,7 @@ export function Chat() {
       toast.error("Select a model first");
       return;
     }
-    if (!text.trim() || streaming) return;
+    if (!text.trim() || streaming || warming) return;
 
     const history: Msg[] = system ? [{ role: "system", content: system }, ...messages, { role: "user", content: text }] : [...messages, { role: "user", content: text }];
     setMessages([...messages, { role: "user", content: text }, { role: "assistant", content: "" }]);
@@ -136,6 +152,7 @@ export function Chat() {
           ) : (
             <span className="text-[13px] text-fg-muted">No models installed</span>
           )}
+          {warming && <span className="text-[12px] text-fg-muted">Warming model...</span>}
         </div>
 
         {/* messages */}
@@ -178,14 +195,14 @@ export function Chat() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder={model ? `Message ${model}…` : "Install a model to start chatting"}
-              disabled={!model || streaming}
+              disabled={!model || streaming || warming}
             />
             {streaming ? (
               <Button type="button" variant="secondary" onClick={stop}>
                 <Square /> Stop
               </Button>
             ) : (
-              <Button type="submit" disabled={!model || !input.trim()}>
+              <Button type="submit" disabled={!model || warming || !input.trim()}>
                 <Send /> Send
               </Button>
             )}

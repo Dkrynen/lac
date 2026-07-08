@@ -363,27 +363,40 @@ def ollama_delete():
     return jsonify({"success": True})
 
 
-def _warm_ollama(model: str) -> None:
+def _warm_ollama(model: str) -> dict:
     """Load `model` into VRAM (no generation) and keep it resident. Never raises."""
     import urllib.request
     try:
         body = json.dumps({"model": model, "keep_alive": "30m"}).encode()
         req = urllib.request.Request(f"{OLLAMA_HOST}/api/generate", data=body,
                                      headers={"Content-Type": "application/json"}, method="POST")
-        urllib.request.urlopen(req, timeout=120).read()
-    except Exception:
-        pass
+        raw = urllib.request.urlopen(req, timeout=120).read()
+        try:
+            data = json.loads(raw.decode() or "{}")
+        except Exception:  # noqa: BLE001 - warming should not fail on a bad metrics body
+            data = {}
+        return {
+            "state": "warm",
+            "model": model,
+            "load_ms": round((data.get("load_duration") or 0) / 1e6, 1),
+            "total_ms": round((data.get("total_duration") or 0) / 1e6, 1),
+        }
+    except Exception as exc:  # noqa: BLE001 - caller decides whether to surface this
+        return {"state": "failed", "model": model, "error": str(exc)}
 
 
 @app.route("/api/ollama/warm", methods=["POST"])
 def ollama_warm():
     """Preload a model into VRAM off the chat critical path so the first message
-    doesn't pay the cold-load penalty. Fire-and-forget: returns immediately; the
-    load happens in a daemon thread."""
+    doesn't pay the cold-load penalty. By default this is fire-and-forget; pass
+    {"wait": true} when the UI needs to block sending until the model is loaded."""
     data = request.get_json(silent=True)
     model = data.get("model") if isinstance(data, dict) else None
     if not isinstance(model, str) or not model.strip():
         return jsonify({"error": "model required"}), 400
+    wait = bool(data.get("wait")) if isinstance(data, dict) else False
+    if wait:
+        return jsonify(_warm_ollama(model.strip())), 200
     threading.Thread(target=_warm_ollama, args=(model.strip(),), daemon=True).start()
     return jsonify({"accepted": True}), 200
 
@@ -701,6 +714,87 @@ def api_library_tags():
         return jsonify({"name": name, "tags": tags, "count": len(tags)})
     except Exception as e:
         return jsonify({"error": str(e), "name": name, "tags": []})
+
+
+def _gguf_quants(filenames: list[str]) -> list[str]:
+    quants: set[str] = set()
+    pat = re.compile(r"(?i)(IQ[1-4]_[A-Z]+|Q[2-8](?:_K_[SML]|_K|_[0-8](?:_[0-8])*)|F16|FP16)")
+    for name in filenames:
+        for match in pat.findall(name):
+            quants.add(match.upper().replace("FP16", "F16"))
+    return sorted(quants)
+
+
+def _search_hf_gguf(query: str, limit: int = 12) -> dict:
+    """Search public Hugging Face metadata for GGUF repos.
+
+    This is deliberately open-core safe: it reads public HF model metadata only
+    and never imports or calls lac_pro. The Pro plugin still owns importing.
+    """
+    query = " ".join((query or "").split())
+    if not query:
+        return {"query": query, "total": 0, "models": []}
+    limit = max(1, min(int(limit or 12), 24))
+
+    try:
+        import urllib.parse
+        import urllib.request
+
+        params = urllib.parse.urlencode({
+            "search": f"{query} gguf",
+            "limit": str(limit),
+            "full": "false",
+        })
+        req = urllib.request.Request(
+            f"https://huggingface.co/api/models?{params}",
+            headers={"Accept": "application/json", "User-Agent": f"LAC/{APP_VERSION}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:  # noqa: BLE001 - search is optional; Browse must still work
+        return {"query": query, "total": 0, "models": [], "error": str(exc)}
+
+    out = []
+    seen: set[str] = set()
+    for item in data if isinstance(data, list) else []:
+        repo_id = item.get("id") or item.get("modelId")
+        if not isinstance(repo_id, str) or repo_id in seen:
+            continue
+        seen.add(repo_id)
+        tags = [t for t in item.get("tags", []) if isinstance(t, str)]
+        siblings = item.get("siblings", [])
+        filenames = [
+            s.get("rfilename", "")
+            for s in siblings
+            if isinstance(s, dict) and isinstance(s.get("rfilename"), str)
+        ]
+        gguf_files = [f for f in filenames if f.lower().endswith(".gguf")]
+        if not gguf_files and not any(t.lower() == "gguf" for t in tags):
+            continue
+        out.append({
+            "repo_id": repo_id,
+            "author": item.get("author"),
+            "downloads": item.get("downloads") or 0,
+            "likes": item.get("likes") or 0,
+            "gated": bool(item.get("gated")),
+            "last_modified": item.get("lastModified"),
+            "tags": tags[:8],
+            "gguf_files": len(gguf_files),
+            "quants": _gguf_quants(gguf_files)[:10],
+        })
+
+    return {"query": query, "total": len(out), "models": out}
+
+
+@app.route("/api/hf/gguf-search")
+def api_hf_gguf_search():
+    q = request.args.get("q", "").strip()
+    try:
+        limit = int(request.args.get("limit", "12"))
+    except (TypeError, ValueError):
+        limit = 12
+    return jsonify(_search_hf_gguf(q, limit=limit))
 
 
 @app.route("/api/ollama/library")

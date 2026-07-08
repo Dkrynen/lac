@@ -135,6 +135,24 @@ export interface TagsResponse {
   error?: string;
 }
 
+export interface HfGgufModel {
+  repo_id: string;
+  author?: string;
+  downloads: number;
+  likes: number;
+  gated: boolean;
+  last_modified?: string;
+  tags: string[];
+  gguf_files: number;
+  quants: string[];
+}
+export interface HfGgufSearchResponse {
+  query: string;
+  total: number;
+  models: HfGgufModel[];
+  error?: string;
+}
+
 export interface DownloadEntry {
   model?: string;
   status?: string;
