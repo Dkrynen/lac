@@ -243,13 +243,47 @@ def test_pro_install_never_mentions_lac_pro():
 
 # ------------------------------------------------------------------ cmd_unlock
 
-def test_cmd_unlock_success_exit0_prints_path_and_restart(plugin_dir, monkeypatch, capsys):
+def test_cmd_unlock_success_exit0_installs_and_activates(plugin_dir, monkeypatch, capsys):
     import cli
     monkeypatch.setattr(pro_install, "_http_post", _fake_post(200, _artifact()))
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "activated"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
+        return _Result()
+
+    monkeypatch.setattr("backend.cookbook.proc.run", fake_run)
     cli.cmd_unlock(SimpleNamespace(key="LAC-GOOD-KEY"))  # returns (exit 0), no SystemExit
     out = capsys.readouterr().out
     assert str(plugin_dir) in out
+    assert "activated" in out.lower()
     assert "restart lac" in out.lower()
+    assert captured["cmd"][-2:] == ["pro", "activate"]
+    assert "LAC-GOOD-KEY" not in " ".join(captured["cmd"])
+    assert captured["input"].strip() == "LAC-GOOD-KEY"
+
+
+def test_cmd_unlock_activation_failure_exit1(plugin_dir, monkeypatch, capsys):
+    import cli
+    monkeypatch.setattr(pro_install, "_http_post", _fake_post(200, _artifact()))
+
+    class _Result:
+        returncode = 1
+        stdout = "activation rejected"
+        stderr = ""
+
+    monkeypatch.setattr("backend.cookbook.proc.run", lambda cmd, **kwargs: _Result())
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_unlock(SimpleNamespace(key="LAC-GOOD-KEY"))
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "activation failed" in err.lower()
 
 
 def test_cmd_unlock_invalid_key_exit1_message_on_stderr(plugin_dir, monkeypatch, capsys):

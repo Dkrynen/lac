@@ -48,7 +48,7 @@ The free tier is complete and stays free. **LAC Pro** adds the power tools:
 
 Cheap subscription, priced to be a no-brainer. Landing soon — the [waitlist](https://dkrynen.github.io/lac/) hears first.
 
-**After you buy,** Polar emails you a license key — same key, two quick steps. First, `lac unlock <key>` (or **Settings → Activate Pro** in the web UI) downloads and installs the Pro plugin. Then restart LAC and run `lac pro activate <key>` to activate your license — the autopilot mounts and Pro goes live. (Buying doesn't install Pro; the key does.)
+**After you buy,** Polar emails you a license key. Run `lac unlock <key>` or use **Settings → Activate Pro** in the web UI; LAC downloads the private Pro plugin and activates this machine with that same key. Restart LAC after activation so the Pro cockpit mounts cleanly. (Buying doesn't install Pro; the key does.)
 
 ## Hardware detection
 
@@ -68,6 +68,7 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt  # or bin/
 .venv/Scripts/python server.py        # Flask + web UI on :5050
 cd web && npm ci && npm run dev       # Vite dev server (proxies /api)
 .venv/Scripts/python -m pytest -q    # test suite
+.venv/Scripts/python scripts/release_readiness.py  # read-only local/public release check
 ```
 
 Plugins mount via the `lac.plugins` entry-point group — see [docs/PLUGINS.md](docs/PLUGINS.md). Contributions welcome: [CONTRIBUTING.md](CONTRIBUTING.md).

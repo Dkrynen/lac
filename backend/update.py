@@ -13,6 +13,7 @@ from backend.cookbook import proc
 from .version import __version__ as CURRENT_VERSION, __github_url__, __download_url__
 
 GITHUB_API = "https://api.github.com/repos/Dkrynen/lac/releases/latest"
+_INSTALLER_HINTS = ("lac-setup", "windows", "win64", "x64")
 
 
 class UpdateMode(Enum):
@@ -67,6 +68,32 @@ def is_newer(latest: str, current: str = CURRENT_VERSION) -> bool:
     return _parse_version(latest) > _parse_version(current)
 
 
+def select_release_download_url(data: dict, fallback: str | None = None) -> str | None:
+    """Return the best downloadable installer URL from a GitHub release payload.
+
+    Prefer a Windows installer asset over the release page so update prompts can
+    take packaged users straight to the .exe.
+    """
+    assets = data.get("assets", []) or []
+    candidates = [
+        a for a in assets
+        if isinstance(a, dict) and isinstance(a.get("browser_download_url"), str)
+    ]
+    if not candidates:
+        return fallback
+
+    def score(asset: dict) -> tuple[int, int]:
+        name = str(asset.get("name") or "").lower()
+        url = str(asset.get("browser_download_url") or "").lower()
+        haystack = f"{name} {url}"
+        is_exe = name.endswith(".exe") or url.endswith(".exe")
+        hints = sum(1 for hint in _INSTALLER_HINTS if hint in haystack)
+        return (1 if is_exe else 0, hints)
+
+    best = max(candidates, key=score)
+    return best.get("browser_download_url") or fallback
+
+
 def check_update(timeout: int = 10) -> dict | None:
     req = urllib.request.Request(GITHUB_API)
     req.add_header("Accept", "application/vnd.github+json")
@@ -82,15 +109,13 @@ def check_update(timeout: int = 10) -> dict | None:
     latest = tag.lstrip("vV")
     if not is_newer(latest):
         return None
-    assets = data.get("assets", []) or []
-    download_url = next((a.get("browser_download_url") for a in assets if a.get("browser_download_url")), None)
     body = (data.get("body") or "").strip()
     return {
         "latest_version": latest,
         "current_version": CURRENT_VERSION,
         "tag": tag,
         "html_url": data.get("html_url", __github_url__),
-        "download_url": download_url or __download_url__,
+        "download_url": select_release_download_url(data, __download_url__),
         "changelog": body[:1500],
         "install_method": detect_install_method(),
     }

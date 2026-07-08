@@ -38,6 +38,34 @@ def test_system_storage_reports_on_demand_model_policy(flask_app, isolated_home)
     assert data["ollama_models_dir"]
 
 
+def test_system_debug_bundle_is_sanitized(monkeypatch, flask_app, isolated_home):
+    from backend import api as api_mod
+
+    monkeypatch.setenv("LAC_PRO_GATE_URL", "https://secret-gate.example/pro/download")
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+    monkeypatch.setenv("OLLAMA_HOST", "http://user:ollama-secret@localhost:11434")
+    monkeypatch.setattr(api_mod, "_ollama_request", lambda method, path, json_body=None, stream=False: {
+        "/api/version": {"version": "0.31.1"},
+        "/api/ps": {"models": []},
+        "/api/tags": {"models": [{"name": "tiny:latest", "size": 1234, "modified_at": "now"}]},
+    }.get(path, {}))
+
+    client = flask_app.test_client()
+    r = client.get("/api/system/debug-bundle")
+    assert r.status_code == 200
+    assert "attachment" in r.headers["Content-Disposition"]
+    data = r.get_json()
+    raw = json.dumps(data)
+    assert data["app"]["version"]
+    assert data["environment"]["LAC_PRO_GATE_URL"] == {"set": True}
+    assert data["environment"]["HF_TOKEN"] == {"set": True}
+    assert data["environment"]["OLLAMA_HOST"]["value"] == "http://localhost:11434"
+    assert "secret-gate" not in raw
+    assert "hf_secret" not in raw
+    assert "ollama-secret" not in raw
+    assert data["ollama"]["installed_models"][0]["name"] == "tiny:latest"
+
+
 def test_system_check_update(flask_app):
     client = flask_app.test_client()
     r = client.get("/api/system/check-update")
@@ -307,7 +335,11 @@ def test_check_update_uses_lac_repo_and_useragent(monkeypatch, flask_app):
 
     class FakeResp:
         def read(self):
-            return b'{"tag_name": "v9.9.9", "html_url": "x", "body": ""}'
+            return (
+                b'{"tag_name": "v9.9.9", "html_url": "x", "body": "", '
+                b'"assets": [{"name": "LAC-Setup-9.9.9-windows-x64.exe", '
+                b'"browser_download_url": "https://github.test/LAC-Setup.exe"}]}'
+            )
 
     def fake_urlopen(req, timeout=5):
         captured["url"] = req.full_url
@@ -322,6 +354,7 @@ def test_check_update_uses_lac_repo_and_useragent(monkeypatch, flask_app):
     assert captured["url"] == "https://api.github.com/repos/Dkrynen/lac/releases/latest"
     assert captured["ua"].startswith("LAC/")
     assert captured["ua"] != "model-hub/1.0"
+    assert r.get_json()["download_url"] == "https://github.test/LAC-Setup.exe"
 
 
 def test_hf_gguf_search_maps_public_metadata(monkeypatch, flask_app):

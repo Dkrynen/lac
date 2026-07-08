@@ -1048,17 +1048,40 @@ def cmd_plugins(args):
 
 
 def cmd_unlock(args):
-    """Activate LAC Pro: fetch the licensed plugin from the gate + install it.
+    """Activate LAC Pro: install the licensed plugin, then activate the seat.
 
-    Exit codes: 0 = installed, 1 = any failure (honest message on stderr).
+    Exit codes: 0 = activated, 1 = any failure (honest message on stderr).
     """
     from backend import pro_install
+    from backend import self_invoke
+    from backend.cookbook import proc
 
     result = pro_install.install_pro_plugin(args.key)
     if result.get("state") == "installed":
         dest = result.get("path", "the LAC plugin directory")
-        print(f"{C['green']}✓ LAC Pro installed to {dest}{C['reset']}")
-        print("  Restart LAC to use Pro.")
+        try:
+            r = proc.run(
+                [*self_invoke.cli_prefix(), "pro", "activate"],
+                input=args.key + "\n",
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except Exception as exc:  # noqa: BLE001
+            eprint(f"{C['red']}Pro installed to {dest}, but activation could not run: {exc}{C['reset']}")
+            eprint("  Restart LAC, then run: lac pro activate <key>")
+            sys.exit(1)
+
+        if r.returncode != 0:
+            lines = (r.stdout or r.stderr or "activation failed").strip().splitlines()
+            msg = lines[-1].strip() if lines else "activation failed"
+            eprint(f"{C['red']}Pro installed to {dest}, but activation failed: {msg}{C['reset']}")
+            eprint("  Restart LAC, then run: lac pro activate <key>")
+            sys.exit(1)
+
+        print(f"{C['green']}LAC Pro installed and activated on this machine{C['reset']}")
+        print(f"  Plugin installed to {dest}")
+        print("  Restart LAC to load the Pro cockpit.")
         return
 
     eprint(f"{C['red']}✗ Unlock failed: {result.get('message', 'unknown error')}{C['reset']}")

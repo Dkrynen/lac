@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import json
 
-from backend.update import UpdateMode, _parse_version, check_update, detect_install_method, is_newer
+from backend.update import (
+    UpdateMode,
+    _parse_version,
+    check_update,
+    detect_install_method,
+    is_newer,
+    select_release_download_url,
+)
 
 
 def test_parse_version():
@@ -54,6 +61,22 @@ def test_check_update_detects_newer(monkeypatch):
     assert info["latest_version"] == "99.0.0"
     assert info["changelog"] == "changelog"
     assert info["install_method"] in ("pip", "uv", "pyinstaller", "source")
+    assert info["download_url"] == "http://x/exe"
+
+
+def test_select_release_download_url_prefers_windows_installer():
+    payload = {
+        "assets": [
+            {"name": "notes.txt", "browser_download_url": "http://x/notes.txt"},
+            {"name": "LAC-Setup-2.6.2-windows-x64.exe", "browser_download_url": "http://x/setup.exe"},
+            {"name": "source.zip", "browser_download_url": "http://x/source.zip"},
+        ]
+    }
+    assert select_release_download_url(payload, "http://x/releases") == "http://x/setup.exe"
+
+
+def test_select_release_download_url_falls_back_without_assets():
+    assert select_release_download_url({"assets": []}, "http://x/releases") == "http://x/releases"
 
 
 def test_check_update_none_when_up_to_date(monkeypatch):

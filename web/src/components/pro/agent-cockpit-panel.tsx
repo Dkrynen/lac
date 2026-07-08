@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Check, Copy, Terminal, Zap } from "lucide-react";
+import { AlertTriangle, Bot, Check, Copy, Terminal, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,7 @@ export function AgentCockpitPanel() {
   const command = data?.cli?.command ?? "";
   const recommended = data?.recommended_models ?? [];
   const agents = data?.agents ?? [];
+  const degraded = Boolean(data?.model_error || data?.agent_error || (data && data.state !== "ok" && data.state !== "not_licensed"));
 
   const copyCommand = async () => {
     if (!command) return;
@@ -59,8 +60,8 @@ export function AgentCockpitPanel() {
               Pro connects your installed Ollama models to LAC's CLI agent tools.
             </p>
           </div>
-          <Badge variant={data?.state === "ok" ? "success" : "neutral"} dot>
-            {data?.state === "ok" ? "ready path" : "checking"}
+          <Badge variant={data?.state === "ok" ? "success" : degraded ? "warning" : "neutral"} dot>
+            {data?.state === "ok" ? "ready" : degraded ? "needs attention" : "checking"}
           </Badge>
         </div>
       </div>
@@ -72,8 +73,22 @@ export function AgentCockpitPanel() {
         </div>
       ) : data?.state === "not_licensed" ? (
         <div className="p-5 text-[13px] text-fg-muted">Activate Pro to open the local agent cockpit.</div>
+      ) : status.error ? (
+        <div className="p-5">
+          <div className="flex items-start gap-2 rounded-lg border border-danger-soft bg-danger-soft p-3 text-[13px] text-danger">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{status.error}</span>
+          </div>
+        </div>
       ) : (
         <div className="grid gap-4 p-5">
+          {(data?.model_error || data?.agent_error) && (
+            <div className="grid gap-2">
+              {data.model_error && <WarningLine label="Model discovery" message={data.model_error} />}
+              {data.agent_error && <WarningLine label="Agent config" message={data.agent_error} />}
+            </div>
+          )}
+
           <div className="grid gap-3 md:grid-cols-3">
             <Metric label="Workspace" value={data?.workspace || "default"} />
             <Metric label="Ollama" value={data?.ollama_host || "localhost"} />
@@ -166,6 +181,18 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div className="rounded-lg border border-line bg-panel-2 px-3 py-2">
       <div className="text-[11px] uppercase tracking-wide text-fg-faint">{label}</div>
       <div className="mt-1 truncate text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function WarningLine({ label, message }: { label: string; message: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-soft p-3 text-[13px] text-warning">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <div>
+        <div className="font-semibold">{label}</div>
+        <div className="mt-0.5 text-[12px] leading-relaxed">{message}</div>
+      </div>
     </div>
   );
 }

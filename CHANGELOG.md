@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## 2.6.3 (2026-07-08)
+
+- **Release readiness verifier** - `scripts/release_readiness.py` now checks the local installer hash/size, running app version, debug-bundle download, Pro plugin discovery, and published GitHub release asset without pushing or publishing anything.
+- **Safer release workflow** - GitHub Actions now stamps `installer.iss` by replacing `#define MyAppVersion` directly and uploads `SHA256SUMS.txt` beside the Windows installer for unsigned-download verification.
+- **Debug bundle export** - Settings can export a sanitized support bundle with app, Ollama, storage, hardware, plugin, and recent-download state.
+- **Pro activation polish** - `lac unlock <key>` now installs and activates the Pro plugin in one flow while keeping the key out of argv.
+- **Update/download polish** - Update checks now point directly to the Windows installer asset when GitHub provides one, and the Pro page surfaces degraded cockpit states clearly.
+
 ## 2.6.2 (2026-07-07)
 
 - **Settings depth pass** - Settings now has clearer Engine, Appearance, Account & Pro, Diagnostics, and About sections instead of a thin form stack.

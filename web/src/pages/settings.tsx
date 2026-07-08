@@ -5,6 +5,7 @@ import {
   Check,
   CircleDot,
   Copy,
+  Download,
   Github,
   HardDrive,
   Info,
@@ -115,6 +116,26 @@ export function Settings() {
       toast.success(`${label} copied`);
     } catch {
       toast.error(`Could not copy ${label.toLowerCase()}`);
+    }
+  };
+
+  const exportDebugBundle = async () => {
+    try {
+      const bundle = await api.debugBundle();
+      const json = JSON.stringify(bundle, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `lac-debug-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Debug bundle exported");
+    } catch (e) {
+      toast.error("Export failed", { description: e instanceof Error ? e.message : String(e) });
     }
   };
 
@@ -272,6 +293,9 @@ export function Settings() {
               <Meta label="Resolved theme">{theme}</Meta>
               <Meta label="UI density">{density}</Meta>
             </dl>
+            <Button variant="secondary" size="sm" className="mt-4 w-full" onClick={exportDebugBundle}>
+              <Download /> Export debug bundle
+            </Button>
           </Section>
 
           <Section icon={HardDrive} title="Storage" description="App payload stays separate from model weights.">

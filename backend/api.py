@@ -8,14 +8,18 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 
 from . import self_invoke
 from .cookbook import proc
+from .cookbook.config import load_config
+from .cookbook.downloads import download_history
 from .cookbook.hardware import detect, print_system
 from .cookbook.recommend import recommend, load_models
 from .pro_install import install_pro_plugin
+from .update import select_release_download_url
 
 try:
     from .version import __version__ as APP_VERSION, __github_url__, __download_url__
@@ -524,6 +528,142 @@ def api_storage():
     })
 
 
+def _debug_env_flags() -> dict:
+    """Sanitized environment presence for support exports.
+
+    Values that can contain credentials or private endpoints are never included.
+    """
+    allowed_values = {"OLLAMA_HOST", "OLLAMA_MODELS"}
+    names = [
+        "OLLAMA_HOST",
+        "OLLAMA_MODELS",
+        "LAC_PRO_GATE_URL",
+        "LAC_PRO_DEV",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+    ]
+    out = {}
+    for name in names:
+        value = os.environ.get(name)
+        out[name] = {"set": value is not None}
+        if name in allowed_values and value is not None:
+            out[name]["value"] = _safe_debug_env_value(name, value)
+    return out
+
+
+def _safe_debug_env_value(name: str, value: str) -> str:
+    if name != "OLLAMA_HOST":
+        return value
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return "<invalid-url>"
+    if not parts.username and not parts.password:
+        return value
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
+
+def _debug_call(label: str, fn):
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 - diagnostics should never fail whole export
+        return {"error": f"{label}: {exc}"}
+
+
+def _debug_bundle_payload() -> dict:
+    cfg = _debug_call("config", load_config)
+    cfg_payload = cfg if isinstance(cfg, dict) and "error" in cfg else {
+        "workspace": getattr(cfg, "workspace", None),
+        "ollama_host": getattr(cfg, "ollama_host", None),
+        "theme": getattr(cfg, "theme", None),
+        "default_model": getattr(cfg, "default_model", None),
+    }
+
+    info = _debug_call("scan", detect)
+    if not (isinstance(info, dict) and "error" in info):
+        info = {
+            "os": info.os,
+            "cpu": info.cpu,
+            "cores": info.cpu_cores,
+            "ram_gb": info.ram_gb,
+            "gpus": [
+                {
+                    "name": g.name,
+                    "vram_gb": g.vram_gb,
+                    "backend": g.backend,
+                    "tier": g.tier,
+                    "device_index": g.device_index,
+                }
+                for g in info.gpus
+            ],
+            "total_vram_gb": info.total_vram_gb,
+            "combined_vram_gb": info.combined_vram_gb,
+            "in_container": info.in_container,
+        }
+
+    models = _debug_call("ollama models", lambda: _ollama_request("GET", "/api/tags"))
+    model_payload = []
+    if isinstance(models, dict) and isinstance(models.get("models"), list):
+        model_payload = [
+            {
+                "name": m.get("name"),
+                "size_gb": round((m.get("size") or 0) / (1024**3), 2),
+                "modified": m.get("modified_at", ""),
+            }
+            for m in models.get("models", [])
+            if isinstance(m, dict)
+        ]
+    elif isinstance(models, dict) and "error" in models:
+        model_payload = models
+
+    downloads = _debug_call("downloads", lambda: download_history()[-10:])
+
+    return {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "app": {
+            "name": "LAC",
+            "version": APP_VERSION,
+            "github_url": __github_url__,
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "executable": sys.executable,
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+        },
+        "config": cfg_payload,
+        "environment": _debug_env_flags(),
+        "hardware": info,
+        "ollama": {
+            "host": _safe_debug_env_value("OLLAMA_HOST", OLLAMA_HOST),
+            "version": _debug_call("ollama version", lambda: _ollama_request("GET", "/api/version")),
+            "running_models": _debug_call("ollama ps", lambda: _ollama_request("GET", "/api/ps")),
+            "installed_models": model_payload,
+        },
+        "storage": {
+            "app_dir": str(_app_payload_dir()),
+            "ollama_models_dir": str(_default_ollama_models_dir()),
+            "ollama_models_configured": bool(os.environ.get("OLLAMA_MODELS")),
+            "model_install_mode": "on_demand_ollama_pull",
+        },
+        "plugins": [
+            {"name": p.name, "version": p.version, "ok": p.ok, "error": p.error}
+            for p in _discover_plugins_safe()
+        ],
+        "recent_downloads": downloads,
+    }
+
+
+@app.route("/api/system/debug-bundle")
+def api_debug_bundle():
+    payload = _debug_bundle_payload()
+    resp = jsonify(payload)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    resp.headers["Content-Disposition"] = f'attachment; filename="lac-debug-{stamp}.json"'
+    return resp
+
+
 @app.route("/api/system/check-update")
 def api_check_update():
     current = request.args.get("current", APP_VERSION)
@@ -542,7 +682,7 @@ def api_check_update():
             return jsonify({
                 "update_available": True,
                 "latest_version": latest,
-                "download_url": data.get("html_url", ""),
+                "download_url": select_release_download_url(data, data.get("html_url", "")),
                 "release_notes": (data.get("body") or "")[:500],
             })
         return jsonify({"update_available": False, "latest_version": latest, "current_version": current})

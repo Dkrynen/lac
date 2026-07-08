@@ -146,6 +146,7 @@ export const api = {
 
   version: () => getJSON<import("./types").VersionInfo>("/api/system/version"),
   storage: () => getJSON<import("./types").StorageInfo>("/api/system/storage"),
+  debugBundle: () => getJSON<Record<string, unknown>>("/api/system/debug-bundle"),
 
   /** Stream a model pull. Yields progress payloads ({status,completed,total,...} or {error}). */
   pull(model: string, signal?: AbortSignal) {
@@ -223,11 +224,11 @@ export const api = {
   },
 
   activatePro: (key: string) =>
-    fetch("/api/pro/activate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key }),
-    }).then((r) => r.json()),
+    postJSON<
+      | { state: "activated" }
+      | { state: "install_failed"; message: string; error_type?: string }
+      | { state: "activation_failed"; message: string }
+    >("/api/pro/activate", { key }),
 
   appRelaunch: (view: string, bounds?: { x: number; y: number; width: number; height: number }) =>
     fetch("/api/app/relaunch", {
@@ -247,5 +248,5 @@ export const api = {
   proBenchmarkHistory: (model: string) => fetch(`/api/pro/benchmark-history?model=${encodeURIComponent(model)}`).then((r) => r.json()),
   proAutopilotLog: () => fetch("/api/pro/autopilot-log").then((r) => r.json()),
   proImportHistory: () => fetch("/api/pro/import-history").then((r) => r.json()),
-  proAgentCockpit: () => fetch("/api/pro/agent-cockpit").then((r) => r.json()),
+  proAgentCockpit: () => getJSON<any>("/api/pro/agent-cockpit"),
 };
