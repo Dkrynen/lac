@@ -445,6 +445,27 @@ def test_fetch_hf_model_detail_uses_short_ttl_cache(monkeypatch):
     assert len(calls) == 1
 
 
+def test_hf_gguf_files_block_cpu_tuned_variants():
+    from backend import api as api_mod
+
+    files = api_mod._hf_gguf_files(
+        [
+            {"rfilename": "model-Q4_0.gguf", "size": 800_000_000},
+            {"rfilename": "model-Q4_0_4_4.gguf", "size": 700_000_000},
+            {"rfilename": "model-Q4_0_8_8.gguf", "size": 600_000_000},
+        ],
+        system_vram=16.0,
+        ram_gb=32.0,
+    )
+    by_name = {file["filename"]: file for file in files}
+
+    assert by_name["model-Q4_0.gguf"]["importable"] is True
+    assert by_name["model-Q4_0_4_4.gguf"]["quant"] == "Q4_0"
+    assert by_name["model-Q4_0_4_4.gguf"]["importable"] is False
+    assert "CPU-tuned" in by_name["model-Q4_0_8_8.gguf"]["compatibility_note"]
+    assert api_mod._choose_hf_file(files)["filename"] == "model-Q4_0.gguf"
+
+
 def test_hf_gguf_search_empty_query_is_local_only(flask_app):
     r = flask_app.test_client().get("/api/hf/gguf-search")
     assert r.status_code == 200

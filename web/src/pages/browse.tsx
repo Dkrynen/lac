@@ -57,7 +57,8 @@ function hfFileLabel(model: HfGgufModel, file: HfGgufFile): string {
   const quant = file.quant ?? "GGUF";
   const size = file.size_gb ? ` - ${fmtBytes(file.size_gb)}` : "";
   const duplicateQuant = (model.files ?? []).filter((f) => f.quant === file.quant).length > 1;
-  return duplicateQuant ? `${quant}${size} - ${file.filename}` : `${quant}${size}`;
+  const compatibility = file.compatibility_note ? " - not supported" : "";
+  return duplicateQuant ? `${quant}${size} - ${file.filename}${compatibility}` : `${quant}${size}${compatibility}`;
 }
 
 export function Browse() {
@@ -271,7 +272,11 @@ export function Browse() {
                               </SelectTrigger>
                               <SelectContent>
                                 {options.map((file) => (
-                                  <SelectItem key={`${m.repo_id}-${file.filename}`} value={file.selection ?? file.filename}>
+                                  <SelectItem
+                                    key={`${m.repo_id}-${file.filename}`}
+                                    value={file.selection ?? file.filename}
+                                    disabled={!file.importable}
+                                  >
                                     {hfFileLabel(m, file)}
                                   </SelectItem>
                                 ))}

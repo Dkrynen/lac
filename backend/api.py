@@ -728,6 +728,9 @@ _GGUF_QUANT_PAT = re.compile(
     r"F32|BF16|F16|FP16)"
     r"([^A-Za-z0-9]|$)"
 )
+_GGUF_UNSUPPORTED_IMPORT_VARIANT_PAT = re.compile(
+    r"(?i)(^|[^A-Za-z0-9])Q[2-8][_-]0[_-](?:4[_-]4|4[_-]8|8[_-]8)([^A-Za-z0-9]|$)"
+)
 _GGUF_QUANT_SORT = {
     "IQ1_S": 1,
     "IQ1_M": 2,
@@ -794,6 +797,12 @@ def _gguf_quant(filename: str) -> str | None:
     return quant
 
 
+def _gguf_import_block_reason(filename: str) -> str | None:
+    if _GGUF_UNSUPPORTED_IMPORT_VARIANT_PAT.search(filename or ""):
+        return "CPU-tuned GGUF variant; choose the standard file for this quant."
+    return None
+
+
 def _quant_sort_key(quant: str | None) -> tuple[int, str]:
     q = quant or ""
     return (_GGUF_QUANT_SORT.get(q, 999), q)
@@ -840,6 +849,7 @@ def _hf_gguf_files(siblings: list[dict], system_vram: float | None, ram_gb: floa
             size = None
         quant = _gguf_quant(filename)
         fit = _hf_file_fit(size, system_vram, ram_gb)
+        compatibility_note = _gguf_import_block_reason(filename)
         files.append({
             "filename": filename,
             "selection": filename,
@@ -848,7 +858,8 @@ def _hf_gguf_files(siblings: list[dict], system_vram: float | None, ram_gb: floa
             "size_gb": _bytes_to_gb(size),
             "fit": fit["fit"],
             "vram_gb": fit["vram_gb"],
-            "importable": bool(quant),
+            "importable": bool(quant) and compatibility_note is None,
+            "compatibility_note": compatibility_note,
         })
     return sorted(files, key=lambda f: (_quant_sort_key(f.get("quant")), f["filename"].lower()))
 

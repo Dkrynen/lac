@@ -164,6 +164,7 @@ export interface HfGgufFile {
   fit: "fits" | "offload" | "too_large" | "unknown";
   vram_gb?: number;
   importable: boolean;
+  compatibility_note?: string | null;
 }
 export interface HfGgufSearchResponse {
   query: string;
