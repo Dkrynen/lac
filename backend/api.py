@@ -2,6 +2,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import sys
 import threading
 import time
@@ -19,7 +20,7 @@ from .cookbook.downloads import download_history
 from .cookbook.hardware import detect, print_system
 from .cookbook.recommend import recommend, load_models
 from .pro_install import install_pro_plugin
-from .update import select_release_download_url
+from .update import is_newer, select_release_download_url
 
 try:
     from .version import __version__ as APP_VERSION, __github_url__, __download_url__
@@ -35,11 +36,47 @@ _STATIC = str(_DIST) if (_DIST / "index.html").exists() else str(_FRONTEND)
 app = Flask(__name__, static_folder=_STATIC, static_url_path="", template_folder=_STATIC)
 
 PULL_PROGRESS = {}
+PULL_PROGRESS_LOCK = threading.Lock()
+_PULL_TERMINAL_STATES = {"completed", "failed", "cancelled"}
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 INTERACTIVE_CONTEXT_FALLBACK = 4096
 
+
+def _set_pull_progress(model_name: str, **patch) -> dict:
+    now = time.time()
+    with PULL_PROGRESS_LOCK:
+        entry = dict(PULL_PROGRESS.get(model_name) or {
+            "model": model_name,
+            "state": "starting",
+            "status": "starting",
+            "completed": 0,
+            "total": 0,
+            "percent": 0,
+            "started_at": now,
+        })
+        entry.update(patch)
+        entry["model"] = model_name
+        entry["updated_at"] = now
+        PULL_PROGRESS[model_name] = entry
+        return dict(entry)
+
+
+def _pull_progress_snapshot(model_name: str | None = None) -> dict:
+    with PULL_PROGRESS_LOCK:
+        if model_name:
+            entry = PULL_PROGRESS.get(model_name)
+            return dict(entry) if entry else {"model": model_name, "state": "idle"}
+        pulls = [dict(v) for v in PULL_PROGRESS.values()]
+    pulls.sort(key=lambda x: float(x.get("updated_at") or 0), reverse=True)
+    return {
+        "active": sum(1 for p in pulls if p.get("state") not in _PULL_TERMINAL_STATES),
+        "pulls": pulls,
+    }
+
 MODEL_WEIGHT_EXTS = {".gguf", ".safetensors", ".bin", ".onnx", ".pt", ".pth"}
+HF_IMPORT_TMP_ENV = "LAC_HF_IMPORT_TMP"
+HF_IMPORT_TMP_LEGACY_ENV = "LAC_IMPORT_TMP"
 HF_DETAIL_CACHE_TTL_S = 10 * 60
 HF_DETAIL_CACHE_MAX = 256
 _HF_DETAIL_CACHE: dict[str, tuple[float, dict | None]] = {}
@@ -69,6 +106,177 @@ def _default_ollama_models_dir() -> Path:
     if platform.system().lower() == "linux":
         return Path("/usr/share/ollama/.ollama/models")
     return Path.home() / ".ollama" / "models"
+
+
+def _hf_import_scratch_root() -> Path:
+    configured = os.environ.get(HF_IMPORT_TMP_ENV) or os.environ.get(HF_IMPORT_TMP_LEGACY_ENV)
+    if configured:
+        return Path(configured).expanduser()
+    ollama_models = os.environ.get("OLLAMA_MODELS")
+    if ollama_models:
+        return Path(ollama_models).expanduser().parent / "lac-hf-import-tmp"
+    return Path.home() / ".model-hub" / "hf-import-tmp"
+
+
+def _disk_usage_target(path: Path) -> Path:
+    current = path.expanduser()
+    while not current.exists() and current.parent != current:
+        current = current.parent
+    return current
+
+
+def _disk_free_bytes(path: Path) -> int | None:
+    try:
+        return shutil.disk_usage(_disk_usage_target(path)).free
+    except OSError:
+        return None
+
+
+def _disk_usage_payload(path: Path) -> dict:
+    try:
+        usage = shutil.disk_usage(_disk_usage_target(path))
+        return {
+            "free_bytes": usage.free,
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_gb": _bytes_to_gb_display(usage.free),
+            "total_gb": _bytes_to_gb_display(usage.total),
+            "used_gb": _bytes_to_gb_display(usage.used),
+        }
+    except OSError:
+        return {
+            "free_bytes": None,
+            "total_bytes": None,
+            "used_bytes": None,
+            "free_gb": None,
+            "total_gb": None,
+            "used_gb": None,
+        }
+
+
+def _count_dir_entries(path: Path) -> int | None:
+    if not path.exists():
+        return 0
+    try:
+        return sum(1 for _ in path.iterdir())
+    except OSError:
+        return None
+
+
+def _is_safe_import_scratch_dir(path: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        resolved = path.expanduser().absolute()
+    if resolved.parent == resolved:
+        return False
+    if len(resolved.parts) < 3:
+        return False
+    lowered = {part.lower() for part in resolved.parts}
+    name = resolved.name.lower()
+    if ".model-hub" in lowered and ("import" in name or "scratch" in name or "tmp" in name):
+        return True
+    return name in {"lac-hf-import-tmp", "hf-import-tmp", "lac-hf-import"} or (
+        name.startswith("lac-") and ("import" in name or "scratch" in name or "tmp" in name)
+    )
+
+
+def _clear_directory_contents(path: Path) -> dict:
+    if not path.exists():
+        return {"deleted_entries": 0, "deleted_bytes": 0}
+    deleted_entries = 0
+    deleted_bytes = _safe_dir_size(path) or 0
+    for child in path.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+        deleted_entries += 1
+    return {"deleted_entries": deleted_entries, "deleted_bytes": deleted_bytes}
+
+
+def _read_user_env_var(name: str) -> str | None:
+    if platform.system().lower() != "windows":
+        return os.environ.get(name)
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+            return str(value)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def _write_user_env_var(name: str, value: str | None) -> None:
+    if platform.system().lower() != "windows":
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+        return
+
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as key:
+        if value is None:
+            try:
+                winreg.DeleteValue(key, name)
+            except FileNotFoundError:
+                pass
+        else:
+            winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, value)
+    _broadcast_environment_change()
+
+
+def _broadcast_environment_change() -> None:
+    if platform.system().lower() != "windows":
+        return
+    try:
+        import ctypes
+
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        SMTO_ABORTIFHUNG = 0x0002
+        ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            "Environment",
+            SMTO_ABORTIFHUNG,
+            5000,
+            None,
+        )
+    except Exception:
+        pass
+
+
+def _model_location_payload(restart_required: bool = False) -> dict:
+    user_value = _read_user_env_var("OLLAMA_MODELS")
+    process_value = os.environ.get("OLLAMA_MODELS")
+    default_dir = Path.home() / ".ollama" / "models"
+    if platform.system().lower() == "linux":
+        default_dir = Path("/usr/share/ollama/.ollama/models")
+    effective_after_restart = Path(user_value).expanduser() if user_value else default_dir
+    current_process_dir = _default_ollama_models_dir()
+    return {
+        "state": "ok",
+        "platform": platform.system().lower(),
+        "env_var": "OLLAMA_MODELS",
+        "configured": bool(user_value),
+        "configured_dir": str(Path(user_value).expanduser()) if user_value else None,
+        "process_configured": bool(process_value),
+        "process_dir": str(current_process_dir),
+        "default_dir": str(default_dir),
+        "effective_after_restart": str(effective_after_restart),
+        "current_size_bytes": _safe_dir_size(current_process_dir),
+        "configured_size_bytes": _safe_dir_size(effective_after_restart),
+        "restart_ollama_required": restart_required or (user_value != process_value),
+        "restart_lac_required": user_value != process_value,
+        "moves_existing_models": False,
+    }
 
 
 def _app_payload_dir() -> Path:
@@ -116,7 +324,13 @@ def _serialize_split_plan(plan) -> dict:
     }
 
 
-def _ollama_request(method: str, path: str, json_body: Optional[dict] = None, stream: bool = False):
+def _ollama_request(
+    method: str,
+    path: str,
+    json_body: Optional[dict] = None,
+    stream: bool = False,
+    timeout: int = 30,
+):
     import urllib.request
     import urllib.error
     url = f"{OLLAMA_HOST}{path}"
@@ -124,10 +338,16 @@ def _ollama_request(method: str, path: str, json_body: Optional[dict] = None, st
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
     try:
-        resp = urllib.request.urlopen(req, timeout=10)
+        resp = urllib.request.urlopen(req, timeout=timeout)
         if stream:
             return resp
-        return json.loads(resp.read().decode())
+        raw = resp.read().decode()
+        if not raw.strip():
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw}
     except urllib.error.HTTPError as e:
         try:
             return {"error": f"Ollama HTTP {e.code}: {e.read().decode()[:200]}"}
@@ -349,26 +569,57 @@ def ollama_pull():
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         last_total = 0
+        last_completed = 0
+        _set_pull_progress(model_name, state="starting", status="starting")
         try:
             resp = urllib.request.urlopen(req, timeout=3600)
             for line in resp:
                 decoded = line.decode().strip()
                 if decoded:
-                    yield f"data: {decoded}\n\n"
                     try:
                         chunk = json.loads(decoded)
                     except json.JSONDecodeError:
                         chunk = {}
-                    if chunk.get("total"):
-                        last_total = chunk["total"]
+                    completed = int(chunk.get("completed") or last_completed or 0)
+                    total = int(chunk.get("total") or last_total or 0)
+                    if completed:
+                        last_completed = completed
+                    if total:
+                        last_total = total
+                    status = str(chunk.get("status") or "running")
+                    state = "completed" if status == "success" else "running"
+                    percent = min(100, round((completed / total) * 100)) if total > 0 else 0
+                    _set_pull_progress(
+                        model_name,
+                        state=state,
+                        status=status,
+                        completed=completed,
+                        total=total,
+                        percent=100 if state == "completed" else percent,
+                    )
+                    yield f"data: {decoded}\n\n"
                     if chunk.get("status") == "success":
                         size_gb = round(last_total / (1024**3), 2) if last_total else 0
                         log_download(model_name, "completed", size_gb)
                         _notify_model_installed_async(model_name)
+        except GeneratorExit:
+            size_gb = round(last_total / (1024**3), 2) if last_total else 0
+            _set_pull_progress(model_name, state="cancelled", status="cancelled",
+                               completed=last_completed, total=last_total)
+            log_download(model_name, "cancelled", size_gb)
+            raise
         except urllib.error.HTTPError as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            message = str(e)
+            _set_pull_progress(model_name, state="failed", status="failed", error=message,
+                               completed=last_completed, total=last_total)
+            log_download(model_name, "failed", 0)
+            yield f"data: {json.dumps({'error': message})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            message = str(e)
+            _set_pull_progress(model_name, state="failed", status="failed", error=message,
+                               completed=last_completed, total=last_total)
+            log_download(model_name, "failed", 0)
+            yield f"data: {json.dumps({'error': message})}\n\n"
         yield "data: [DONE]\n\n"
 
     return Response(
@@ -381,6 +632,12 @@ def ollama_pull():
     )
 
 
+@app.route("/api/ollama/pull-status")
+def ollama_pull_status():
+    model_name = request.args.get("model", "").strip()
+    return jsonify(_pull_progress_snapshot(model_name or None))
+
+
 @app.route("/api/ollama/delete", methods=["POST"])
 def ollama_delete():
     data = request.get_json(silent=True)
@@ -390,7 +647,7 @@ def ollama_delete():
     if not model_name:
         return jsonify({"error": "No model specified"}), 400
 
-    result = _ollama_request("DELETE", f"/api/delete", {"name": model_name})
+    result = _ollama_request("DELETE", f"/api/delete", {"name": model_name}, timeout=120)
     if isinstance(result, dict) and "error" in result:
         return jsonify({"error": result["error"]}), 500
     return jsonify({"success": True})
@@ -438,6 +695,188 @@ def ollama_warm():
         return jsonify(_warm_ollama(model.strip())), 200
     threading.Thread(target=_warm_ollama, args=(model.strip(),), daemon=True).start()
     return jsonify({"accepted": True}), 200
+
+
+def _diagnose_performance(metrics: dict | None) -> dict:
+    if not metrics:
+        return {
+            "state": "unmeasured",
+            "summary": "No local measurement yet.",
+            "signals": [],
+            "actions": [
+                {"kind": "probe", "label": "Run a latency probe"},
+                {"kind": "benchmark", "label": "Run Pro tuning for deeper GPU-offload data"},
+            ],
+        }
+
+    tps = float(metrics.get("tokens_per_second") or 0)
+    ttft_ms = float(metrics.get("time_to_first_token_ms") or 0)
+    load_ms = float(metrics.get("load_duration_ms") or 0)
+    prompt_ms = float(metrics.get("prompt_eval_duration_ms") or 0)
+    signals = []
+    actions = []
+
+    if load_ms >= 3000:
+        signals.append({
+            "kind": "cold_load",
+            "severity": "warning",
+            "label": "Cold load dominates first response",
+            "value_ms": round(load_ms, 1),
+        })
+        actions.append({"kind": "warm", "label": "Warm the model before chat and keep it resident"})
+    if ttft_ms >= 1500 and load_ms < 3000:
+        signals.append({
+            "kind": "ttft",
+            "severity": "warning",
+            "label": "First token is slow",
+            "value_ms": round(ttft_ms, 1),
+        })
+        actions.append({"kind": "context", "label": "Use a smaller context or shorter prompt"})
+    if prompt_ms >= 1000:
+        signals.append({
+            "kind": "prompt_eval",
+            "severity": "warning",
+            "label": "Prompt prefill is heavy",
+            "value_ms": round(prompt_ms, 1),
+        })
+    if tps and tps < 20:
+        signals.append({
+            "kind": "generation",
+            "severity": "danger",
+            "label": "Generation is slow",
+            "tokens_per_second": round(tps, 2),
+        })
+        actions.append({"kind": "smaller_model", "label": "Try a smaller model or lower quant"})
+        actions.append({"kind": "tune", "label": "Run Pro tuning to find better GPU layers"})
+    elif tps and tps < 60:
+        signals.append({
+            "kind": "generation",
+            "severity": "warning",
+            "label": "Generation is moderate",
+            "tokens_per_second": round(tps, 2),
+        })
+        actions.append({"kind": "tune", "label": "Run Pro tuning if the model feels sluggish"})
+    elif tps >= 100 and ttft_ms >= 1000:
+        signals.append({
+            "kind": "fast_after_start",
+            "severity": "info",
+            "label": "Generation is fast after the first token",
+            "tokens_per_second": round(tps, 2),
+        })
+        actions.append({"kind": "warm", "label": "Focus on warmup and prompt prefill, not raw generation speed"})
+
+    if not signals:
+        signals.append({
+            "kind": "healthy",
+            "severity": "success",
+            "label": "Latency profile looks healthy",
+            "tokens_per_second": round(tps, 2) if tps else None,
+        })
+        actions.append({"kind": "none", "label": "No immediate performance action needed"})
+
+    severe = {s.get("severity") for s in signals}
+    state = "slow" if "danger" in severe else "watch" if "warning" in severe else "ok"
+    if any(s.get("kind") == "fast_after_start" for s in signals):
+        summary = "Generation is fast; perceived latency is mostly before the first token."
+    elif state == "slow":
+        summary = "Generation speed is the main bottleneck."
+    elif state == "watch":
+        summary = "Latency has at least one fixable bottleneck."
+    else:
+        summary = "This model is responding well on this machine."
+
+    return {"state": state, "summary": summary, "signals": signals, "actions": actions}
+
+
+def _installed_model_names() -> list[str]:
+    resp = _ollama_request("GET", "/api/tags")
+    if not isinstance(resp, dict) or "error" in resp:
+        return []
+    return sorted(
+        m.get("name")
+        for m in resp.get("models", [])
+        if isinstance(m, dict) and isinstance(m.get("name"), str)
+    )
+
+
+def _running_model_names() -> list[str]:
+    resp = _ollama_request("GET", "/api/ps")
+    if not isinstance(resp, dict) or "error" in resp:
+        return []
+    return sorted(
+        m.get("name")
+        for m in resp.get("models", [])
+        if isinstance(m, dict) and isinstance(m.get("name"), str)
+    )
+
+
+def _benchmark_history_for_model(model: str | None) -> list[dict]:
+    from .cookbook.benchmark import history
+
+    records = history()
+    if model:
+        records = [r for r in records if r.get("model") == model]
+    records.sort(key=lambda r: float(r.get("timestamp") or 0), reverse=True)
+    return records[:20]
+
+
+@app.route("/api/diagnostics/performance")
+def api_performance_diagnostics():
+    model = request.args.get("model", "").strip() or None
+    records = _benchmark_history_for_model(model)
+    latest = records[0] if records else None
+    return jsonify({
+        "model": model,
+        "installed_models": _installed_model_names(),
+        "running_models": _running_model_names(),
+        "history": records,
+        "latest": latest,
+        "diagnosis": _diagnose_performance(latest),
+    })
+
+
+@app.route("/api/diagnostics/performance/probe", methods=["POST"])
+def api_performance_probe():
+    data = request.get_json(silent=True)
+    model = data.get("model") if isinstance(data, dict) else None
+    if not isinstance(model, str) or not model.strip():
+        return jsonify({"error": "model required"}), 400
+
+    prompt = "Reply with one short sentence confirming the LAC latency probe is ready."
+    num_predict = 32
+    result = _ollama_request(
+        "POST",
+        "/api/generate",
+        {
+            "model": model.strip(),
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": "30m",
+            "options": {
+                "num_ctx": _interactive_context(),
+                "num_predict": num_predict,
+                "temperature": 0,
+            },
+        },
+        timeout=300,
+    )
+    if not isinstance(result, dict) or "error" in result:
+        return jsonify({
+            "model": model.strip(),
+            "state": "failed",
+            "error": result.get("error") if isinstance(result, dict) else "Ollama did not return metrics",
+        }), 502
+
+    from .cookbook.benchmark import build_metrics
+
+    metrics = build_metrics(result, model.strip(), prompt, num_predict, 0.0)
+    metrics["source"] = "diagnostic_probe"
+    return jsonify({
+        "model": model.strip(),
+        "state": "done",
+        "metrics": metrics,
+        "diagnosis": _diagnose_performance(metrics),
+    })
 
 
 @app.route("/api/ollama/chat", methods=["POST"])
@@ -514,6 +953,7 @@ def api_version():
 def api_storage():
     app_dir = _app_payload_dir()
     models_dir = _default_ollama_models_dir()
+    user_models_dir = _read_user_env_var("OLLAMA_MODELS")
     app_size = _safe_dir_size(app_dir) if getattr(sys, "frozen", False) else None
     model_files = _find_model_weight_files(app_dir)
     return jsonify({
@@ -522,10 +962,166 @@ def api_storage():
         "ollama_models_dir": str(models_dir),
         "ollama_models_size_bytes": _safe_dir_size(models_dir),
         "ollama_models_configured": bool(os.environ.get("OLLAMA_MODELS")),
+        "ollama_models_user_dir": str(Path(user_models_dir).expanduser()) if user_models_dir else None,
+        "ollama_models_user_configured": bool(user_models_dir),
+        "ollama_models_restart_required": user_models_dir != os.environ.get("OLLAMA_MODELS"),
         "model_weight_files_in_app": model_files,
         "models_are_bundled": bool(model_files),
         "model_install_mode": "on_demand_ollama_pull",
     })
+
+
+def _model_store_doctor_payload() -> dict:
+    app_dir = _app_payload_dir()
+    models_dir = _default_ollama_models_dir()
+    default_dir = Path.home() / ".ollama" / "models"
+    if platform.system().lower() == "linux":
+        default_dir = Path("/usr/share/ollama/.ollama/models")
+    scratch_dir = _hf_import_scratch_root()
+    model_files = _find_model_weight_files(app_dir)
+
+    model_size = _safe_dir_size(models_dir)
+    scratch_size = _safe_dir_size(scratch_dir)
+    default_size = _safe_dir_size(default_dir)
+    app_size = _safe_dir_size(app_dir) if getattr(sys, "frozen", False) else None
+    disk = _disk_usage_payload(models_dir)
+    scratch_disk = _disk_usage_payload(scratch_dir)
+
+    warnings = []
+    actions = []
+    if disk["free_bytes"] is not None:
+        free_gb = disk["free_gb"] or 0
+        if free_gb < 10:
+            warnings.append("Model drive has less than 10 GB free.")
+            actions.append({
+                "kind": "move_models",
+                "label": "Move future Ollama pulls to a larger drive",
+                "severity": "danger",
+            })
+        elif free_gb < 25:
+            warnings.append("Model drive is getting tight.")
+            actions.append({
+                "kind": "clean_models",
+                "label": "Delete unused models before large imports",
+                "severity": "warning",
+            })
+    if scratch_size and scratch_size > 0:
+        actions.append({
+            "kind": "clear_import_scratch",
+            "label": "Clear Hugging Face import scratch",
+            "severity": "info",
+        })
+    if default_dir != models_dir and default_size and default_size > 0:
+        warnings.append("The default Ollama model folder still contains files on this machine.")
+        actions.append({
+            "kind": "inspect_default_store",
+            "label": "Inspect the old default model folder",
+            "severity": "warning",
+        })
+    if model_files:
+        warnings.append("Model weight files were found inside the app payload.")
+        actions.append({
+            "kind": "remove_bundled_weights",
+            "label": "Remove bundled model weights from the app folder",
+            "severity": "danger",
+        })
+
+    state = "critical" if any(a.get("severity") == "danger" for a in actions) else "watch" if warnings else "ok"
+    return {
+        "state": state,
+        "warnings": warnings,
+        "actions": actions,
+        "model_store": {
+            "path": str(models_dir),
+            "exists": models_dir.exists(),
+            "size_bytes": model_size,
+            "size_gb": _bytes_to_gb_display(model_size),
+            **disk,
+        },
+        "import_scratch": {
+            "path": str(scratch_dir),
+            "exists": scratch_dir.exists(),
+            "size_bytes": scratch_size,
+            "size_gb": _bytes_to_gb_display(scratch_size),
+            "entries": _count_dir_entries(scratch_dir),
+            "safe_to_clear": _is_safe_import_scratch_dir(scratch_dir),
+            **scratch_disk,
+        },
+        "default_model_store": {
+            "path": str(default_dir),
+            "active": default_dir == models_dir,
+            "exists": default_dir.exists(),
+            "size_bytes": default_size,
+            "size_gb": _bytes_to_gb_display(default_size),
+        },
+        "app_payload": {
+            "path": str(app_dir),
+            "size_bytes": app_size,
+            "size_gb": _bytes_to_gb_display(app_size),
+            "model_weight_files": model_files,
+        },
+    }
+
+
+@app.route("/api/system/model-store-doctor")
+def api_model_store_doctor():
+    return jsonify(_model_store_doctor_payload())
+
+
+@app.route("/api/system/import-scratch", methods=["DELETE"])
+def api_clear_import_scratch():
+    scratch_dir = _hf_import_scratch_root()
+    if not _is_safe_import_scratch_dir(scratch_dir):
+        return jsonify({
+            "state": "failed",
+            "error": f"Refusing to clear unsafe import scratch path: {scratch_dir}",
+            "path": str(scratch_dir),
+        }), 400
+    try:
+        result = _clear_directory_contents(scratch_dir)
+    except OSError as exc:
+        return jsonify({
+            "state": "failed",
+            "error": f"Could not clear import scratch: {exc}",
+            "path": str(scratch_dir),
+        }), 500
+    return jsonify({
+        "state": "cleared",
+        "path": str(scratch_dir),
+        **result,
+    })
+
+
+@app.route("/api/system/model-location")
+def api_model_location():
+    return jsonify(_model_location_payload())
+
+
+@app.route("/api/system/model-location", methods=["PUT"])
+def api_set_model_location():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    reset = bool(data.get("reset"))
+    if reset:
+        _write_user_env_var("OLLAMA_MODELS", None)
+        return jsonify(_model_location_payload(restart_required=True))
+
+    raw_path = data.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return jsonify({"error": "path required"}), 400
+
+    target = Path(raw_path.strip()).expanduser()
+    try:
+        if target.exists() and not target.is_dir():
+            return jsonify({"error": "Model location must be a folder, not a file."}), 400
+        target.mkdir(parents=True, exist_ok=True)
+        resolved = target.resolve()
+    except OSError as exc:
+        return jsonify({"error": f"Could not create model location: {exc}"}), 400
+
+    _write_user_env_var("OLLAMA_MODELS", str(resolved))
+    return jsonify(_model_location_payload(restart_required=True))
 
 
 def _debug_env_flags() -> dict:
@@ -677,8 +1273,8 @@ def api_check_update():
         req.add_header("User-Agent", f"LAC/{APP_VERSION}")
         resp = urllib.request.urlopen(req, timeout=5)
         data = _json.loads(resp.read().decode())
-        latest = data.get("tag_name", "").lstrip("v")
-        if latest and latest != current:
+        latest = data.get("tag_name", "").lstrip("vV")
+        if latest and is_newer(latest, current):
             return jsonify({
                 "update_available": True,
                 "latest_version": latest,
@@ -995,6 +1591,60 @@ def _bytes_to_gb(size_bytes: int | None) -> float | None:
     return round(size_bytes / (1024**3), 2)
 
 
+def _bytes_to_gb_display(size_bytes: int | None) -> float | None:
+    if size_bytes is None:
+        return None
+    return round(size_bytes / (1024**3), 2)
+
+
+def _space_check(free_bytes: int | None, required_bytes: int) -> dict:
+    ok = free_bytes is not None and free_bytes >= required_bytes
+    return {
+        "ok": ok,
+        "free_bytes": free_bytes,
+        "free_gb": _bytes_to_gb_display(free_bytes),
+        "required_bytes": required_bytes,
+        "required_gb": _bytes_to_gb_display(required_bytes),
+    }
+
+
+def _hf_import_preflight(size_bytes: int | None) -> dict:
+    """Mirror LAC Pro's import staging locations without importing lac_pro."""
+    scratch_dir = _hf_import_scratch_root()
+    model_dir = _default_ollama_models_dir()
+    size = int(size_bytes or 0)
+    if size <= 0:
+        return {
+            "state": "unknown",
+            "scratch_dir": str(scratch_dir),
+            "model_store_dir": str(model_dir),
+            "warnings": ["File size is unknown; disk fit cannot be checked before import."],
+            "scratch": _space_check(_disk_free_bytes(scratch_dir), 0),
+            "model_store": _space_check(_disk_free_bytes(model_dir), 0),
+        }
+
+    scratch_required = size
+    model_required = int(size * 2.0)
+    scratch = _space_check(_disk_free_bytes(scratch_dir), scratch_required)
+    model_store = _space_check(_disk_free_bytes(model_dir), model_required)
+    warnings = []
+    if not scratch["ok"]:
+        warnings.append("Not enough free space in the Hugging Face staging folder.")
+    if not model_store["ok"]:
+        warnings.append("Not enough free space in the Ollama model store.")
+    return {
+        "state": "ok" if not warnings else "blocked",
+        "scratch_dir": str(scratch_dir),
+        "model_store_dir": str(model_dir),
+        "selected_size_bytes": size,
+        "selected_size_gb": _bytes_to_gb_display(size),
+        "moves_existing_models": False,
+        "scratch": scratch,
+        "model_store": model_store,
+        "warnings": warnings,
+    }
+
+
 def _hf_file_fit(size_bytes: int | None, system_vram: float | None, ram_gb: float | None) -> dict:
     size_gb = _bytes_to_gb(size_bytes)
     if not size_gb:
@@ -1036,6 +1686,7 @@ def _hf_gguf_files(siblings: list[dict], system_vram: float | None, ram_gb: floa
             "vram_gb": fit["vram_gb"],
             "importable": bool(quant) and compatibility_note is None,
             "compatibility_note": compatibility_note,
+            "preflight": _hf_import_preflight(size),
         })
     return sorted(files, key=lambda f: (_quant_sort_key(f.get("quant")), f["filename"].lower()))
 
@@ -1105,6 +1756,104 @@ def _fetch_hf_model_detail(repo_id: str) -> dict | None:
     return result
 
 
+_HF_HOSTS = {"huggingface.co", "www.huggingface.co", "hf.co", "www.hf.co"}
+_HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
+
+
+def _is_hf_repo_id(value: str) -> bool:
+    return bool(_HF_REPO_ID_RE.match(value or ""))
+
+
+def _looks_like_gguf_selector(value: str | None) -> bool:
+    selector = (value or "").strip()
+    if not selector:
+        return False
+    if selector.lower().endswith(".gguf"):
+        return True
+    normalized = selector.upper().replace("-", "_")
+    if normalized in {"F16", "BF16"} or normalized.startswith(("Q2_", "Q3_", "Q4_", "Q5_", "Q6_", "Q8_")):
+        return True
+    return bool(_GGUF_QUANT_PAT.search(f"model-{normalized}.gguf"))
+
+
+def _split_hf_model_selector(model_name: str, forced_hf: bool) -> tuple[str, str | None]:
+    if ":" not in model_name:
+        return model_name, None
+    name, selector = model_name.rsplit(":", 1)
+    if forced_hf or _looks_like_gguf_selector(selector):
+        return name, selector
+    return model_name, None
+
+
+def _parse_hf_install_target(target: str) -> dict | None:
+    """Recognize HF repo/page/file refs without importing the Pro package."""
+    raw = (target or "").strip()
+    if not raw or any(ch.isspace() for ch in raw):
+        return None
+
+    candidate = raw
+    if re.match(r"^(www\.)?(huggingface\.co|hf\.co)/", candidate, re.I):
+        candidate = f"https://{candidate}"
+
+    parsed = urlsplit(candidate)
+    forced_hf = parsed.scheme in {"http", "https"} and parsed.netloc.lower() in _HF_HOSTS
+    if forced_hf:
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) < 2:
+            return None
+        model_name, selector = _split_hf_model_selector(parts[1], forced_hf=True)
+        repo_id = f"{parts[0]}/{model_name}"
+        file_selector = selector
+        if len(parts) >= 5 and parts[2] in {"blob", "resolve"}:
+            file_selector = "/".join(parts[4:])
+        elif len(parts) >= 3 and parts[2].lower().endswith(".gguf"):
+            file_selector = "/".join(parts[2:])
+        if not _is_hf_repo_id(repo_id):
+            return None
+        return {
+            "repo_id": repo_id,
+            "selector": file_selector,
+            "source_url": f"https://huggingface.co/{repo_id}",
+            "forced_hf": True,
+        }
+
+    stripped = raw.split("?", 1)[0].split("#", 1)[0].strip("/")
+    parts = [p for p in stripped.split("/") if p]
+    if len(parts) < 2:
+        return None
+
+    model_name, selector = _split_hf_model_selector(parts[1], forced_hf=False)
+    repo_id = f"{parts[0]}/{model_name}"
+    if not _is_hf_repo_id(repo_id):
+        return None
+
+    if len(parts) == 2 and (":" not in parts[1] or selector):
+        return {
+            "repo_id": repo_id,
+            "selector": selector,
+            "source_url": f"https://huggingface.co/{repo_id}",
+            "forced_hf": False,
+        }
+
+    if len(parts) >= 5 and parts[2] in {"blob", "resolve"}:
+        return {
+            "repo_id": repo_id,
+            "selector": "/".join(parts[4:]),
+            "source_url": f"https://huggingface.co/{repo_id}",
+            "forced_hf": False,
+        }
+
+    if len(parts) >= 3 and parts[2].lower().endswith(".gguf"):
+        return {
+            "repo_id": repo_id,
+            "selector": "/".join(parts[2:]),
+            "source_url": f"https://huggingface.co/{repo_id}",
+            "forced_hf": False,
+        }
+
+    return None
+
+
 def _hf_gguf_result(
     item: dict,
     system_vram: float | None,
@@ -1156,6 +1905,154 @@ def _hf_gguf_result(
         "recommended_size_gb": selected.get("size_gb") if selected else None,
         "fit": selected.get("fit") if selected else "unknown",
         "vram_gb": selected.get("vram_gb") if selected else None,
+        "preflight": selected.get("preflight") if selected else _hf_import_preflight(None),
+    }
+
+
+def _hf_system_fit_context() -> tuple[float | None, float | None]:
+    system_vram = None
+    ram_gb = None
+    try:
+        info = detect()
+        system_vram = info.total_vram_gb or (info.gpus[0].vram_gb if info.gpus else 0)
+        ram_gb = info.ram_gb
+    except Exception:
+        pass
+    return system_vram, ram_gb
+
+
+def _select_hf_preflight_file(model: dict, selector: str | None) -> dict | None:
+    files = model.get("files") if isinstance(model, dict) else None
+    if not isinstance(files, list) or not files:
+        return None
+
+    normalized_selector = (selector or "").strip().lower()
+    if normalized_selector:
+        for file in files:
+            filename = str(file.get("filename") or "")
+            selection = str(file.get("selection") or filename)
+            quant = str(file.get("quant") or "")
+            if normalized_selector in {
+                filename.lower(),
+                selection.lower(),
+                quant.lower(),
+            }:
+                return file
+            if filename.lower().endswith(normalized_selector):
+                return file
+
+    recommended = model.get("recommended_file")
+    if recommended:
+        for file in files:
+            if file.get("filename") == recommended:
+                return file
+    return files[0]
+
+
+def _state_from_preflight(preflight: dict | None, blocked: bool = False) -> str:
+    if blocked:
+        return "blocked"
+    state = (preflight or {}).get("state")
+    if state in {"ok", "blocked", "unknown"}:
+        return str(state)
+    return "unknown"
+
+
+def _hf_install_preflight(target: str, parsed: dict) -> dict:
+    repo_id = parsed["repo_id"]
+    selector = parsed.get("selector")
+    base = {
+        "target": target,
+        "kind": "hf_unknown",
+        "action": "import",
+        "state": "unknown",
+        "normalized": repo_id,
+        "repo_id": repo_id,
+        "source_url": parsed.get("source_url") or f"https://huggingface.co/{repo_id}",
+        "selector": selector,
+        "warnings": [],
+    }
+
+    try:
+        detail = _fetch_hf_model_detail(repo_id)
+    except Exception as exc:  # noqa: BLE001 - metadata lookup should not hard-fail Browse
+        return {
+            **base,
+            "state": "error",
+            "message": f"Could not inspect Hugging Face metadata: {exc}",
+            "preflight": _hf_import_preflight(None),
+        }
+
+    if not isinstance(detail, dict):
+        return {
+            **base,
+            "message": "Hugging Face metadata was unavailable; Pro can still try to inspect the repo during import.",
+            "preflight": _hf_import_preflight(None),
+        }
+
+    system_vram, ram_gb = _hf_system_fit_context()
+    mapped = _hf_gguf_result({"id": repo_id}, system_vram, ram_gb, detail=detail)
+    if not mapped:
+        warnings = []
+        if detail.get("gated"):
+            warnings.append("This repo is gated; save a Hugging Face token in Pro before importing.")
+        return {
+            **base,
+            "state": "unknown",
+            "message": "No GGUF artifact metadata found; Pro may use safetensors conversion if the architecture is supported.",
+            "gated": bool(detail.get("gated")),
+            "preflight": _hf_import_preflight(None),
+            "warnings": warnings,
+        }
+
+    selected = _select_hf_preflight_file(mapped, selector)
+    preflight = selected.get("preflight") if selected else mapped.get("preflight")
+    warnings = list((preflight or {}).get("warnings") or [])
+    blocked = (preflight or {}).get("state") == "blocked"
+    if selected and not selected.get("importable", True):
+        warnings.append(selected.get("compatibility_note") or "Selected GGUF file is not importable.")
+        blocked = True
+    if mapped.get("gated"):
+        warnings.append("This repo is gated; save a Hugging Face token in Pro before importing.")
+
+    state = _state_from_preflight(preflight if isinstance(preflight, dict) else None, blocked)
+    selected_quant = selected.get("quant") if selected else mapped.get("recommended_quant")
+    selected_file = selected.get("filename") if selected else mapped.get("recommended_file")
+    selected_size_gb = selected.get("size_gb") if selected else mapped.get("recommended_size_gb")
+    selected_size_bytes = selected.get("size_bytes") if selected else None
+    return {
+        **base,
+        "kind": "hf_gguf",
+        "state": state,
+        "message": "Ready to import selected GGUF." if state == "ok" else "Review the selected GGUF before importing.",
+        "gated": bool(mapped.get("gated")),
+        "selected_file": selected_file,
+        "selected_quant": selected_quant,
+        "selected_size_bytes": selected_size_bytes,
+        "selected_size_gb": selected_size_gb,
+        "fit": selected.get("fit") if selected else mapped.get("fit"),
+        "vram_gb": selected.get("vram_gb") if selected else mapped.get("vram_gb"),
+        "recommended_file": mapped.get("recommended_file"),
+        "recommended_quant": mapped.get("recommended_quant"),
+        "preflight": preflight,
+        "warnings": warnings,
+    }
+
+
+def _ollama_install_preflight(target: str) -> dict:
+    model_ref = " ".join((target or "").split())
+    models_dir = _default_ollama_models_dir()
+    return {
+        "target": target,
+        "kind": "ollama",
+        "action": "pull",
+        "state": "unknown",
+        "normalized": model_ref,
+        "model_ref": model_ref,
+        "message": "Ollama will report exact size during pull; LAC will stream progress in Downloads.",
+        "model_store_dir": str(models_dir),
+        "model_store": _space_check(_disk_free_bytes(models_dir), 0),
+        "warnings": [],
     }
 
 
@@ -1244,6 +2141,17 @@ def api_hf_gguf_search():
     except (TypeError, ValueError):
         limit = 12
     return jsonify(_search_hf_gguf(q, limit=limit))
+
+
+@app.route("/api/model/install-preflight")
+def api_model_install_preflight():
+    target = request.args.get("target", "").strip()
+    if not target:
+        return jsonify({"error": "Missing target"}), 400
+    parsed = _parse_hf_install_target(target)
+    if parsed:
+        return jsonify(_hf_install_preflight(target, parsed))
+    return jsonify(_ollama_install_preflight(target))
 
 
 @app.route("/api/ollama/library")

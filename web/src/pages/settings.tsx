@@ -18,6 +18,7 @@ import {
   Sparkles,
   Sun,
   Terminal,
+  Trash2,
 } from "lucide-react";
 import { PageHeader, ErrorState } from "@/components/page";
 import { Card } from "@/components/ui/card";
@@ -54,11 +55,16 @@ export function Settings() {
   const ver = useAsync(() => api.version().catch(() => null));
   const status = useAsync(() => api.ollamaStatus().catch(() => null));
   const storage = useAsync(() => api.storage().catch(() => null));
+  const storeDoctor = useAsync(() => api.modelStoreDoctor().catch(() => null));
+  const modelLocation = useAsync(() => api.modelLocation().catch(() => null));
   const { theme, mode, setTheme, accent, setAccent, density, setDensity } = useTheme();
 
   const [host, setHost] = useState("");
   const [defaultModel, setDefaultModel] = useState("");
+  const [modelDir, setModelDir] = useState("");
   const [saving, setSaving] = useState(false);
+  const [savingModelDir, setSavingModelDir] = useState(false);
+  const [clearingScratch, setClearingScratch] = useState(false);
 
   useInterval(() => status.reload(), 10000);
 
@@ -68,6 +74,12 @@ export function Settings() {
       setDefaultModel(cfg.data.default_model ?? "");
     }
   }, [cfg.data]);
+
+  useEffect(() => {
+    if (modelLocation.data) {
+      setModelDir(modelLocation.data.configured_dir ?? modelLocation.data.effective_after_restart ?? "");
+    }
+  }, [modelLocation.data]);
 
   const dirty = useMemo(() => {
     if (!cfg.data) return false;
@@ -96,6 +108,56 @@ export function Settings() {
     setAccent("verdant");
     setDensity("comfortable");
     toast.success("Appearance reset");
+  };
+
+  const saveModelLocation = async () => {
+    setSavingModelDir(true);
+    try {
+      await api.saveModelLocation(modelDir.trim());
+      toast.success("Model location saved", {
+        description: "Restart Ollama before pulling more models.",
+      });
+      modelLocation.reload();
+      storage.reload();
+      storeDoctor.reload();
+    } catch (e) {
+      toast.error("Could not save model location", { description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSavingModelDir(false);
+    }
+  };
+
+  const resetModelLocation = async () => {
+    setSavingModelDir(true);
+    try {
+      await api.resetModelLocation();
+      toast.success("Model location reset", {
+        description: "Restart Ollama before pulling more models.",
+      });
+      modelLocation.reload();
+      storage.reload();
+      storeDoctor.reload();
+    } catch (e) {
+      toast.error("Could not reset model location", { description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSavingModelDir(false);
+    }
+  };
+
+  const clearImportScratch = async () => {
+    setClearingScratch(true);
+    try {
+      const result = await api.clearImportScratch();
+      toast.success("Import scratch cleared", {
+        description: `${formatBytes(result.deleted_bytes ?? 0)} recovered.`,
+      });
+      storeDoctor.reload();
+      storage.reload();
+    } catch (e) {
+      toast.error("Could not clear import scratch", { description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setClearingScratch(false);
+    }
   };
 
   const copyWorkspace = async () => {
@@ -323,6 +385,33 @@ export function Settings() {
                   disabled={!storage.data?.ollama_models_dir}
                 />
               </Meta>
+              <Meta label="Drive free">
+                {storeDoctor.loading ? (
+                  <Skeleton className="h-5 w-24" />
+                ) : (
+                  formatBytes(storeDoctor.data?.model_store.free_bytes)
+                )}
+              </Meta>
+              <Meta label="Store health">
+                <StatusPill
+                  online={storeDoctor.data?.state === "ok"}
+                  label={
+                    storeDoctor.data?.state === "critical"
+                      ? "Needs attention"
+                      : storeDoctor.data?.state === "watch"
+                        ? "Watch"
+                        : "Healthy"
+                  }
+                />
+              </Meta>
+              {modelLocation.data?.configured_dir && modelLocation.data.configured_dir !== storage.data?.ollama_models_dir && (
+                <Meta label="After restart">
+                  <PathValue
+                    value={modelLocation.data.configured_dir}
+                    onCopy={() => copyStoragePath(modelLocation.data?.configured_dir ?? "", "Configured model path")}
+                  />
+                </Meta>
+              )}
               <Meta label="Bundled weights">
                 {storage.data?.models_are_bundled ? (
                   <span className="text-warning">{storage.data.model_weight_files_in_app.length} found in app</span>
@@ -331,6 +420,100 @@ export function Settings() {
                 )}
               </Meta>
             </dl>
+            {storeDoctor.data?.warnings.length ? (
+              <div className="mt-4 rounded border border-warning/30 bg-warning-soft px-3 py-2 text-[12px] text-warning">
+                {storeDoctor.data.warnings[0]}
+              </div>
+            ) : null}
+            <div className="mt-4 grid gap-3 border-t border-line pt-4">
+              <div className="rounded border border-line bg-panel-2 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-faint">
+                      Hugging Face import scratch
+                    </div>
+                    <div className="mt-1 font-mono text-[12px] text-fg-muted">
+                      {storeDoctor.data?.import_scratch.path ?? "-"}
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={clearImportScratch}
+                    disabled={
+                      clearingScratch ||
+                      !storeDoctor.data?.import_scratch.safe_to_clear ||
+                      !(storeDoctor.data?.import_scratch.size_bytes ?? 0)
+                    }
+                  >
+                    <Trash2 /> Clear
+                  </Button>
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-[12px] text-fg-muted">
+                  <div>
+                    <span className="block text-fg-faint">Size</span>
+                    <span className="font-mono">{formatBytes(storeDoctor.data?.import_scratch.size_bytes)}</span>
+                  </div>
+                  <div>
+                    <span className="block text-fg-faint">Entries</span>
+                    <span className="font-mono">{storeDoctor.data?.import_scratch.entries ?? 0}</span>
+                  </div>
+                  <div>
+                    <span className="block text-fg-faint">Free</span>
+                    <span className="font-mono">{formatBytes(storeDoctor.data?.import_scratch.free_bytes)}</span>
+                  </div>
+                </div>
+              </div>
+              {storeDoctor.data?.default_model_store.active === false && (storeDoctor.data.default_model_store.size_bytes ?? 0) > 0 ? (
+                <div className="rounded border border-warning/30 bg-panel-2 p-3 text-[12px]">
+                  <div className="font-semibold text-warning">Old default model store has files</div>
+                  <div className="mt-1 font-mono text-fg-muted">{storeDoctor.data.default_model_store.path}</div>
+                  <div className="mt-1 text-fg-muted">
+                    {formatBytes(storeDoctor.data.default_model_store.size_bytes)} still lives in the default Ollama folder.
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="mt-4 border-t border-line pt-4">
+              <Field
+                label="Model install location"
+                description="New Ollama pulls use this after Ollama restarts. Existing model files are not moved."
+              >
+                {modelLocation.loading ? (
+                  <Skeleton className="h-[var(--control-h)] w-full" />
+                ) : (
+                  <div className="grid gap-2">
+                    <Input
+                      value={modelDir}
+                      onChange={(e) => setModelDir(e.target.value)}
+                      placeholder="E:\\LAC Models\\ollama"
+                      spellCheck={false}
+                    />
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={saveModelLocation}
+                        disabled={savingModelDir || !modelDir.trim()}
+                      >
+                        <Save /> Apply location
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={resetModelLocation} disabled={savingModelDir}>
+                        <RotateCcw /> Use default
+                      </Button>
+                    </div>
+                    {modelLocation.data?.restart_ollama_required && (
+                      <p className="text-[12px] text-warning">
+                        Ollama must be quit and reopened before new downloads use the configured location.
+                      </p>
+                    )}
+                    <p className="text-[12px] text-fg-muted">
+                      Default: {modelLocation.data?.default_dir ?? "-"}
+                    </p>
+                  </div>
+                )}
+              </Field>
+            </div>
           </Section>
 
           <Section icon={Info} title="About" description="Build and source details.">

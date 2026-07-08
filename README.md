@@ -68,7 +68,12 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt  # or bin/
 .venv/Scripts/python server.py        # Flask + web UI on :5050
 cd web && npm ci && npm run dev       # Vite dev server (proxies /api)
 .venv/Scripts/python -m pytest -q    # test suite
+.venv/Scripts/python scripts/public_readiness_gate.py --include-live-import --include-launch-smoke --allow-existing-launch  # full local public-readiness gate
 .venv/Scripts/python scripts/release_readiness.py  # read-only local/public release check
+.venv/Scripts/python scripts/installed_app_audit.py  # installed app page/API audit
+.venv/Scripts/python scripts/installed_launch_smoke.py --allow-existing  # installed exe launch/audit smoke
+.venv/Scripts/python scripts/runtime_smoke.py --model qwen2.5:0.5b  # live installed-app chat/session smoke test
+.venv/Scripts/python scripts/live_import_stress.py  # live HF import + disposable delete stress test
 ```
 
 Plugins mount via the `lac.plugins` entry-point group — see [docs/PLUGINS.md](docs/PLUGINS.md). Contributions welcome: [CONTRIBUTING.md](CONTRIBUTING.md).

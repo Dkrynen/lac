@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ExternalLink, SlidersHorizontal, Plus } from "lucide-react";
+import { Download, ExternalLink, Loader2, Search, SlidersHorizontal, Plus } from "lucide-react";
 import { PageHeader, ErrorState, EmptyState } from "@/components/page";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,7 @@ import { api } from "@/lib/api";
 import { pullWithToast, importModelWithToast } from "@/lib/installer";
 import { FitBar, VerdictBadge, type Verdict } from "@/components/verdict";
 import { fmtBytes } from "@/lib/utils";
-import type { HfGgufFile, HfGgufModel } from "@/lib/types";
+import type { HfGgufFile, HfGgufModel, InstallPreflightResponse } from "@/lib/types";
 
 const CAPS = [
   { v: "", l: "All capabilities" },
@@ -30,10 +30,6 @@ const SORTS = [
   { v: "vram", l: "VRAM (low)" },
   { v: "params", l: "Params (high)" },
 ];
-
-function isHuggingFacePageUrl(value: string): boolean {
-  return /^https?:\/\/(www\.)?huggingface\.co\//i.test(value.trim());
-}
 
 function asVerdict(fit: string | undefined): Verdict {
   if (fit === "fits" || fit === "offload" || fit === "too_large") return fit;
@@ -69,6 +65,10 @@ export function Browse() {
   const [compatible, setCompatible] = useState(false);
   const [limit, setLimit] = useState(36);
   const [newModel, setNewModel] = useState("");
+  const [manualPreflight, setManualPreflight] = useState<InstallPreflightResponse | null>(null);
+  const [manualPreflightTarget, setManualPreflightTarget] = useState("");
+  const [manualPreflightLoading, setManualPreflightLoading] = useState(false);
+  const [manualPreflightError, setManualPreflightError] = useState<string | null>(null);
   const [hfRepoId, setHfRepoId] = useState("");
   const [hfSelectionByRepo, setHfSelectionByRepo] = useState<Record<string, string>>({});
 
@@ -84,16 +84,51 @@ export function Browse() {
 
   const totalVram = lib.data?.system_vram ?? undefined;
   const models = (lib.data?.models ?? []).slice(0, limit);
+  const manualTarget = newModel.trim();
+  const manualPreflightFresh = manualPreflight && manualPreflightTarget === manualTarget ? manualPreflight : null;
+  const manualInstallBlocked = manualPreflightFresh?.state === "blocked";
 
-  function pullOrImport(value: string) {
+  async function checkManualInstall(value = newModel): Promise<InstallPreflightResponse | null> {
+    const target = value.trim();
+    if (!target) return null;
+    setManualPreflightLoading(true);
+    setManualPreflightError(null);
+    try {
+      const preflight = await api.installPreflight(target);
+      setManualPreflight(preflight);
+      setManualPreflightTarget(target);
+      return preflight;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Could not check install target";
+      setManualPreflight(null);
+      setManualPreflightTarget("");
+      setManualPreflightError(message);
+      return null;
+    } finally {
+      setManualPreflightLoading(false);
+    }
+  }
+
+  async function installManual(value = newModel) {
     const target = value.trim();
     if (!target) return;
-    if (isHuggingFacePageUrl(target)) {
-      importModelWithToast(target, undefined, lib.reload);
+    const preflight = manualPreflightFresh ?? await checkManualInstall(target);
+    if (!preflight || preflight.state === "blocked") return;
+    if (preflight.action === "import") {
+      importModelWithToast(
+        preflight.repo_id ?? preflight.normalized,
+        preflight.selected_quant,
+        lib.reload,
+        undefined,
+        preflight.selected_file
+      );
     } else {
-      pullWithToast(target, lib.reload);
+      pullWithToast(preflight.model_ref ?? preflight.normalized, lib.reload);
     }
     setNewModel("");
+    setManualPreflight(null);
+    setManualPreflightTarget("");
+    setManualPreflightError(null);
   }
 
   return (
@@ -161,29 +196,48 @@ export function Browse() {
       </Card>
 
       {/* Pull any model:tag from the Ollama registry — full availability */}
-      <Card className="mb-4 flex flex-wrap items-center gap-2 p-2.5">
-        <Plus className="ml-1 h-4 w-4 text-fg-muted" />
-        <span className="text-[13px] text-fg-muted">Pull Ollama/GGUF ref</span>
-        <Input
-          placeholder="llama3.2:3b or hf.co/bartowski/Qwen3-30B-A3B:Q4_K_M"
-          value={newModel}
-          onChange={(e) => setNewModel(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && newModel.trim()) {
-              pullOrImport(newModel);
-            }
-          }}
-          className="h-9 max-w-[420px] flex-1"
-        />
-        <Button
-          size="sm"
-          disabled={!newModel.trim()}
-          onClick={() => {
-            pullOrImport(newModel);
-          }}
-        >
-          Pull
-        </Button>
+      <Card className="mb-4 p-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Plus className="ml-1 h-4 w-4 text-fg-muted" />
+          <span className="text-[13px] text-fg-muted">Install model ref</span>
+          <Input
+            placeholder="llama3.2:3b or hf.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M"
+            value={newModel}
+            onChange={(e) => {
+              setNewModel(e.target.value);
+              setManualPreflightError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && manualTarget) {
+                void installManual(newModel);
+              }
+            }}
+            className="h-9 min-w-[260px] max-w-[520px] flex-1"
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!manualTarget || manualPreflightLoading}
+            onClick={() => {
+              void checkManualInstall(newModel);
+            }}
+          >
+            {manualPreflightLoading ? <Loader2 className="animate-spin" /> : <Search />}
+            Check
+          </Button>
+          <Button
+            size="sm"
+            disabled={!manualTarget || manualPreflightLoading || manualInstallBlocked}
+            onClick={() => {
+              void installManual(newModel);
+            }}
+          >
+            <Download />
+            {manualPreflightFresh?.action === "import" ? "Import" : manualPreflightFresh?.action === "pull" ? "Pull" : "Install"}
+          </Button>
+        </div>
+        {manualPreflightFresh ? <InstallPreflightStrip preflight={manualPreflightFresh} /> : null}
+        {manualPreflightError ? <div className="mt-2 text-[12px] text-danger">{manualPreflightError}</div> : null}
       </Card>
 
       {/* LAC Pro: download, convert, and install a custom model straight from a HF repo ID */}
@@ -241,6 +295,7 @@ export function Browse() {
                 const selectedSize = selectedFile?.size_gb ?? m.recommended_size_gb;
                 const selectedVram = selectedFile?.vram_gb ?? m.vram_gb;
                 const selectedKey = selectedFile?.selection ?? selectedFile?.filename ?? selectedFile?.quant;
+                const selectedPreflight = selectedFile?.preflight ?? m.preflight;
                 return (
                   <Card key={m.repo_id} className="flex min-h-[246px] flex-col justify-between p-4">
                     <div>
@@ -303,6 +358,38 @@ export function Browse() {
                           </div>
                         </div>
                       ) : null}
+                      {selectedPreflight ? (
+                        <div className="mt-3 rounded border border-line bg-panel-2 p-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge
+                              variant={
+                                selectedPreflight.state === "ok"
+                                  ? "success"
+                                  : selectedPreflight.state === "blocked"
+                                    ? "danger"
+                                    : "warning"
+                              }
+                            >
+                              {selectedPreflight.state === "ok"
+                                ? "disk ok"
+                                : selectedPreflight.state === "blocked"
+                                  ? "space blocked"
+                                  : "disk unknown"}
+                            </Badge>
+                            <span className="text-[11px] text-fg-faint">
+                              stage {fmtBytes(selectedPreflight.scratch.free_gb)} free
+                            </span>
+                            <span className="text-[11px] text-fg-faint">
+                              store {fmtBytes(selectedPreflight.model_store.free_gb)} free
+                            </span>
+                          </div>
+                          {selectedPreflight.warnings.length > 0 ? (
+                            <div className="mt-1 text-[11px] text-danger">
+                              {selectedPreflight.warnings[0]}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {selectedFile?.filename ? (
                         <div className="mt-2 truncate font-mono text-[11px] text-fg-faint" title={selectedFile.filename}>
                           {selectedFile.filename}
@@ -319,7 +406,7 @@ export function Browse() {
                           undefined,
                           selectedFile?.filename
                         )}
-                        disabled={options.length > 0 && !selectedFile?.importable}
+                        disabled={(options.length > 0 && !selectedFile?.importable) || selectedPreflight?.state === "blocked"}
                       >
                         Import {selectedFile?.quant ?? ""}
                       </Button>
@@ -382,6 +469,60 @@ function HfMetric({ label, value }: { label: string; value: string }) {
     <div className="min-w-0">
       <div className="text-[10px] uppercase tracking-[0.06em] text-fg-faint">{label}</div>
       <div className="truncate font-mono text-[12.5px] font-medium text-fg">{value}</div>
+    </div>
+  );
+}
+
+function InstallPreflightStrip({ preflight }: { preflight: InstallPreflightResponse }) {
+  const disk = preflight.preflight;
+  const stateVariant =
+    preflight.state === "ok"
+      ? "success"
+      : preflight.state === "blocked" || preflight.state === "error"
+        ? "danger"
+        : "warning";
+  const actionLabel = preflight.action === "import" ? "HF import" : "Ollama pull";
+  const selectedLabel =
+    preflight.selected_file ??
+    preflight.selected_quant ??
+    preflight.model_ref ??
+    preflight.repo_id ??
+    preflight.normalized;
+
+  return (
+    <div className="mt-2 rounded border border-line bg-panel-2 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="neutral">{actionLabel}</Badge>
+        <Badge variant={stateVariant}>
+          {preflight.state === "ok"
+            ? "ready"
+            : preflight.state === "blocked"
+              ? "blocked"
+              : preflight.state === "error"
+                ? "check failed"
+                : "needs review"}
+        </Badge>
+        {preflight.selected_size_gb ? <Badge variant="outline">{fmtBytes(preflight.selected_size_gb)}</Badge> : null}
+        <span className="min-w-0 truncate font-mono text-[11.5px] text-fg-muted" title={selectedLabel}>
+          {selectedLabel}
+        </span>
+      </div>
+      <div className="mt-1 text-[12px] text-fg-muted">{preflight.message}</div>
+      {disk ? (
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-fg-faint">
+          <span>stage {fmtBytes(disk.scratch.free_gb)} free</span>
+          <span>store {fmtBytes(disk.model_store.free_gb)} free</span>
+          {disk.selected_size_gb ? <span>needs {fmtBytes(disk.selected_size_gb)} stage</span> : null}
+        </div>
+      ) : preflight.model_store ? (
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-fg-faint">
+          <span>store {fmtBytes(preflight.model_store.free_gb)} free</span>
+          {preflight.model_store_dir ? <span className="truncate font-mono">{preflight.model_store_dir}</span> : null}
+        </div>
+      ) : null}
+      {preflight.warnings.length > 0 ? (
+        <div className="mt-1 text-[11px] text-danger">{preflight.warnings[0]}</div>
+      ) : null}
     </div>
   );
 }

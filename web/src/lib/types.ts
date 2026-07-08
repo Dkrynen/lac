@@ -154,6 +154,7 @@ export interface HfGgufModel {
   recommended_size_gb?: number;
   fit: "fits" | "offload" | "too_large" | "unknown";
   vram_gb?: number;
+  preflight?: ImportPreflight;
 }
 export interface HfGgufFile {
   filename: string;
@@ -165,6 +166,7 @@ export interface HfGgufFile {
   vram_gb?: number;
   importable: boolean;
   compatibility_note?: string | null;
+  preflight?: ImportPreflight;
 }
 export interface HfGgufSearchResponse {
   query: string;
@@ -175,11 +177,133 @@ export interface HfGgufSearchResponse {
   error?: string;
 }
 
+export interface InstallPreflightResponse {
+  target: string;
+  kind: "ollama" | "hf_gguf" | "hf_unknown";
+  action: "pull" | "import";
+  state: "ok" | "blocked" | "unknown" | "error";
+  normalized: string;
+  message: string;
+  repo_id?: string;
+  model_ref?: string;
+  source_url?: string;
+  selector?: string | null;
+  gated?: boolean;
+  selected_file?: string;
+  selected_quant?: string;
+  selected_size_bytes?: number;
+  selected_size_gb?: number;
+  fit?: "fits" | "offload" | "too_large" | "unknown";
+  vram_gb?: number;
+  recommended_file?: string;
+  recommended_quant?: string;
+  model_store_dir?: string;
+  model_store?: SpaceCheck;
+  preflight?: ImportPreflight;
+  warnings: string[];
+}
+
+export interface SpaceCheck {
+  ok: boolean;
+  free_bytes: number | null;
+  free_gb: number | null;
+  required_bytes: number;
+  required_gb: number | null;
+}
+
+export interface ImportPreflight {
+  state: "ok" | "blocked" | "unknown";
+  scratch_dir: string;
+  model_store_dir: string;
+  selected_size_bytes?: number;
+  selected_size_gb?: number;
+  moves_existing_models?: boolean;
+  scratch: SpaceCheck;
+  model_store: SpaceCheck;
+  warnings: string[];
+}
+
+export interface PerformanceSignal {
+  kind: string;
+  severity: "success" | "info" | "warning" | "danger";
+  label: string;
+  value_ms?: number;
+  tokens_per_second?: number | null;
+}
+
+export interface PerformanceAction {
+  kind: string;
+  label: string;
+}
+
+export interface PerformanceDiagnosis {
+  state: "ok" | "watch" | "slow" | "unmeasured";
+  summary: string;
+  signals: PerformanceSignal[];
+  actions: PerformanceAction[];
+}
+
+export interface PerformanceMetrics {
+  model: string;
+  prompt?: string;
+  num_predict?: number;
+  eval_count?: number;
+  eval_duration_ms?: number;
+  total_duration_ms?: number;
+  load_duration_ms?: number;
+  prompt_eval_duration_ms?: number;
+  time_to_first_token_ms?: number;
+  tokens_per_second?: number;
+  response?: string;
+  source?: string;
+  timestamp?: number;
+}
+
+export interface PerformanceDiagnosticsResponse {
+  model: string | null;
+  installed_models: string[];
+  running_models: string[];
+  history: PerformanceMetrics[];
+  latest: PerformanceMetrics | null;
+  diagnosis: PerformanceDiagnosis;
+}
+
+export interface PerformanceProbeResponse {
+  model: string;
+  state: "done" | "failed";
+  metrics?: PerformanceMetrics;
+  diagnosis?: PerformanceDiagnosis;
+  error?: string;
+}
+
 export interface DownloadEntry {
   model?: string;
   status?: string;
-  timestamp?: string;
+  timestamp?: string | number;
+  state?: string;
+  percent?: number;
+  completed?: number;
+  total?: number;
+  updated_at?: number;
   [k: string]: unknown;
+}
+
+export interface PullStatusEntry {
+  model: string;
+  state: string;
+  status?: string;
+  completed?: number;
+  total?: number;
+  percent?: number;
+  started_at?: number;
+  updated_at?: number;
+  error?: string;
+  [k: string]: unknown;
+}
+
+export interface PullStatusResponse {
+  active: number;
+  pulls: PullStatusEntry[];
 }
 
 export interface AptConfig {
@@ -201,7 +325,75 @@ export interface StorageInfo {
   ollama_models_dir: string;
   ollama_models_size_bytes: number | null;
   ollama_models_configured: boolean;
+  ollama_models_user_dir?: string | null;
+  ollama_models_user_configured?: boolean;
+  ollama_models_restart_required?: boolean;
   model_weight_files_in_app: { path: string; size_bytes: number }[];
   models_are_bundled: boolean;
   model_install_mode: "on_demand_ollama_pull";
+}
+
+export interface ModelLocationInfo {
+  state: string;
+  platform: string;
+  env_var: "OLLAMA_MODELS";
+  configured: boolean;
+  configured_dir: string | null;
+  process_configured: boolean;
+  process_dir: string;
+  default_dir: string;
+  effective_after_restart: string;
+  current_size_bytes: number | null;
+  configured_size_bytes: number | null;
+  restart_ollama_required: boolean;
+  restart_lac_required: boolean;
+  moves_existing_models: boolean;
+}
+
+export interface ModelStoreDoctorAction {
+  kind: string;
+  label: string;
+  severity: "info" | "warning" | "danger";
+}
+
+export interface ModelStoreDiskInfo {
+  path?: string;
+  exists?: boolean;
+  active?: boolean;
+  size_bytes?: number | null;
+  size_gb?: number | null;
+  free_bytes?: number | null;
+  free_gb?: number | null;
+  total_bytes?: number | null;
+  total_gb?: number | null;
+  used_bytes?: number | null;
+  used_gb?: number | null;
+}
+
+export interface ImportScratchInfo extends ModelStoreDiskInfo {
+  entries?: number | null;
+  safe_to_clear: boolean;
+}
+
+export interface ModelStoreDoctor {
+  state: "ok" | "watch" | "critical";
+  warnings: string[];
+  actions: ModelStoreDoctorAction[];
+  model_store: ModelStoreDiskInfo & { path: string };
+  import_scratch: ImportScratchInfo & { path: string };
+  default_model_store: ModelStoreDiskInfo & { path: string; active: boolean };
+  app_payload: {
+    path: string;
+    size_bytes: number | null;
+    size_gb?: number | null;
+    model_weight_files: { path: string; size_bytes: number }[];
+  };
+}
+
+export interface ImportScratchClearResponse {
+  state: "cleared" | "failed";
+  path: string;
+  deleted_entries?: number;
+  deleted_bytes?: number;
+  error?: string;
 }

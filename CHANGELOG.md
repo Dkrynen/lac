@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## 2.6.4 (2026-07-08)
+
+- **Model delete fix** - Ollama delete success responses with empty bodies now register as success instead of surfacing a false internal HTTP error.
+- **Delete resilience** - Model deletes now get a longer Ollama timeout so large model cleanup has room to finish.
+- **Update-check accuracy** - Local patch builds no longer get told to "update" down to an older public release.
+- **Download visibility** - Ollama pulls now expose server-side pull status and the Downloads page shows active pulls with sane timestamps.
+- **Model storage control** - Settings can configure the user-level `OLLAMA_MODELS` directory for future pulls, with restart guidance and no automatic model-file moves.
+- **HF import preflight** - Hugging Face GGUF results now show staging/model-store disk checks before import, matching Pro's non-C-drive scratch path behavior.
+- **Install preflight** - Manual Browse installs now classify pasted Ollama/Hugging Face refs before starting, show the selected action/file/store fit, and block obvious disk/compatibility failures.
+- **Performance Doctor** - Added a latency diagnostic page with a bounded live probe that separates first-token delay, cold load, prompt prefill, and generation speed.
+- **Model-store Doctor** - Settings now surfaces model-drive pressure, Hugging Face import scratch size, stale default-store files, and safe scratch cleanup.
+- **Runtime smoke coverage** - Added an installed-app smoke script for live warm/chat/session checks against a real local model.
+- **Live import stress coverage** - Added a repeatable installed-app stress script for HF preflight, Pro GGUF import, imported-model chat, and disposable model delete verification.
+- **Installed-app audit coverage** - Added a rendered route/API audit for the real Program Files install, including core pages, Pro APIs, storage policy, support bundle, and update checks.
+- **Public-readiness gate** - Added a lane-based release gate script that runs source checks, open-core/Pro boundary guards, installed-app audits, and live model smoke checks without committing, pushing, or publishing.
+- **Installed launch smoke** - Added a Program Files launch smoke so release QA can prove `lac.exe` starts, serves the app, passes the installed audit, and shuts down cleanly.
+- **Release workflow hardening** - Manual GitHub release dispatch now uses the requested version for installer stamping and draft release creation, and checksum generation targets the exact installer version.
+
 ## 2.6.3 (2026-07-08)
 
 - **Release readiness verifier** - `scripts/release_readiness.py` now checks the local installer hash/size, running app version, debug-bundle download, Pro plugin discovery, and published GitHub release asset without pushing or publishing anything.

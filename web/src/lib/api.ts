@@ -138,14 +138,37 @@ export const api = {
     getJSON<import("./types").HfGgufSearchResponse>(
       `/api/hf/gguf-search?q=${encodeURIComponent(q)}&limit=${limit}`
     ),
+  installPreflight: (target: string) =>
+    getJSON<import("./types").InstallPreflightResponse>(
+      `/api/model/install-preflight?target=${encodeURIComponent(target)}`
+    ),
+  performanceDiagnostics: (model?: string) => {
+    const q = new URLSearchParams();
+    if (model) q.set("model", model);
+    return getJSON<import("./types").PerformanceDiagnosticsResponse>(`/api/diagnostics/performance?${q}`);
+  },
+  performanceProbe: (model: string) =>
+    postJSON<import("./types").PerformanceProbeResponse>("/api/diagnostics/performance/probe", { model }),
 
   downloads: () => getJSON<import("./types").DownloadEntry[]>("/api/config/downloads"),
+  pullStatus: () => getJSON<import("./types").PullStatusResponse>("/api/ollama/pull-status"),
 
   config: () => getJSON<import("./types").AptConfig>("/api/config"),
   saveConfig: (patch: Partial<import("./types").AptConfig>) => putJSON("/api/config", patch),
 
   version: () => getJSON<import("./types").VersionInfo>("/api/system/version"),
   storage: () => getJSON<import("./types").StorageInfo>("/api/system/storage"),
+  modelStoreDoctor: () => getJSON<import("./types").ModelStoreDoctor>("/api/system/model-store-doctor"),
+  clearImportScratch: () =>
+    fetch("/api/system/import-scratch", { method: "DELETE", headers: { Accept: "application/json" } }).then((r) => {
+      if (!r.ok) return r.json().then((body) => Promise.reject(new ApiError(r.status, r.statusText, body)));
+      return r.json() as Promise<import("./types").ImportScratchClearResponse>;
+    }),
+  modelLocation: () => getJSON<import("./types").ModelLocationInfo>("/api/system/model-location"),
+  saveModelLocation: (path: string) =>
+    putJSON<import("./types").ModelLocationInfo>("/api/system/model-location", { path }),
+  resetModelLocation: () =>
+    putJSON<import("./types").ModelLocationInfo>("/api/system/model-location", { reset: true }),
   debugBundle: () => getJSON<Record<string, unknown>>("/api/system/debug-bundle"),
 
   /** Stream a model pull. Yields progress payloads ({status,completed,total,...} or {error}). */

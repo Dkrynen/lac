@@ -5,6 +5,7 @@ import {
   Cpu,
   Boxes,
   MessageSquare,
+  Activity,
   Download,
   Sparkles,
   BookOpen,
@@ -20,6 +21,7 @@ const NAV = [
   { to: "/scan", label: "Scan & recommend", icon: Cpu, end: false },
   { to: "/installed", label: "Installed", icon: Boxes, end: false },
   { to: "/chat", label: "Chat", icon: MessageSquare, end: false },
+  { to: "/performance", label: "Performance", icon: Activity, end: false },
   { to: "/downloads", label: "Downloads", icon: Download, end: false },
   { to: "/pro", label: "Pro", icon: Sparkles, end: false },
 ];

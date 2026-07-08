@@ -91,6 +91,8 @@ def test_benchmark_metrics_ttft_is_load_plus_prompt_not_eval_duration():
     # TTFT = time before the first generated token = load + prompt prefill =
     # 4000 ms. It must NOT be the generation (eval) duration of 5000 ms.
     assert entry["time_to_first_token_ms"] == 4000.0
+    assert entry["load_duration_ms"] == 3000.0
+    assert entry["prompt_eval_duration_ms"] == 1000.0
     # tok/s = 100 tokens / 5.0 s = 20.
     assert entry["tokens_per_second"] == 20.0
 

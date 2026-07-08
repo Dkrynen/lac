@@ -36,6 +36,143 @@ def test_system_storage_reports_on_demand_model_policy(flask_app, isolated_home)
     assert data["models_are_bundled"] is False
     assert data["model_weight_files_in_app"] == []
     assert data["ollama_models_dir"]
+    assert "ollama_models_user_configured" in data
+
+
+def test_model_store_doctor_reports_scratch_and_warnings(flask_app, isolated_home, monkeypatch, tmp_path):
+    from backend import api as api_mod
+
+    models = tmp_path / "models"
+    scratch = tmp_path / "lac-hf-import-tmp"
+    default_store = tmp_path / "default" / ".ollama" / "models"
+    models.mkdir(parents=True)
+    scratch.mkdir()
+    default_store.mkdir(parents=True)
+    (scratch / "partial.gguf").write_bytes(b"x" * 10)
+    (default_store / "old.gguf").write_bytes(b"x" * 20)
+
+    monkeypatch.setattr(api_mod, "_default_ollama_models_dir", lambda: models)
+    monkeypatch.setattr(api_mod, "_hf_import_scratch_root", lambda: scratch)
+    monkeypatch.setattr(api_mod.Path, "home", lambda: tmp_path / "default")
+    monkeypatch.setattr(api_mod, "_disk_usage_payload", lambda path: {
+        "free_bytes": 5 * 1024**3,
+        "total_bytes": 100 * 1024**3,
+        "used_bytes": 95 * 1024**3,
+        "free_gb": 5.0,
+        "total_gb": 100.0,
+        "used_gb": 95.0,
+    })
+
+    r = flask_app.test_client().get("/api/system/model-store-doctor")
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["state"] == "critical"
+    assert data["model_store"]["path"] == str(models)
+    assert data["import_scratch"]["path"] == str(scratch)
+    assert data["import_scratch"]["size_bytes"] == 10
+    assert data["import_scratch"]["safe_to_clear"] is True
+    assert any(a["kind"] == "clear_import_scratch" for a in data["actions"])
+    assert any("default Ollama model folder" in warning for warning in data["warnings"])
+
+
+def test_clear_import_scratch_deletes_contents_only(flask_app, isolated_home, monkeypatch, tmp_path):
+    from backend import api as api_mod
+
+    scratch = tmp_path / "lac-hf-import-tmp"
+    nested = scratch / "repo"
+    nested.mkdir(parents=True)
+    (nested / "partial.gguf").write_bytes(b"x" * 10)
+    (scratch / "note.txt").write_text("ok")
+
+    monkeypatch.setattr(api_mod, "_hf_import_scratch_root", lambda: scratch)
+
+    r = flask_app.test_client().delete("/api/system/import-scratch")
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["state"] == "cleared"
+    assert data["deleted_entries"] == 2
+    assert data["deleted_bytes"] == 12
+    assert scratch.exists()
+    assert list(scratch.iterdir()) == []
+
+
+def test_clear_import_scratch_refuses_unsafe_path(flask_app, isolated_home, monkeypatch, tmp_path):
+    from backend import api as api_mod
+
+    monkeypatch.setattr(api_mod, "_hf_import_scratch_root", lambda: tmp_path)
+
+    r = flask_app.test_client().delete("/api/system/import-scratch")
+
+    assert r.status_code == 400
+    data = r.get_json()
+    assert data["state"] == "failed"
+    assert "unsafe" in data["error"]
+
+
+def test_model_location_reports_default(flask_app, isolated_home, monkeypatch):
+    from backend import api as api_mod
+
+    monkeypatch.delenv("OLLAMA_MODELS", raising=False)
+    monkeypatch.setattr(api_mod, "_read_user_env_var", lambda name: None)
+
+    r = flask_app.test_client().get("/api/system/model-location")
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["state"] == "ok"
+    assert data["env_var"] == "OLLAMA_MODELS"
+    assert data["configured"] is False
+    assert data["process_configured"] is False
+    assert data["effective_after_restart"] == data["default_dir"]
+    assert data["moves_existing_models"] is False
+
+
+def test_model_location_sets_user_env_without_touching_models(flask_app, isolated_home, monkeypatch, tmp_path):
+    from backend import api as api_mod
+
+    written = {}
+
+    def fake_write(name, value):
+        written[name] = value
+
+    monkeypatch.delenv("OLLAMA_MODELS", raising=False)
+    monkeypatch.setattr(api_mod, "_read_user_env_var", lambda name: written.get(name))
+    monkeypatch.setattr(api_mod, "_write_user_env_var", fake_write)
+
+    target = tmp_path / "ollama-models"
+    r = flask_app.test_client().put("/api/system/model-location", json={"path": str(target)})
+
+    assert r.status_code == 200
+    assert target.is_dir()
+    data = r.get_json()
+    assert written["OLLAMA_MODELS"] == str(target.resolve())
+    assert data["configured_dir"] == str(target.resolve())
+    assert data["effective_after_restart"] == str(target.resolve())
+    assert data["restart_ollama_required"] is True
+    assert data["moves_existing_models"] is False
+
+
+def test_model_location_reset_removes_user_env(flask_app, isolated_home, monkeypatch):
+    from backend import api as api_mod
+
+    written = {"OLLAMA_MODELS": "D:\\Models"}
+
+    def fake_write(name, value):
+        if value is None:
+            written.pop(name, None)
+        else:
+            written[name] = value
+
+    monkeypatch.setattr(api_mod, "_read_user_env_var", lambda name: written.get(name))
+    monkeypatch.setattr(api_mod, "_write_user_env_var", fake_write)
+
+    r = flask_app.test_client().put("/api/system/model-location", json={"reset": True})
+
+    assert r.status_code == 200
+    assert "OLLAMA_MODELS" not in written
+    assert r.get_json()["configured"] is False
 
 
 def test_system_debug_bundle_is_sanitized(monkeypatch, flask_app, isolated_home):
@@ -290,11 +427,51 @@ def test_ollama_delete_reports_failure_when_ollama_errors(monkeypatch, flask_app
 
     monkeypatch.setattr(
         api_mod, "_ollama_request",
-        lambda method, path, json_body=None, stream=False: {"error": "model 'x' not found"},
+        lambda method, path, json_body=None, stream=False, timeout=30: {"error": "model 'x' not found"},
     )
     r = flask_app.test_client().post("/api/ollama/delete", json={"model": "x"})
     assert r.status_code == 500
     assert r.get_json().get("success") is not True
+
+
+def test_ollama_delete_treats_empty_ollama_success_as_success(monkeypatch, flask_app):
+    from backend import api as api_mod
+
+    captured = {}
+
+    def fake_request(method, path, json_body=None, stream=False, timeout=30):
+        captured.update({
+            "method": method,
+            "path": path,
+            "json_body": json_body,
+            "timeout": timeout,
+        })
+        return {}
+
+    monkeypatch.setattr(api_mod, "_ollama_request", fake_request)
+    r = flask_app.test_client().post("/api/ollama/delete", json={"model": "lac-delete-smoke:latest"})
+
+    assert r.status_code == 200
+    assert r.get_json() == {"success": True}
+    assert captured == {
+        "method": "DELETE",
+        "path": "/api/delete",
+        "json_body": {"name": "lac-delete-smoke:latest"},
+        "timeout": 120,
+    }
+
+
+def test_ollama_request_accepts_empty_success_body(monkeypatch):
+    from backend import api as api_mod
+    import urllib.request as real_urllib_request
+
+    class FakeResp:
+        def read(self):
+            return b""
+
+    monkeypatch.setattr(real_urllib_request, "urlopen", lambda req, timeout=30: FakeResp())
+
+    assert api_mod._ollama_request("DELETE", "/api/delete", {"name": "x"}) == {}
 
 
 def test_malformed_json_returns_json_error_not_html(flask_app):
@@ -355,6 +532,45 @@ def test_check_update_uses_lac_repo_and_useragent(monkeypatch, flask_app):
     assert captured["ua"].startswith("LAC/")
     assert captured["ua"] != "model-hub/1.0"
     assert r.get_json()["download_url"] == "https://github.test/LAC-Setup.exe"
+
+
+def test_check_update_does_not_offer_downgrade_for_local_patch(monkeypatch, flask_app):
+    import urllib.request as real_urllib_request
+
+    class FakeResp:
+        def read(self):
+            return (
+                b'{"tag_name": "v2.6.3", "html_url": "x", "body": "", '
+                b'"assets": [{"name": "LAC-Setup-2.6.3.exe", '
+                b'"browser_download_url": "https://github.test/LAC-Setup-2.6.3.exe"}]}'
+            )
+
+    monkeypatch.setattr(real_urllib_request, "urlopen", lambda req, timeout=5: FakeResp())
+
+    r = flask_app.test_client().get("/api/system/check-update?current=2.6.4")
+
+    assert r.status_code == 200
+    assert r.get_json() == {
+        "update_available": False,
+        "latest_version": "2.6.3",
+        "current_version": "2.6.4",
+    }
+
+
+def test_check_update_semver_handles_multi_digit_versions(monkeypatch, flask_app):
+    import urllib.request as real_urllib_request
+
+    class FakeResp:
+        def read(self):
+            return b'{"tag_name": "v2.10.0", "html_url": "x", "body": "", "assets": []}'
+
+    monkeypatch.setattr(real_urllib_request, "urlopen", lambda req, timeout=5: FakeResp())
+
+    r = flask_app.test_client().get("/api/system/check-update?current=2.9.9")
+
+    assert r.status_code == 200
+    assert r.get_json()["update_available"] is True
+    assert r.get_json()["latest_version"] == "2.10.0"
 
 
 def test_hf_gguf_search_maps_public_metadata(monkeypatch, flask_app):
@@ -444,10 +660,126 @@ def test_hf_gguf_search_maps_public_metadata(monkeypatch, flask_app):
     assert data["models"][0]["files"][0]["filename"] == "model-Q4_K_M.gguf"
     assert data["models"][0]["files"][0]["selection"] == "model-Q4_K_M.gguf"
     assert data["models"][0]["files"][0]["vram_gb"] == 4.65
+    assert data["models"][0]["files"][0]["preflight"]["selected_size_bytes"] == 4_000_000_000
+    assert data["models"][0]["preflight"]["selected_size_bytes"] == 4_000_000_000
     assert data["system_vram"] == 6.0
     assert any("qwen+gguf" in url for url in captured["urls"])
     assert any("/api/models/org/model-GGUF" in url for url in captured["urls"])
     assert captured["ua"].startswith("LAC/")
+
+
+def test_install_preflight_detects_hf_short_url_and_quant(monkeypatch, flask_app, tmp_path):
+    from backend import api as api_mod
+    from backend.cookbook.hardware import SystemInfo
+
+    models_dir = tmp_path / "ollama" / "models"
+    monkeypatch.setattr(api_mod, "_default_ollama_models_dir", lambda: models_dir)
+    monkeypatch.setattr(api_mod, "_hf_import_scratch_root", lambda: tmp_path / "lac-hf-import-tmp")
+    monkeypatch.setattr(api_mod, "_disk_free_bytes", lambda path: 20 * 1024**3)
+    monkeypatch.setattr(api_mod, "detect", lambda: SystemInfo(
+        os="Test", cpu="Test", cpu_cores=8, ram_gb=32.0,
+        gpus=[], total_vram_gb=6.0, combined_vram_gb=6.0, compute_tiers=[],
+    ))
+    monkeypatch.setattr(api_mod, "_fetch_hf_model_detail", lambda repo_id: {
+        "id": repo_id,
+        "author": "org",
+        "downloads": 5,
+        "likes": 1,
+        "gated": False,
+        "tags": ["gguf"],
+        "siblings": [
+            {"rfilename": "model-Q4_K_M.gguf", "size": 400_000_000},
+            {"rfilename": "model-Q8_0.gguf", "size": 800_000_000},
+        ],
+    })
+
+    r = flask_app.test_client().get("/api/model/install-preflight?target=hf.co/org/model-GGUF:Q8_0")
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["kind"] == "hf_gguf"
+    assert data["action"] == "import"
+    assert data["state"] == "ok"
+    assert data["repo_id"] == "org/model-GGUF"
+    assert data["selected_quant"] == "Q8_0"
+    assert data["selected_file"] == "model-Q8_0.gguf"
+    assert data["preflight"]["model_store_dir"] == str(models_dir)
+    assert data["preflight"]["selected_size_bytes"] == 800_000_000
+
+
+def test_install_preflight_treats_bare_repo_as_hf(monkeypatch, flask_app):
+    from backend import api as api_mod
+
+    monkeypatch.setattr(api_mod, "_fetch_hf_model_detail", lambda repo_id: {
+        "id": repo_id,
+        "gated": False,
+        "tags": ["safetensors"],
+        "siblings": [{"rfilename": "model.safetensors", "size": 100}],
+    })
+
+    r = flask_app.test_client().get("/api/model/install-preflight?target=org/model")
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["kind"] == "hf_unknown"
+    assert data["action"] == "import"
+    assert data["repo_id"] == "org/model"
+    assert "safetensors conversion" in data["message"]
+
+
+def test_install_preflight_keeps_ollama_tags_as_pull(monkeypatch, flask_app, tmp_path):
+    from backend import api as api_mod
+
+    models_dir = tmp_path / "ollama" / "models"
+    monkeypatch.setattr(api_mod, "_default_ollama_models_dir", lambda: models_dir)
+    monkeypatch.setattr(api_mod, "_disk_free_bytes", lambda path: 123_456)
+
+    r = flask_app.test_client().get("/api/model/install-preflight?target=llama3.2:3b")
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["kind"] == "ollama"
+    assert data["action"] == "pull"
+    assert data["model_ref"] == "llama3.2:3b"
+    assert data["model_store_dir"] == str(models_dir)
+    assert data["model_store"]["free_bytes"] == 123_456
+
+
+def test_hf_import_preflight_follows_ollama_models(monkeypatch, tmp_path):
+    from backend import api as api_mod
+
+    models_dir = tmp_path / "ollama" / "models"
+    monkeypatch.setenv("OLLAMA_MODELS", str(models_dir))
+    monkeypatch.delenv("LAC_HF_IMPORT_TMP", raising=False)
+    monkeypatch.delenv("LAC_IMPORT_TMP", raising=False)
+    monkeypatch.setattr(api_mod, "_disk_free_bytes", lambda path: 1_000)
+
+    preflight = api_mod._hf_import_preflight(100)
+
+    assert preflight["state"] == "ok"
+    assert preflight["scratch_dir"] == str(models_dir.parent / "lac-hf-import-tmp")
+    assert preflight["model_store_dir"] == str(models_dir)
+    assert preflight["scratch"]["required_bytes"] == 100
+    assert preflight["model_store"]["required_bytes"] == 200
+
+
+def test_hf_import_preflight_blocks_when_model_store_is_short(monkeypatch, tmp_path):
+    from backend import api as api_mod
+
+    models_dir = tmp_path / "ollama" / "models"
+    monkeypatch.setenv("OLLAMA_MODELS", str(models_dir))
+
+    def fake_free(path):
+        return 500 if path.name == "lac-hf-import-tmp" else 50
+
+    monkeypatch.setattr(api_mod, "_disk_free_bytes", fake_free)
+
+    preflight = api_mod._hf_import_preflight(100)
+
+    assert preflight["state"] == "blocked"
+    assert preflight["scratch"]["ok"] is True
+    assert preflight["model_store"]["ok"] is False
+    assert "Ollama model store" in preflight["warnings"][0]
 
 
 def test_fetch_hf_model_detail_uses_short_ttl_cache(monkeypatch):
@@ -503,6 +835,54 @@ def test_hf_gguf_search_empty_query_is_local_only(flask_app):
     r = flask_app.test_client().get("/api/hf/gguf-search")
     assert r.status_code == 200
     assert r.get_json() == {"query": "", "total": 0, "models": []}
+
+
+def test_performance_diagnosis_detects_fast_generation_slow_start():
+    from backend import api as api_mod
+
+    diagnosis = api_mod._diagnose_performance({
+        "tokens_per_second": 374.0,
+        "time_to_first_token_ms": 2400.0,
+        "load_duration_ms": 0.0,
+        "prompt_eval_duration_ms": 2200.0,
+    })
+
+    assert diagnosis["state"] == "watch"
+    assert "first token" in diagnosis["summary"]
+    assert any(signal["kind"] == "fast_after_start" for signal in diagnosis["signals"])
+    assert any(action["kind"] == "warm" for action in diagnosis["actions"])
+
+
+def test_performance_probe_returns_metrics_and_diagnosis(monkeypatch, flask_app):
+    from backend import api as api_mod
+
+    captured = {}
+
+    def fake_ollama_request(method, path, json_body=None, stream=False, timeout=30):
+        captured.update({"method": method, "path": path, "json": json_body, "timeout": timeout})
+        return {
+            "eval_count": 16,
+            "eval_duration": 100_000_000,
+            "load_duration": 2_000_000_000,
+            "prompt_eval_duration": 100_000_000,
+            "total_duration": 2_200_000_000,
+            "response": "ready",
+        }
+
+    monkeypatch.setattr(api_mod, "_ollama_request", fake_ollama_request)
+
+    r = flask_app.test_client().post("/api/diagnostics/performance/probe", json={"model": "tiny:latest"})
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["state"] == "done"
+    assert data["metrics"]["source"] == "diagnostic_probe"
+    assert data["metrics"]["tokens_per_second"] == 160.0
+    assert data["metrics"]["load_duration_ms"] == 2000.0
+    assert data["diagnosis"]["state"] in {"ok", "watch"}
+    assert captured["path"] == "/api/generate"
+    assert captured["json"]["keep_alive"] == "30m"
+    assert captured["json"]["options"]["num_predict"] == 32
 
 
 # --- POST /api/pro/unlock (web "Activate Pro" -> bootstrap-install the plugin) ---

@@ -10,6 +10,7 @@ import { Scan } from "@/pages/scan";
 import { Installed } from "@/pages/installed";
 import { Chat } from "@/pages/chat";
 import { Downloads } from "@/pages/downloads";
+import { Performance } from "@/pages/performance";
 import { Docs } from "@/pages/docs";
 import { Settings } from "@/pages/settings";
 import { Pro } from "./pages/pro";
@@ -55,6 +56,7 @@ export default function App() {
               <Route path="/scan" element={<Scan />} />
               <Route path="/installed" element={<Installed />} />
               <Route path="/chat" element={<Chat />} />
+              <Route path="/performance" element={<Performance />} />
               <Route path="/downloads" element={<Downloads />} />
               <Route path="/pro" element={<Pro />} />
               <Route path="/docs" element={<Docs />} />

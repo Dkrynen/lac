@@ -46,6 +46,8 @@ def build_metrics(
         "eval_duration_ms": round(eval_duration_ns / 1_000_000, 1),
         "total_duration_ns": total_duration_ns,
         "total_duration_ms": round(total_duration_ns / 1_000_000, 1),
+        "load_duration_ms": round(load_duration_ns / 1_000_000, 1),
+        "prompt_eval_duration_ms": round(prompt_eval_duration_ns / 1_000_000, 1),
         "tokens_per_second": round(tokens_per_second, 2),
         "time_to_first_token_ms": round(ttft_ms, 1),
         "response": result.get("response", ""),
