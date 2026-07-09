@@ -92,16 +92,16 @@ A stateless free-tier Worker: validate a Polar key → on `granted`, stream the 
 - Note: this dir lives in the OPEN-SOURCE model-hub repo, but it contains ZERO Pro logic and ZERO secrets (the Polar org id is public; the artifact lives in R2, not here). It's just the gate. That's fine for a public repo. Add `worker/node_modules` to `.gitignore`.
 
 **Interfaces:**
-- Produces: `POST /pro/download` with JSON `{ "license_key": string }` → `200` streaming the artifact bytes (`Content-Type: application/octet-stream`, `Content-Disposition` filename) when Polar returns `status: "granted"`; `403 {"error":"invalid_or_expired"}` otherwise; `400` on a missing/non-string `license_key`; `405` on non-POST.
+- Produces: a private license-gated download route that accepts a license key and streams the artifact only when the account-backed validator accepts it. Exact route shape, storage bindings, response details, and provider-specific validation fields are intentionally redacted from this public planning note; keep them in private operator notes.
 
 - [ ] **Step 1: Scaffold + write the failing tests** (`worker/test/gate.test.ts`, using `vitest` + `@cloudflare/vitest-pool-workers` or `miniflare`):
   - a valid key (mock the Polar `fetch` to return `{status:"granted", ...}`) → `200`, body equals the (mock) R2 object's bytes, correct headers.
   - an invalid key (mock Polar → `{status:"not_granted"}` or a 404 body) → `403` with `{"error":"invalid_or_expired"}`.
   - missing/non-string `license_key` → `400`.
   - a GET (wrong method) → `405`.
-  Set up `wrangler.toml` with an R2 binding (e.g. `R2_BUCKET`, bound to a test bucket name) and the public `POLAR_ORG_ID` as a `[vars]` value.
+  Set up the Worker test binding and public configuration values from the private operator checklist.
 - [ ] **Step 2: Run tests, confirm they fail** (no `index.ts` yet): `cd worker && npm install && npm test`.
-- [ ] **Step 3: Implement `worker/src/index.ts`.** Replicate lac-pro's Polar validate call in TS — `POST https://api.polar.sh/v1/customer-portal/license-keys/validate` with body `{key: license_key, organization_id: POLAR_ORG_ID}` and headers `{Accept, Content-Type: application/json, User-Agent: "LAC-Pro-Gate/1.0"}` (a real User-Agent is REQUIRED — Polar's Cloudflare WAF 403s the default; this is a confirmed gotcha from `lac_pro/ls.py`). Treat `status === "granted"` as valid (anything else, including a 4xx body, is invalid → 403). On valid: `const obj = await env.R2_BUCKET.get(ARTIFACT_KEY); return new Response(obj.body, {headers:{...}})`. Stateless, log nothing containing the key. Guard method/body shape (400/405). Keep the artifact key configurable via a `[vars]` value (e.g. `ARTIFACT_KEY = "lac-pro-latest.zip"`).
+- [ ] **Step 3: Implement `worker/src/index.ts`.** Validate submitted keys through the account-backed provider, stream the private artifact only for accepted keys, keep the Worker stateless, and log nothing containing the key. Exact provider URL, organization identifiers, storage binding names, artifact object keys, and response header recipes are intentionally redacted from this public plan.
 - [ ] **Step 4: Run tests, confirm pass.**
 - [ ] **Step 5: Commit** (model-hub):
   ```bash
@@ -120,7 +120,7 @@ The open-source-core bootstrap. Fetch the artifact from the configured gate URL 
 - Modify: `cli.py` (add `cmd_unlock` + register the `unlock` subparser around line 1064's `sub.add_parser(...)` block), `backend/plugins.py` (prepend the plugin dir Task 1 chose — e.g. `~/.model-hub/plugins/` — to `sys.path`/the discovery path before `discover()`, so a bootstrap-installed artifact is found)
 
 **Interfaces:**
-- Consumes: the gate URL (a module constant, e.g. `PRO_GATE_URL = "https://<worker-subdomain>.workers.dev/pro/download"` — a placeholder value committed now, finalized at the Duan-gated deploy; make it overridable via a `LAC_PRO_GATE_URL` env var for testing).
+- Consumes: the gate URL (a module constant finalized at Duan-gated deploy and overridable via `LAC_PRO_GATE_URL` for private testing). Exact Worker URL and route examples are intentionally redacted from this public plan.
 - Produces: `install_pro_plugin(license_key: str, *, gate_url: str | None = None, http_post=None) -> dict` returning `{"state": "installed"}` or `{"state": "failed", "error_type": ..., "message": ...}` (honest states: `invalid_key` (gate 403), `network`, `download`, `install`); `cmd_unlock(args)` prints the outcome + exit code.
 
 - [ ] **Step 1: Write the failing tests** (`tests/test_pro_install.py`): with a mocked `http_post` (a fake gate) — a `granted`/200 returning fake artifact bytes → installs into a `tmp_path` plugin dir + returns `{"state":"installed"}`; a 403 → `{"state":"failed","error_type":"invalid_key"}` naming the honest message; a network error → `network`; a corrupt/undownloadable body → `download`. Plus a `cmd_unlock` test: invalid key → exit 1 with the honest message on stderr; success → exit 0 printing where it installed + "restart LAC to use Pro" (or that it's live). Isolate the plugin dir via a patched constant, never touch a real `~/.model-hub/plugins`.
@@ -182,8 +182,8 @@ Finalize the configurable bits and document how a customer actually activates Pr
 Do these manually, in order, after the code tasks are merged. None can be done by a subagent.
 
 1. **Create the Cloudflare account** (free) + an **R2 bucket** (private) for the Pro artifact. Note the bucket name.
-2. **Build + upload the artifact:** run `build/build_artifact.py` (Task 2) → upload the output to R2 under the `ARTIFACT_KEY` the Worker expects (`wrangler r2 object put` or the dashboard).
-3. **Deploy the Worker:** set `worker/wrangler.toml`'s R2 binding to the real bucket + `POLAR_ORG_ID` var, `cd worker && npx wrangler deploy`. Note the deployed `*.workers.dev` URL.
+2. **Build + upload the artifact:** run `build/build_artifact.py` (Task 2), then upload the output through the private Cloudflare operator checklist.
+3. **Deploy the Worker:** fill account-specific Worker vars/bindings from private operator notes, deploy from the approved account, and record the deployed URL privately.
 4. **Wire the client:** put the real Worker URL into `PRO_GATE_URL` (Task 4/6), rebuild the app.
 5. **Real end-to-end** (the "run it against reality once" gate): with a real **test-mode Polar license key**, run `lac unlock <key>` on a clean machine/env (ideally the packaged exe) → confirm the plugin downloads, installs, is discovered (`lac pro status` active), and a Pro command works — AND confirm an **invalid** key is cleanly refused (403 → honest message). Confirm a free user (no key) has no Pro code on disk.
 6. **Push** both repos to their origins **only** on Duan's explicit go (model-hub → GitHub; lac-pro stays remote-less — its artifact lives in R2, not a git remote).

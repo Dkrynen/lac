@@ -49,6 +49,22 @@ def check_local_installer(path: Path) -> dict[str, Any]:
     return out
 
 
+def parse_sha256sums(text: str) -> dict[str, str]:
+    checksums: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        digest = parts[0].strip().upper()
+        name = parts[-1].lstrip("*")
+        if len(digest) == 64 and all(ch in "0123456789ABCDEF" for ch in digest):
+            checksums[name] = digest
+    return checksums
+
+
 def check_running_app(base_url: str, timeout: int = 15) -> dict[str, Any]:
     out: dict[str, Any] = {"base_url": base_url, "ok": False}
     try:
@@ -90,17 +106,50 @@ def check_public_release(local: dict[str, Any], timeout: int = 20) -> dict[str, 
         (a for a in assets if isinstance(a, dict) and a.get("browser_download_url") == download_url),
         None,
     )
+    checksum_asset = next(
+        (a for a in assets if isinstance(a, dict) and a.get("name") == "SHA256SUMS.txt"),
+        None,
+    )
     local_size = local.get("size_bytes")
+    expected_tag = f"v{APP_VERSION}"
+    published_sha256 = None
+    checksum_error = None
+    if checksum_asset and checksum_asset.get("browser_download_url"):
+        try:
+            _, _, checksum_body = read_bytes(checksum_asset["browser_download_url"], timeout)
+            sums = parse_sha256sums(checksum_body.decode("utf-8", errors="replace"))
+            asset_name = asset.get("name") if asset else None
+            published_sha256 = sums.get(str(asset_name)) if asset_name else None
+        except Exception as exc:  # noqa: BLE001 - report checksum fetch failures as data
+            checksum_error = str(exc)
     out.update({
         "ok": bool(download_url),
         "tag": data.get("tag_name"),
+        "expected_tag": expected_tag,
+        "published_matches_local_version": data.get("tag_name") == expected_tag,
         "html_url": data.get("html_url"),
         "download_url": download_url,
         "asset_name": asset.get("name") if asset else None,
         "asset_size_bytes": asset.get("size") if asset else None,
+        "sha256_asset_name": checksum_asset.get("name") if checksum_asset else None,
+        "published_sha256": published_sha256,
+        "checksum_error": checksum_error,
         "local_matches_published_size": bool(asset and local_size and asset.get("size") == local_size),
+        "local_matches_published_sha256": bool(
+            published_sha256
+            and local.get("sha256")
+            and published_sha256 == local.get("sha256")
+        ),
     })
     return out
+
+
+def strict_public_match_ok(public_release: dict[str, Any]) -> bool:
+    return bool(
+        public_release.get("local_matches_published_size")
+        and public_release.get("published_matches_local_version")
+        and public_release.get("local_matches_published_sha256")
+    )
 
 
 def default_installer_path(version: str = APP_VERSION) -> Path:
@@ -132,7 +181,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--strict-public-match",
         action="store_true",
-        help="Exit non-zero when the published installer size differs from the local installer.",
+        help="Exit non-zero unless the latest public tag, installer size, and SHA256SUMS entry match this local build.",
     )
     return p.parse_args(argv)
 
@@ -148,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     public_match_ok = (
         not args.strict_public_match
         or args.skip_public
-        or bool(report["public_release"].get("local_matches_published_size"))
+        or strict_public_match_ok(report["public_release"])
     )
     return 0 if local_ok and app_ok and public_ok and public_match_ok else 1
 

@@ -5,9 +5,9 @@ LAC **Pro** plugin. It validates a [Polar](https://polar.sh) license key, and
 on success streams the Pro artifact straight from a private R2 bucket.
 
 - **No state.** No KV, no D1, no Durable Objects, no database.
-- **No PII / no secrets in this repo.** The Polar org id is public (it already
-  ships in the LAC client); the artifact bytes live in R2, not here. The license
-  key is passed to Polar and **never logged**.
+- **No PII / no secrets in this repo.** Account-specific IDs, bucket names,
+  artifact keys, and deploy commands stay in private operator notes. The license
+  key is passed to the provider and **never logged**.
 - **Fails closed.** Any doubt — non-`granted` status, a 4xx body, a non-JSON WAF
   wall, or a network error — returns `403`.
 - **Free-tier compatible.** Nothing here uses a paid Cloudflare feature.
@@ -29,19 +29,16 @@ Content-Type: application/json
 | Non-POST method | `405 {"error":"method_not_allowed"}` (with `Allow: POST`) |
 | Key valid but artifact missing from R2 | `503 {"error":"artifact_unavailable"}` |
 
-The Polar call this Worker replicates:
-`POST https://api.polar.sh/v1/customer-portal/license-keys/validate` with body
-`{key, organization_id}` and a **real `User-Agent`** (`LAC-Pro-Gate/1.0`). The
-User-Agent is required — Polar sits behind Cloudflare's WAF, which `403`s
-absent/default User-Agents before the request reaches the API. (Same gotcha as
-`lac-pro/lac_pro/ls.py`.)
+The provider validation call requires a real `User-Agent`; absent/default
+User-Agents can be blocked before the request reaches the API. Account-specific
+provider URL fields and organization values stay in private operator notes.
 
 ## Configuration (`wrangler.toml`)
 
 | Key | Meaning |
 |---|---|
-| `[vars] POLAR_ORG_ID` | Public Polar org UUID. |
-| `[vars] ARTIFACT_KEY` | R2 object key to stream (placeholder `lac-pro-latest.zip`; the real key is chosen at upload time). |
+| `[vars] POLAR_ORG_ID` | Provider organization identifier, filled from private operator notes before deploy. |
+| `[vars] ARTIFACT_KEY` | Private artifact object key, filled from private operator notes before deploy. |
 | `[vars] ARTIFACT_FILENAME` | Filename offered to the client in `Content-Disposition`. |
 | `[[r2_buckets]] binding = "R2_BUCKET"` | The private artifact bucket. Emulated locally in tests. |
 
@@ -70,41 +67,21 @@ logic without needing `workerd`.
 
 ## Deploy (Duan-gated — needs the Cloudflare account)
 
-Not part of the build task; run these when you're ready to go live. Requires
-`wrangler` (used on-demand via `npx`, so nothing extra is committed).
+Not part of the build task; run only from Duan-approved operator context.
 
 > Deploying this Worker is one link in the chain. For the whole pipeline —
 > build the artifact → upload to R2 → deploy this Worker → wire the client →
 > end-to-end smoke — see [`../docs/PRO-DELIVERY.md`](../docs/PRO-DELIVERY.md).
 
-1. **Authenticate** to the Acend Cloudflare account:
-   ```bash
-   npx wrangler login
-   ```
-2. **Create the private R2 bucket** (name must match `bucket_name` in
-   `wrangler.toml`, or edit it to taste):
-   ```bash
-   npx wrangler r2 bucket create lac-pro-artifacts
-   ```
-3. **Upload the compiled artifact** and set `ARTIFACT_KEY` in `wrangler.toml`
-   to the object key you used (the built file is ABI-tagged, e.g.
-   `lac-pro-0.1.0-cp311-win_amd64.zip`, but the R2 key is yours to choose):
-   ```bash
-   npx wrangler r2 object put lac-pro-artifacts/lac-pro-latest.zip \
-     --file ../../lac-pro/build/dist/lac-pro-0.1.0-cp311-win_amd64.zip
-   ```
-4. **Confirm the vars** in `wrangler.toml` (`POLAR_ORG_ID`, `ARTIFACT_KEY`,
-   `ARTIFACT_FILENAME`). None are secret, so no `wrangler secret` is needed.
-5. **Deploy:**
-   ```bash
-   npm run deploy        # → npx wrangler deploy
-   ```
-6. **Smoke test** with a real license key:
-   ```bash
-   curl -sS -X POST https://<your-worker-subdomain>/pro/download \
-     -H 'Content-Type: application/json' \
-     -d '{"license_key":"<real key>"}' -o lac-pro.zip -w '%{http_code}\n'
-   ```
+1. Build the private `lac-pro` artifact and record its SHA256/byte size in
+   private release notes.
+2. Upload the artifact to private Cloudflare storage using the private operator
+   checklist.
+3. Fill `POLAR_ORG_ID`, `ARTIFACT_KEY`, `ARTIFACT_FILENAME`, and the R2 binding
+   from private operator notes.
+4. Deploy from the approved Cloudflare account.
+5. Smoke test with a real/test license key without printing the key in logs.
 
-To roll a new artifact, `r2 object put` the new bytes (same key, or bump
-`ARTIFACT_KEY` and re-deploy). No code change needed.
+To roll a new artifact, repeat the private upload checklist, update the private
+release notes, and rerun the valid-key plus invalid-key smoke tests before
+public checkout is enabled.

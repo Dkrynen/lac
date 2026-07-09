@@ -72,10 +72,9 @@ build it, keep tests green, and batch into one v2.6.2.
   release. **Publishing is Duan's call** (`gh release edit vX.Y.Z --draft=false --latest`).
 - **Ship a `lac-pro` change (Pro delivery):** in `lac-pro`: `<model-hub-venv-python> build/build_artifact.py`
   → produces `build/dist/lac-pro-0.1.0-cp311-win_amd64.zip` (+ sha). Upload to R2 from `model-hub/worker`:
-  `npx wrangler r2 object put lac-pro-artifacts/lac-pro-latest.zip --file <zip> --remote` (**`--remote` is
-  mandatory**; `wrangler` is not on PATH → use `npx wrangler`; the account is authed). Verify with
-  `npx wrangler r2 object get … --remote` + sha. Duan's local install uses `~/.model-hub/plugins/lac_pro.*` —
-  swap that file to test locally without re-activating. Gate: `lac-pro-gate.refersal.workers.dev`.
+  Upload the artifact through the private Cloudflare operator checklist (**remote account-backed action is
+  mandatory**). Verify the private artifact hash through the private operator checklist. Duan's local install uses
+  `~/.model-hub/plugins/lac_pro.*` — swap that file to test locally without re-activating. Gate URL is redacted from this public handoff.
 
 ## Launch state (so you don't accidentally undo it)
 - **v2.6.0 is public; the Reddit launch post is HELD** until the app feels good. The ready-to-paste

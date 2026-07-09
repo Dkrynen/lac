@@ -10,15 +10,15 @@
  * Stateless by design: no KV, no D1, no Durable Objects, no logging that
  * contains the license key. Fails CLOSED — any doubt about validity → 403.
  *
- * This file lives in the OPEN-SOURCE repo and contains no secrets: the Polar
- * org id is public and already ships in the client; the artifact bytes live
- * in R2, never here.
+ * This file lives in the OPEN-SOURCE repo and contains no secrets: account-
+ * specific values come from the Worker environment; the artifact bytes live in
+ * private storage, never here.
  */
 
 export interface Env {
   /** Private R2 bucket holding the compiled Pro artifact. */
   R2_BUCKET: R2Bucket;
-  /** Public Polar.sh organization UUID (safe to commit). */
+  /** Provider organization identifier from the Worker environment. */
   POLAR_ORG_ID: string;
   /** R2 object key of the artifact to stream. */
   ARTIFACT_KEY: string;

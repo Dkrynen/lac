@@ -117,6 +117,23 @@ def check_lac_pro_remote(args: argparse.Namespace) -> dict[str, Any]:
     return row
 
 
+def import_preflight_smoke_timeout(args: argparse.Namespace) -> int:
+    request_timeout = args.live_timeout
+    route_timeout = max(request_timeout, 30)
+    return (3 * request_timeout) + (2 * route_timeout) + 60
+
+
+def live_import_stress_timeout(args: argparse.Namespace) -> int:
+    request_timeout = args.live_timeout
+    route_timeout = max(request_timeout, 30)
+    warm_chat_timeout = max(request_timeout, 700)
+    delete_timeout = (4 * request_timeout) + max(request_timeout, 60) + 5
+    setup_timeout = (5 * request_timeout) + route_timeout
+    import_wait_timeout = args.import_timeout + request_timeout + 5
+    return setup_timeout + import_wait_timeout + (2 * warm_chat_timeout) + delete_timeout + 180
+
+
+
 def build_checks(args: argparse.Namespace) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     python = sys.executable
@@ -248,6 +265,30 @@ def build_checks(args: argparse.Namespace) -> list[dict[str, Any]]:
             runtime_cmd,
             timeout=args.live_timeout,
         )
+        if not args.skip_import_preflight:
+            import_preflight_cmd = [
+                python,
+                str(repo_root / "scripts" / "live_import_stress.py"),
+                "--app-url",
+                args.app_url,
+                "--repo-id",
+                args.import_repo_id,
+                "--quant",
+                args.import_quant,
+                "--filename",
+                args.import_filename,
+                "--timeout",
+                str(args.live_timeout),
+                "--preflight-only",
+            ]
+            add_check(
+                rows,
+                args,
+                "live",
+                "import_preflight_smoke",
+                import_preflight_cmd,
+                timeout=import_preflight_smoke_timeout(args),
+            )
         if args.include_live_import:
             import_cmd = [
                 python,
@@ -260,6 +301,10 @@ def build_checks(args: argparse.Namespace) -> list[dict[str, Any]]:
                 args.import_quant,
                 "--filename",
                 args.import_filename,
+                "--timeout",
+                str(args.live_timeout),
+                "--import-timeout",
+                str(args.import_timeout),
             ]
             add_check(
                 rows,
@@ -267,7 +312,7 @@ def build_checks(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "live",
                 "live_import_stress",
                 import_cmd,
-                timeout=args.import_timeout,
+                timeout=live_import_stress_timeout(args),
             )
 
     return rows
@@ -323,6 +368,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--skip-guards", action="store_true")
     p.add_argument("--skip-installed", action="store_true")
     p.add_argument("--skip-live", action="store_true")
+    p.add_argument("--skip-import-preflight", action="store_true", help="Skip the cheap HF/Pro preflight smoke in the live lane.")
     p.add_argument("--skip-public", action="store_true", help="Do not query GitHub's latest public release.")
     p.add_argument("--strict-public-match", action="store_true", help="Fail if the local installer does not match the latest published release asset.")
     p.add_argument("--allow-missing-lac-pro", action="store_true")

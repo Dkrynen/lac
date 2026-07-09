@@ -1502,7 +1502,7 @@ to:
         <li><strong>Know when something changed.</strong> Insights tracks your tok/s baseline over time and flags the moment a driver update, OS patch, or model swap costs you performance.</li>
 ```
 
-(The price line and Polar.sh `<a class="btn btn-primary" href="...">Get LAC Pro</a>` immediately below are untouched — verify with `git diff` that those two lines show zero changes.)
+(Historical public checkout CTA preservation note redacted; current public copy should route to the waitlist until Duan-gated launch approval.)
 
 - [ ] Step 3: Fix the FAQ answer that still claims benchmarking is free
 

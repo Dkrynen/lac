@@ -129,8 +129,8 @@ jump to code.
 - App: Flask server `127.0.0.1:5050` (`server.py`), React UI in `web/` (`npm run build` → `web/dist`),
   Windows build `pyinstaller build.spec` → `LAC-Setup` via `installer.iss`; release built by CI on tag
   push; installs to `C:\Program Files (x86)\LAC\lac.exe`.
-- Pro delivery: Cloudflare Worker `lac-pro-gate.refersal.workers.dev` → private R2 `lac-pro-artifacts/
-  lac-pro-latest.zip` (hardened `.pyd` live); Polar org `c3771fa4-19b0-4f29-a444-0aa52b0daf36`; keys use
+- Pro delivery: Cloudflare Worker gate → private R2 artifact (hardened `.pyd` live); account-specific
+  Worker URL, bucket/object names, and Polar organization values are redacted from this public handoff; keys use
   the stale `APT--` prefix (Polar benefit prefix never updated to `LAC-`).
 - Standing rules: open every reply with "Duan"; plan before pushing to live systems; never publish/push
   without explicit go; superpowers/plugin-first on all build work.

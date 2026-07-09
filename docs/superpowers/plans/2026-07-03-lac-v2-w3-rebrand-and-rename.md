@@ -1368,7 +1368,7 @@ git commit -m "feat(w3): rename Tailwind iris utilities to verdant + apt->lac we
 
 **Interfaces:**
 - Consumes: vein-leaf geometry (Task 3, inlined below — identical to `assets/leaf-mark.svg`), `site/favicon.svg` (Task 3).
-- **Preserved byte-identical:** the Polar.sh checkout link (`https://buy.polar.sh/polar_cl_jGkeY1nYS0xdgVGAxdFLn7M0yeovlR9FVtyqY1Mh9HX`, added 2026-07-03 commit `eab536c`) and the pricing line (`$3/month billed annually — activation via license key, no account needed.`). Only the visual theme and product-name strings change; the FAQ card explaining "why `aptm` not `apt`" is rewritten since LAC has no known Linux-package-manager collision (unlike `apt`/Debian) — this is a content change, not part of the byte-identical preservation, which applies only to the checkout link + pricing copy named above.
+- **Historical note:** this archived plan originally preserved the then-current Pro checkout link and pricing copy byte-identically. The live checkout URL is intentionally redacted from this public planning note; current public copy should route to the waitlist until Duan-gated launch approval.
 
 - [ ] **Step 1: Replace `site/index.html` entirely with:**
 
@@ -1506,7 +1506,7 @@ git commit -m "feat(w3): rename Tailwind iris utilities to verdant + apt->lac we
         <li><strong>Know when something changed.</strong> Insights tracks your tok/s baseline over time and flags the moment a driver update, OS patch, or model swap costs you performance.</li>
       </ul>
       <p><span class="price">$3/month billed annually</span> — activation via license key, no account needed.</p>
-      <a class="btn btn-primary" href="https://buy.polar.sh/polar_cl_jGkeY1nYS0xdgVGAxdFLn7M0yeovlR9FVtyqY1Mh9HX" style="margin-top: 8px;">Get LAC Pro</a>
+      <a class="btn btn-primary" href="[redacted-public-waitlist-url]" style="margin-top: 8px;">Join Pro waitlist</a>
     </div>
   </div>
 </section>
@@ -1574,12 +1574,12 @@ git commit -m "feat(w3): rename Tailwind iris utilities to verdant + apt->lac we
 ```bash
 cd /c/Users/User/repos/model-hub
 grep -icE "6E7BF2|8B96F5|110, ?123, ?242" site/index.html
-grep -c "buy.polar.sh/polar_cl_jGkeY1nYS0xdgVGAxdFLn7M0yeovlR9FVtyqY1Mh9HX" site/index.html
+grep -c "[redacted-public-checkout-url]" site/index.html
 grep -c '\$3/month billed annually' site/index.html
 grep -c "favicon.svg" site/index.html
 git grep -inE "\bapt\b|\bAPT\b|model-hub" -- site/index.html
 ```
-Expected: `0`; then `1`; then `1`; then `1`; then **no output, exit 1** (the Polar link + pricing copy are byte-identical to the pre-rebrand commit `eab536c` — diff `git diff eab536c -- site/index.html` if you want to double check those two lines specifically didn't shift). Then open it in a browser for a visual smoke (`start site\index.html` from PowerShell): near-black canvas, green primary button with **dark** text, vein-leaf mark above the `LAC` wordmark, "Get LAC Pro" CTA intact.
+Expected: `0`; then `1`; then `1`; then `1`; then **no output, exit 1**. Historical checkout-link preservation notes are redacted from this public plan; current public copy should route to the waitlist until Duan-gated launch approval. Then open it in a browser for a visual smoke (`start site\index.html` from PowerShell): near-black canvas, green primary button with **dark** text, vein-leaf mark above the `LAC` wordmark.
 
 - [ ] **Step 3: Commit**
 
@@ -2448,7 +2448,7 @@ Line 10 — old: `Set POLAR_ORG_ID to your Polar organization UUID.` — **uncha
 
 Line 20 — old: `# Your Polar.sh organization UUID — override via APT_PRO_ORG_ID env var if needed.` → new: `# Your Polar.sh organization UUID — override via LAC_PRO_ORG_ID env var if needed.`
 
-Line 21 — old: `_POLAR_ORG_ID = os.environ.get("APT_PRO_ORG_ID") or "c3771fa4-19b0-4f29-a444-0aa52b0daf36"` → new: `_POLAR_ORG_ID = os.environ.get("LAC_PRO_ORG_ID") or "c3771fa4-19b0-4f29-a444-0aa52b0daf36"`
+Line 21 — old: `_POLAR_ORG_ID = os.environ.get("APT_PRO_ORG_ID") or "[redacted-org-id]"` → new: `_POLAR_ORG_ID = os.environ.get("LAC_PRO_ORG_ID") or "[redacted-org-id]"`
 
 - [ ] **Step 9: Update `lac-pro/lac_pro/tune.py`**
 

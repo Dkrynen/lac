@@ -164,6 +164,6 @@ actually see on your hardware. Roast it.
 
 - **Landing copy predates the cockpit** — `site/index.html` doesn't mention tuning/insights/import at all, which
   is your strongest Pro pitch. Worth a refresh (I can do it) but not before posting.
-- **Custom domain** for the gate/landing (e.g. `gate.acend.online`) instead of the `refersal.workers.dev` /
-  `github.io` URLs — polish, one-line config change.
+- **Custom domain** for the gate/landing instead of raw `workers.dev` / `github.io`
+  URLs — polish, one-line config change.
 - **Second-machine install test** to catch anything hardware-specific.

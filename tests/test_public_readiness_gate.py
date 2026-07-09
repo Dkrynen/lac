@@ -36,6 +36,7 @@ def _args(**overrides):
         "skip_guards": False,
         "skip_installed": False,
         "skip_live": False,
+        "skip_import_preflight": False,
         "skip_public": True,
         "strict_public_match": False,
         "allow_missing_lac_pro": False,
@@ -48,6 +49,15 @@ def _args(**overrides):
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
+
+
+def test_public_readiness_gate_cli_defaults_match_installed_app_timings():
+    gate = _load_gate()
+
+    args = gate.parse_args([])
+
+    assert args.live_timeout == 180
+    assert args.import_timeout == 900
 
 
 def test_public_readiness_gate_builds_default_lanes(monkeypatch):
@@ -84,10 +94,55 @@ def test_public_readiness_gate_builds_default_lanes(monkeypatch):
     assert any(name == "web_typecheck" for _, name, _, _ in calls)
     assert any(name == "release_readiness" for _, name, _, _ in calls)
     assert any(name == "runtime_smoke" for _, name, _, _ in calls)
+    assert any(name == "import_preflight_smoke" for _, name, _, _ in calls)
     assert not any(name == "live_import_stress" for _, name, _, _ in calls)
 
 
 def test_public_readiness_gate_includes_live_import_when_requested(monkeypatch):
+    gate = _load_gate()
+    calls = {}
+
+    def fake_run_command(name, command, cwd, timeout, lane):
+        calls[name] = {"command": command, "timeout": timeout}
+        return {
+            "lane": lane,
+            "name": name,
+            "ok": True,
+            "returncode": 0,
+            "cwd": str(cwd),
+            "command": command,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    monkeypatch.setattr(gate, "run_command", fake_run_command)
+    monkeypatch.setattr(gate, "check_lac_pro_remote", lambda args: {
+        "lane": "guards",
+        "name": "lac_pro_remote_guard",
+        "ok": True,
+        "stdout_tail": "",
+        "stderr_tail": "",
+    })
+
+    report = gate.build_report(_args(include_live_import=True, live_timeout=37, import_timeout=901))
+
+    assert report["ok"] is True
+    assert "import_preflight_smoke" in calls
+    assert "live_import_stress" in calls
+    import_preflight = calls["import_preflight_smoke"]
+    assert "--timeout" in import_preflight["command"]
+    assert "37" in import_preflight["command"]
+    assert "--preflight-only" in import_preflight["command"]
+    assert import_preflight["timeout"] == 245
+    live_import = calls["live_import_stress"]
+    assert "--timeout" in live_import["command"]
+    assert "37" in live_import["command"]
+    assert "--import-timeout" in live_import["command"]
+    assert "901" in live_import["command"]
+    assert live_import["timeout"] == 2958
+
+
+def test_public_readiness_gate_can_skip_import_preflight(monkeypatch):
     gate = _load_gate()
     names = []
 
@@ -113,10 +168,11 @@ def test_public_readiness_gate_includes_live_import_when_requested(monkeypatch):
         "stderr_tail": "",
     })
 
-    report = gate.build_report(_args(include_live_import=True))
+    report = gate.build_report(_args(skip_import_preflight=True))
 
     assert report["ok"] is True
-    assert "live_import_stress" in names
+    assert "runtime_smoke" in names
+    assert "import_preflight_smoke" not in names
 
 
 def test_public_readiness_gate_includes_launch_and_strict_public_flags(monkeypatch):

@@ -233,6 +233,13 @@ def test_default_gate_url_is_the_module_constant(plugin_dir, monkeypatch):
     assert seen[0][0].startswith("https://")
 
 
+def test_default_gate_url_stays_public_placeholder_until_launch():
+    """Public source must not bake a real Worker URL before Duan approves launch."""
+    assert pro_install.PRO_GATE_URL == (
+        "https://replace-with-approved-pro-gate.example.invalid/pro/download"
+    )
+
+
 # ------------------------------------------------------------- core seam purity
 
 def test_pro_install_never_mentions_lac_pro():

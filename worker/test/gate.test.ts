@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 import worker, { type Env } from "../src/index";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
-const ORG_ID = "c3771fa4-19b0-4f29-a444-0aa52b0daf36";
+const ORG_ID = "test-org-id";
 const ARTIFACT_KEY = "lac-pro-latest.zip";
 const FILENAME = "lac-pro.zip";
 const VALIDATE_URL =
