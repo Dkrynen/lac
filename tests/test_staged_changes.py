@@ -290,3 +290,119 @@ def test_revert_rejail_blocks_tampered_path(isolated_home, tmp_path):
     result = persistence.revert_applied_change(row["id"])
     assert result["status"] == "error"
     assert not (tmp_path.parent / "evil.txt").exists()
+
+
+def _build_handlers(sid, run_id="run1", event_queue=None):
+    from backend.agent.staging import build_staged_handlers
+    from backend.plugin.builtins.tools import TOOL_HANDLERS
+
+    return build_staged_handlers(
+        TOOL_HANDLERS, session_id=sid, run_id=run_id, event_queue=event_queue
+    )
+
+
+def test_staged_write_stages_instead_of_writing(isolated_home, tmp_path):
+    import queue
+
+    from backend.cookbook import persistence
+
+    sid = _mk_session()
+    q = queue.Queue()
+    handlers = _build_handlers(sid, event_queue=q)
+    ctx = {"cwd": str(tmp_path)}
+
+    result = handlers["write_file"]({"path": "src/x.py", "content": "pass\n"}, ctx)
+    assert "staged" in result and "not yet applied" in result
+    assert not (tmp_path / "src" / "x.py").exists()
+    rows = persistence.list_staged_changes(sid, status="pending")
+    assert [r["path"] for r in rows] == ["src/x.py"]
+    ev = q.get_nowait()
+    assert ev["type"] == "staged_change"
+    assert ev["change_id"] == rows[0]["id"]
+    assert ev["path"] == "src/x.py"
+
+
+def test_staged_write_jail_and_size_cap(isolated_home, tmp_path):
+    sid = _mk_session()
+    handlers = _build_handlers(sid)
+    ctx = {"cwd": str(tmp_path)}
+
+    assert handlers["write_file"]({"path": "../evil.txt", "content": "x"}, ctx).startswith("error:")
+    big = "x" * (2 * 1024 * 1024 + 1)
+    assert "2 MB" in handlers["write_file"]({"path": "big.txt", "content": big}, ctx)
+
+
+def test_read_overlay_returns_staged_content(isolated_home, tmp_path):
+    sid = _mk_session()
+    handlers = _build_handlers(sid)
+    ctx = {"cwd": str(tmp_path)}
+    (tmp_path / "a.txt").write_text("disk version", encoding="utf-8")
+
+    handlers["write_file"]({"path": "a.txt", "content": "staged version"}, ctx)
+    assert handlers["read_file"]({"path": "a.txt"}, ctx) == "staged version"
+    # un-staged file falls through to disk
+    (tmp_path / "b.txt").write_text("plain", encoding="utf-8")
+    assert handlers["read_file"]({"path": "b.txt"}, ctx) == "plain"
+
+
+def test_list_overlay_shows_staged_new_files(isolated_home, tmp_path):
+    sid = _mk_session()
+    handlers = _build_handlers(sid)
+    ctx = {"cwd": str(tmp_path)}
+    (tmp_path / "real.txt").write_text("x", encoding="utf-8")
+
+    handlers["write_file"]({"path": "ghost.txt", "content": "staged only"}, ctx)
+    listing = handlers["list_files"]({"path": "."}, ctx)
+    assert "real.txt" in listing
+    assert "ghost.txt" in listing
+    assert "(staged)" in listing
+    # staged file in a directory that only exists via staging
+    handlers["write_file"]({"path": "newdir/inner.txt", "content": "y"}, ctx)
+    inner = handlers["list_files"]({"path": "newdir"}, ctx)
+    assert "inner.txt" in inner
+
+
+def test_other_handlers_pass_through_untouched(isolated_home):
+    from backend.plugin.builtins.tools import TOOL_HANDLERS
+
+    sid = _mk_session()
+    handlers = _build_handlers(sid)
+    assert handlers["run_bash"] is TOOL_HANDLERS["run_bash"]
+    assert handlers["web_search"] is TOOL_HANDLERS["web_search"]
+    assert TOOL_HANDLERS["write_file"] is not handlers["write_file"]  # original untouched
+
+
+def test_staged_read_list_root_isolated_same_session(isolated_home, tmp_path):
+    """Pending rows are keyed (session_id, root, path); ensure staging in projA doesn't leak into projB."""
+    from backend.cookbook import persistence
+
+    sid = _mk_session()
+    proj_a = tmp_path / "projA"
+    proj_b = tmp_path / "projB"
+    proj_a.mkdir()
+    proj_b.mkdir()
+
+    # Stage "same.txt" under projA with staged content
+    handlers_a = _build_handlers(sid)
+    ctx_a = {"cwd": str(proj_a)}
+    handlers_a["write_file"]({"path": "same.txt", "content": "projA staged"}, ctx_a)
+
+    # Create a real same.txt on disk under projB with different content
+    (proj_b / "same.txt").write_text("projB disk", encoding="utf-8")
+
+    # Build handlers for projB and verify read returns disk content, not projA staged
+    handlers_b = _build_handlers(sid)
+    ctx_b = {"cwd": str(proj_b)}
+    result = handlers_b["read_file"]({"path": "same.txt"}, ctx_b)
+    assert result == "projB disk", f"Expected 'projB disk' but got '{result}'"
+
+    # Verify projA staged file doesn't appear in projB listing
+    listing_b = handlers_b["list_files"]({"path": "."}, ctx_b)
+    assert "same.txt" in listing_b
+    # Count occurrences to ensure it's only the disk file
+    staged_lines = [line for line in listing_b.split("\n") if "same.txt" in line and "(staged)" in line]
+    assert len(staged_lines) == 0, f"projA staged 'same.txt' leaked into projB: {listing_b}"
+
+    # Verify projA still sees its staged content
+    result_a = handlers_a["read_file"]({"path": "same.txt"}, ctx_a)
+    assert result_a == "projA staged"
