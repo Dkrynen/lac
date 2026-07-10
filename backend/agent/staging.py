@@ -63,7 +63,13 @@ def build_staged_handlers(
             return f"error: {e}"
         if event_queue is not None:
             event_queue.put(
-                {"type": "staged_change", "change_id": row["id"], "path": row["path"]}
+                {
+                    "type": "staged_change",
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "change_id": row["id"],
+                    "path": row["path"],
+                }
             )
         return f"staged {n_bytes} bytes to {rel} (change {row['id']}) - not yet applied"
 

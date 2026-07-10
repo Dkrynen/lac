@@ -318,6 +318,8 @@ def test_staged_write_stages_instead_of_writing(isolated_home, tmp_path):
     assert [r["path"] for r in rows] == ["src/x.py"]
     ev = q.get_nowait()
     assert ev["type"] == "staged_change"
+    assert ev["session_id"] == sid
+    assert ev["run_id"] == "run1"
     assert ev["change_id"] == rows[0]["id"]
     assert ev["path"] == "src/x.py"
 

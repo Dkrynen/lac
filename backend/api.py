@@ -22,13 +22,15 @@ from urllib.parse import urlsplit, urlunsplit
 from flask import Flask, Response, jsonify, request, stream_with_context
 
 from . import self_invoke
-from .agent import Agent, AgentRunner, READONLY_PERMISSIONS
+from .agent import Agent, AgentRunner, FULL_PERMISSIONS, READONLY_PERMISSIONS
+from .agent.staging import build_staged_handlers
 from .cookbook import proc
 from .cookbook.config import load_config
 from .cookbook.downloads import download_history
 from .cookbook.hardware import detect, print_system
 from .cookbook.recommend import recommend, load_models
 from .plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+from .permission import PermissionEngine
 from .pro_install import install_pro_plugin
 from .provider.registry import default_provider
 from .update import is_newer, select_release_download_url
@@ -198,6 +200,18 @@ class _PersistedAgentEvent:
     payload: dict
 
 
+class _PersistedRunEventSink:
+    """Persist handler-originated events before publishing them to SSE."""
+
+    def __init__(self, run: "_AgentRun"):
+        self.run = run
+
+    def put(self, event: dict) -> None:
+        payload = dict(event)
+        _persist_run_event(self.run, payload)
+        _put_run_item(self.run, _PersistedAgentEvent(payload))
+
+
 @dataclass
 class _AgentRun:
     """Registry entry bridging a streaming agent run and the answer endpoint."""
@@ -253,6 +267,18 @@ def _put_run_item(run: _AgentRun, item: object) -> bool:
     return False
 
 
+def _ask_is_rememberable(tool_name: str, target: object, key: str) -> bool:
+    """Return the backend's single source of truth for remembered approvals."""
+
+    from .permission.engine import is_dangerous
+
+    return bool(
+        key != "doom_loop"
+        and target is not None
+        and not is_dangerous(tool_name, target)
+    )
+
+
 def _make_web_ask(run_id: str, run: _AgentRun):
     """Bridge an async runner ask to SSE output and a separate answer POST."""
 
@@ -261,6 +287,7 @@ def _make_web_ask(run_id: str, run: _AgentRun):
         from .permission import Decision
 
         ask_id = uuid.uuid4().hex
+        rememberable = _ask_is_rememberable(tool_name, target, key)
         ask_event = {
             "type": "ask",
             "run_id": run_id,
@@ -269,6 +296,7 @@ def _make_web_ask(run_id: str, run: _AgentRun):
             "target": target,
             "key": key,
             "doom_loop": key == "doom_loop",
+            "rememberable": rememberable,
         }
         with run.state_lock:
             if run.cancelled:
@@ -1310,12 +1338,14 @@ def ollama_chat():
     )
 
 
-_WEB_AGENT_MODES = {"plan", "explore"}
+_WEB_AGENT_MODES = {"build", "plan", "explore"}
 _WEB_AGENT_TOOLS = {
+    "build": ["read_file", "write_file", "list_files"],
     "plan": ["read_file", "list_files"],
     "explore": ["read_file", "list_files", "web_search"],
 }
 _WEB_AGENT_PROMPTS = {
+    "build": "You are the LAC Workbench build agent for one explicit project. You can inspect files and propose write_file changes, which are staged for separate user review and apply. You cannot run shell commands; do not claim tests, builds, commands, or staged changes have already run or changed files on disk.",
     "plan": "You are the LAC Workbench plan agent. You have read-only access. Inspect context, reason carefully, and propose concrete implementation steps. Never claim you changed files.",
     "explore": "You are the LAC Workbench explore agent. You have read-only code and web search access. Gather context, summarize findings, and cite the files or sources you used.",
 }
@@ -1334,13 +1364,21 @@ _PERSISTED_AGENT_EVENT_TYPES = {
 
 
 def _web_agent(agent_name: str, model: str) -> Agent:
+    is_build = agent_name == "build"
+    permissions = copy.deepcopy(FULL_PERMISSIONS if is_build else READONLY_PERMISSIONS)
+    if is_build:
+        permissions.bash.run = False
     return Agent(
         name=agent_name,
         type=agent_name,
-        description=f"Read-only web {agent_name} agent",
+        description=(
+            "Project-scoped web build agent with staged file writes and no shell access"
+            if is_build
+            else f"Read-only web {agent_name} agent"
+        ),
         model=model,
         system_prompt=_WEB_AGENT_PROMPTS[agent_name],
-        permissions=copy.deepcopy(READONLY_PERMISSIONS),
+        permissions=permissions,
         tools=list(_WEB_AGENT_TOOLS[agent_name]),
         raw={"source": "web_builtin"},
     )
@@ -1562,7 +1600,7 @@ def agent_chat():
     agent_name = str(data.get("agent") or "plan").strip().lower()
     if agent_name not in _WEB_AGENT_MODES:
         return jsonify({
-            "error": "Build mode requires an approval UI and is disabled in this Workbench slice",
+            "error": f"Unknown web agent mode: {agent_name}",
             "allowed_agents": sorted(_WEB_AGENT_MODES),
         }), 403
 
@@ -1572,10 +1610,31 @@ def agent_chat():
     if not model:
         return jsonify({"error": "Model required"}), 400
 
+    raw_cwd = data.get("cwd")
+    if agent_name == "build" and (
+        not isinstance(raw_cwd, str) or not raw_cwd.strip()
+    ):
+        return jsonify({"error": "Build mode requires an explicit project cwd"}), 400
     try:
-        cwd = _resolve_agent_cwd(data.get("cwd"))
+        cwd = _resolve_agent_cwd(raw_cwd)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    if agent_name == "build":
+        from .config import find_project_root
+
+        configured_root = find_project_root(cwd)
+        if configured_root is not None:
+            configured_root = configured_root.resolve()
+            if cwd != configured_root:
+                return jsonify(
+                    {
+                        "error": (
+                            "Build cwd must match the configured project root: "
+                            f"{configured_root}"
+                        ),
+                        "configured_root": str(configured_root),
+                    }
+                ), 400
 
     workspace = str(data.get("workspace") or "").strip()
     session_id_raw = data.get("session_id")
@@ -1621,14 +1680,29 @@ def agent_chat():
             session_id=session_id,
             created_at=time.time(),
         )
+        handlers = TOOL_HANDLERS
+        permission_engine = None
+        if agent_name == "build":
+            permission_engine = PermissionEngine.from_config(
+                start_dir=cwd,
+                permission_scope_root=cwd,
+            )
+            handlers = build_staged_handlers(
+                TOOL_HANDLERS,
+                session_id=session_id,
+                run_id=run_id,
+                event_queue=_PersistedRunEventSink(run),
+            )
+            handlers.pop("run_bash", None)
         runner = AgentRunner(
             provider,
             agent,
-            TOOL_HANDLERS,
+            handlers,
             TOOL_SCHEMAS,
             ctx={"cwd": str(cwd)},
             max_iterations=max_iterations,
             chat_options=chat_options,
+            permission_engine=permission_engine,
             on_ask=_make_web_ask(run_id, run),
         )
     except Exception:
@@ -1819,7 +1893,6 @@ def _is_trusted_local_approval_request() -> bool:
 @app.route("/api/agent/runs/<run_id>/answer", methods=["POST"])
 def agent_run_answer(run_id):
     from .permission import Decision
-    from .permission.engine import is_dangerous
 
     if not _is_trusted_local_approval_request():
         return jsonify({"error": "Agent approvals are accepted only from this machine"}), 403
@@ -1860,9 +1933,11 @@ def agent_run_answer(run_id):
         remember = bool(
             remember_raw
             and decision is Decision.ALLOW
-            and pending.get("key") != "doom_loop"
-            and pending.get("target") is not None
-            and not is_dangerous(str(pending.get("tool") or ""), pending.get("target"))
+            and _ask_is_rememberable(
+                str(pending.get("tool") or ""),
+                pending.get("target"),
+                str(pending.get("key") or ""),
+            )
         )
         run.answer = decision
         run.remember = remember

@@ -349,7 +349,7 @@ export interface SessionDetail extends SessionSummary {
 }
 
 export interface AgentChatPayload {
-  agent: "plan" | "explore";
+  agent: "plan" | "explore" | "build";
   model: string;
   message: string;
   messages?: SessionMessage[];
@@ -357,6 +357,60 @@ export interface AgentChatPayload {
   workspace?: string;
   cwd?: string;
   name?: string;
+}
+
+export type AgentApprovalDecision = "allow" | "deny";
+
+export interface AgentApprovalAnswerBody {
+  ask_id: string;
+  decision: AgentApprovalDecision;
+  remember: boolean;
+}
+
+export interface AgentApprovalAnswerRequest extends AgentApprovalAnswerBody {
+  approval_token: string;
+}
+
+export interface AgentApprovalAnswerResponse {
+  ok: true;
+}
+
+export type StagedChangeStatus =
+  | "pending"
+  | "applied"
+  | "rejected"
+  | "conflict"
+  | "reverted";
+
+export interface StagedChangeSummary {
+  id: string;
+  session_id: string;
+  run_id: string;
+  root: string;
+  path: string;
+  base_hash: string | null;
+  status: StagedChangeStatus;
+  created_at: number;
+  updated_at: number;
+  new_size: number;
+}
+
+export interface StagedChangeDetail extends Omit<StagedChangeSummary, "new_size"> {
+  old_content: string | null;
+  new_content: string;
+}
+
+export interface StagedChangesResponse {
+  changes: StagedChangeSummary[];
+}
+
+export interface StagedChangeActionResponse {
+  status: string;
+  path?: string;
+  current?: string;
+  error?: string;
+  disk_hash?: string | null;
+  base_hash?: string | null;
 }
 
 export interface VersionInfo {

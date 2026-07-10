@@ -195,10 +195,45 @@ export const api = {
   chat(model: string, messages: { role: string; content: string }[], signal?: AbortSignal) {
     return sse("/api/ollama/chat", { model, messages }, signal);
   },
-  /** Stream a Workbench read-only agent run. Yields {session_id}, deltas, tool events, done/error. */
+  /** Stream a Workbench agent run. Yields run/ask identity, deltas, tool events, done/error. */
   agentChat(payload: import("./types").AgentChatPayload, signal?: AbortSignal) {
     return sse("/api/agent/chat", payload, signal);
   },
+  answerApproval: (
+    runId: string,
+    approvalToken: string,
+    body: import("./types").AgentApprovalAnswerBody
+  ) =>
+    postJSON<import("./types").AgentApprovalAnswerResponse>(
+      `/api/agent/runs/${encodeURIComponent(runId)}/answer`,
+      { ...body, approval_token: approvalToken }
+    ),
+  stagedChanges: (
+    sessionId: string,
+    filters: { runId?: string; status?: import("./types").StagedChangeStatus } = {}
+  ) => {
+    const query = new URLSearchParams();
+    if (filters.runId) query.set("run_id", filters.runId);
+    if (filters.status) query.set("status", filters.status);
+    const suffix = query.toString();
+    return getJSON<import("./types").StagedChangesResponse>(
+      `/api/agent/sessions/${encodeURIComponent(sessionId)}/changes${suffix ? `?${suffix}` : ""}`
+    );
+  },
+  stagedChange: (changeId: string) =>
+    getJSON<import("./types").StagedChangeDetail>(
+      `/api/agent/changes/${encodeURIComponent(changeId)}`
+    ),
+  applyStagedChange: (changeId: string) =>
+    postJSON<import("./types").StagedChangeActionResponse>(
+      `/api/agent/changes/${encodeURIComponent(changeId)}/apply`,
+      {}
+    ),
+  rejectStagedChange: (changeId: string) =>
+    postJSON<import("./types").StagedChangeActionResponse>(
+      `/api/agent/changes/${encodeURIComponent(changeId)}/reject`,
+      {}
+    ),
   /** Poll LAC Pro's autopilot status for a just-installed model. */
   proOptimizeStatus: (model: string) =>
     getJSON<{ state: "idle" | "running" | "done" | "failed_silent" | "not_licensed"; tokens_per_second?: number }>(

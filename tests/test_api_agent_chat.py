@@ -4,6 +4,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 
 def _events(response) -> list[dict]:
     out: list[dict] = []
@@ -168,16 +170,340 @@ def test_agent_chat_preserves_saved_workspace_when_client_omits_it(flask_app, is
     assert persistence.get_session(sid)["workspace"] == "saved-workspace"
 
 
-def test_agent_chat_rejects_build_until_approval_ui_exists(flask_app, isolated_home, tmp_path):
+def test_agent_chat_accepts_build_and_rejects_unknown_modes(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.api as api_mod
+
+    captured: dict = {}
+
+    class FakeRunner:
+        def __init__(self, provider, agent, handlers, schemas, **kwargs):
+            captured["agent"] = agent
+
+        async def run_stream(self, user_text, history=None):
+            yield {"type": "done", "content": "ready", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
     project = tmp_path / "project"
     project.mkdir()
+    (project / ".apt").mkdir()
+    (project / ".apt" / "apt.jsonc").write_text("{}", encoding="utf-8")
+
     response = flask_app.test_client().post(
         "/api/agent/chat",
         json={"agent": "build", "model": "mock:1b", "message": "edit files", "cwd": str(project)},
     )
+    assert response.status_code == 200
+    assert [e["type"] for e in _events(response)][-1] == "done"
+    assert captured["agent"].name == "build"
+    assert "write_file" in captured["agent"].tools
+    assert "run_bash" not in captured["agent"].tools
 
-    assert response.status_code == 403
-    assert "approval UI" in response.get_json()["error"]
+    unknown = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "shell", "model": "mock:1b", "message": "edit files", "cwd": str(project)},
+    )
+    assert unknown.status_code == 403
+    assert unknown.get_json()["error"] == "Unknown web agent mode: shell"
+    assert unknown.get_json()["allowed_agents"] == ["build", "explore", "plan"]
+
+
+def test_agent_chat_requires_explicit_project_cwd_for_build(
+    flask_app, isolated_home
+):
+    response = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "build", "model": "mock:1b", "message": "edit files"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Build mode requires an explicit project cwd"
+
+
+def test_build_requires_configured_project_root_and_evaluates_rules_from_it(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.api as api_mod
+    from backend.permission import Decision
+
+    captured = []
+
+    class FakeRunner:
+        def __init__(self, provider, agent, handlers, schemas, **kwargs):
+            captured.append(kwargs["permission_engine"])
+
+        async def run_stream(self, user_text, history=None):
+            yield {"type": "done", "content": "ready", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    configured = tmp_path / "configured"
+    selected = configured / "backend"
+    selected.mkdir(parents=True)
+    (configured / ".apt").mkdir()
+    (configured / ".apt" / "apt.jsonc").write_text(
+        json.dumps(
+            {
+                "permission": {
+                    "build": {
+                        "edit": {"backend/**": "deny", "*": "allow"}
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    nested = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={
+            "agent": "build",
+            "model": "mock:1b",
+            "message": "edit files",
+            "cwd": str(selected),
+        },
+    )
+    assert nested.status_code == 400
+    payload = nested.get_json()
+    assert payload["configured_root"] == str(configured.resolve())
+    assert str(configured.resolve()) in payload["error"]
+    assert captured == []
+
+    root = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={
+            "agent": "build",
+            "model": "mock:1b",
+            "message": "edit files",
+            "cwd": str(configured),
+        },
+    )
+    assert root.status_code == 200
+    _events(root)
+    assert len(captured) == 1
+    engine = captured[0]
+    assert engine.evaluate(
+        "build", "edit", "backend/secret.py", tool_name="write_file"
+    ) is Decision.DENY
+    assert engine.evaluate(
+        "build", "edit", "frontend/app.py", tool_name="write_file"
+    ) is Decision.ALLOW
+
+
+def test_build_runner_is_project_scoped_and_staged_while_read_modes_stay_read_only(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.api as api_mod
+    from backend.permission import PermissionEngine
+    from backend.permission.engine import project_id_for
+    from backend.plugin.builtins.tools import TOOL_HANDLERS
+
+    captured: list[dict] = []
+
+    class FakeRunner:
+        def __init__(self, provider, agent, handlers, schemas, **kwargs):
+            captured.append(
+                {
+                    "agent": agent,
+                    "handlers": handlers,
+                    "permission_engine": kwargs.get("permission_engine"),
+                }
+            )
+
+        async def run_stream(self, user_text, history=None):
+            yield {"type": "done", "content": "ready", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "configured"
+    project.mkdir()
+    (project / ".apt").mkdir()
+    (project / ".apt" / "apt.jsonc").write_text("{}", encoding="utf-8")
+
+    for agent in ("build", "plan", "explore"):
+        response = flask_app.test_client().post(
+            "/api/agent/chat",
+            json={"agent": agent, "model": "mock:1b", "message": "inspect", "cwd": str(project)},
+        )
+        assert response.status_code == 200
+        _events(response)
+
+    build, plan, explore = captured
+    assert isinstance(build["permission_engine"], PermissionEngine)
+    assert build["permission_engine"].project_id == project_id_for(project.resolve())
+    assert build["handlers"]["write_file"] is not TOOL_HANDLERS["write_file"]
+    assert build["handlers"]["read_file"] is not TOOL_HANDLERS["read_file"]
+    assert build["handlers"]["list_files"] is not TOOL_HANDLERS["list_files"]
+    assert "run_bash" not in build["handlers"]
+    assert build["agent"].permissions.can_write()
+    assert not build["agent"].permissions.can_run_bash()
+    assert build["agent"].tools == ["read_file", "write_file", "list_files"]
+    assert "staged" in build["agent"].description.lower()
+    assert "shell" in build["agent"].description.lower()
+    assert "cannot run shell commands" in build["agent"].system_prompt.lower()
+
+    for read_mode in (plan, explore):
+        assert read_mode["permission_engine"] is None
+        assert read_mode["handlers"] is TOOL_HANDLERS
+        assert not read_mode["agent"].permissions.can_write()
+        assert not read_mode["agent"].permissions.can_run_bash()
+    assert plan["agent"].tools == ["read_file", "list_files"]
+    assert explore["agent"].tools == ["read_file", "list_files", "web_search"]
+
+
+class _BuildWriteRunner:
+    """Exercise the web ask callback and the injected write handler together."""
+
+    def __init__(self, provider, agent, handlers, schemas, ctx=None, **kwargs):
+        self.agent = agent
+        self.handlers = handlers
+        self.ctx = ctx or {}
+        self.on_ask = kwargs["on_ask"]
+
+    async def run_stream(self, user_text, history=None):
+        from backend.permission import Decision
+
+        answer = await self.on_ask("build", "write_file", "src/app.py", "edit")
+        decision = answer.consume()
+        if decision is Decision.ALLOW:
+            result = self.handlers["write_file"](
+                {"path": "src/app.py", "content": "print('staged')\n"}, self.ctx
+            )
+            ok = not result.startswith("error:")
+        else:
+            result = "[permission denied by user: write_file]"
+            ok = False
+        yield {"type": "tool_result", "name": "write_file", "ok": ok, "result": result}
+        yield {"type": "done", "content": "finished", "messages": [], "iterations": 1}
+
+
+@pytest.mark.parametrize("decision, expected_pending", [("deny", 0), ("allow", 1)])
+def test_build_write_decision_only_stages_after_allow_once(
+    flask_app, isolated_home, monkeypatch, tmp_path, decision, expected_pending
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    monkeypatch.setattr(api_mod, "AgentRunner", _BuildWriteRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    response = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "build", "model": "mock:1b", "message": "write it", "cwd": str(project)},
+    )
+    events = _iter_events(response)
+    session_id = run_id = approval_token = None
+    ask = None
+    for event in events:
+        if event["type"] == "session":
+            session_id = event["session_id"]
+        elif event["type"] == "run":
+            run_id = event["run_id"]
+            approval_token = event["approval_token"]
+        elif event["type"] == "ask":
+            ask = event
+            break
+
+    assert ask is not None
+    assert ask["run_id"] == run_id
+    assert ask["tool"] == "write_file"
+    assert ask["target"] == "src/app.py"
+    assert ask["rememberable"] is True
+    answer = flask_app.test_client().post(
+        f"/api/agent/runs/{run_id}/answer",
+        json={
+            "ask_id": ask["ask_id"],
+            "approval_token": approval_token,
+            "decision": decision,
+            "remember": False,
+        },
+    )
+    assert answer.status_code == 200
+    remaining = list(events)
+
+    pending = persistence.list_staged_changes(session_id, status="pending")
+    assert len(pending) == expected_pending
+    assert not (project / "src" / "app.py").exists()
+    staged_events = [event for event in remaining if event["type"] == "staged_change"]
+    assert len(staged_events) == expected_pending
+    if expected_pending:
+        assert pending[0]["path"] == "src/app.py"
+        assert pending[0]["new_content"] == "print('staged')\n"
+        assert staged_events[0]["change_id"] == pending[0]["id"]
+
+
+def test_real_build_runner_remembered_allow_stages_and_replays_exact_scope(
+    flask_app, isolated_home, monkeypatch, tmp_path, mock_provider
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+    from backend.permission import Decision, PermissionEngine
+    from backend.provider.base import ChatDelta
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".apt").mkdir()
+    (project / ".apt" / "apt.jsonc").write_text(
+        json.dumps({"permission": {"build": {"edit": "ask"}}}),
+        encoding="utf-8",
+    )
+    call = {
+        "function": {
+            "name": "write_file",
+            "arguments": json.dumps({"path": "draft.txt", "content": "staged only\n"}),
+        }
+    }
+    mock_provider.set_script([ChatDelta(content="", tool_calls=[call], done=True)])
+    monkeypatch.setattr(api_mod, "default_provider", lambda: mock_provider)
+
+    response = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={
+            "agent": "build",
+            "model": "mock:1b",
+            "message": "write a draft",
+            "cwd": str(project),
+            "max_iterations": 1,
+        },
+    )
+    events = _iter_events(response)
+    session_id = run_id = approval_token = None
+    ask = None
+    for event in events:
+        if event["type"] == "session":
+            session_id = event["session_id"]
+        elif event["type"] == "run":
+            run_id = event["run_id"]
+            approval_token = event["approval_token"]
+        elif event["type"] == "ask":
+            ask = event
+            break
+
+    assert ask is not None and ask["rememberable"] is True
+    answer = flask_app.test_client().post(
+        f"/api/agent/runs/{run_id}/answer",
+        json={
+            "ask_id": ask["ask_id"],
+            "approval_token": approval_token,
+            "decision": "allow",
+            "remember": True,
+        },
+    )
+    assert answer.status_code == 200
+    remaining = list(events)
+    assert any(event["type"] == "staged_change" for event in remaining)
+    assert not (project / "draft.txt").exists()
+    pending = persistence.list_staged_changes(session_id, status="pending")
+    assert len(pending) == 1 and pending[0]["new_content"] == "staged only\n"
+
+    replay = PermissionEngine.from_config(start_dir=project)
+    assert replay.evaluate(
+        "build", "edit", "draft.txt", tool_name="write_file"
+    ) is Decision.ALLOW
 
 
 def test_agent_chat_requires_message(flask_app, isolated_home):
@@ -517,6 +843,7 @@ def test_ask_bridge_allow_flow_and_replay(
     assert ask["target"] == "pytest -q"
     assert ask["key"] == "bash"
     assert ask["doom_loop"] is False
+    assert ask["rememberable"] is True
 
     answer = flask_app.test_client().post(
         f"/api/agent/runs/{run_id}/answer",
@@ -772,6 +1099,31 @@ def test_answer_endpoint_validation_and_stale_ask_guard(flask_app, isolated_home
         _cleanup_registered_run(api_mod, run, thread)
 
 
+def test_answer_endpoint_rejects_known_closed_run(flask_app, isolated_home):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    run, _, thread, _ = _registered_pending_run(api_mod, persistence)
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        with run.state_lock:
+            run.cancelled = True
+            run.cancel_reason = "completed"
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": False,
+            },
+        )
+        assert response.status_code == 409
+        assert response.get_json()["error"] == "Run is no longer active"
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
 def test_answer_endpoint_normalizes_unrememberable_decisions(flask_app, isolated_home):
     import backend.api as api_mod
     from backend.cookbook import persistence
@@ -787,6 +1139,12 @@ def test_answer_endpoint_normalizes_unrememberable_decisions(flask_app, isolated
         )
         ask_id = run.pending_ask["ask_id"]
         try:
+            ask_payload = [
+                event["payload"]
+                for event in persistence.list_session_events(sid)
+                if event["type"] == "ask"
+            ][0]
+            assert ask_payload["rememberable"] is False
             response = client.post(
                 "/api/agent/runs/testrun/answer",
                 json={
