@@ -42,6 +42,22 @@ def test_list_files_tool():
     assert "cookbook" in result
 
 
+def test_list_files_tool_rejects_outside_workspace(tmp_path):
+    base = tmp_path / "workspace"
+    base.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    host = PluginHostImpl()
+    load_plugins(host, start_dir=Path.cwd())
+    handler = host.tools["list_files"]["handler"]
+
+    relative_escape = handler({"path": ".."}, {"cwd": str(base)})
+    absolute_escape = handler({"path": str(outside)}, {"cwd": str(base)})
+
+    assert "outside workspace" in relative_escape
+    assert "outside workspace" in absolute_escape
+
+
 def test_plugin_loads_without_host():
     mgr = load_plugins(None, start_dir=Path.cwd())
     assert "tools" in mgr.names()

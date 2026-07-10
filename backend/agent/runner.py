@@ -38,6 +38,7 @@ class AgentRunner:
         max_iterations: int = 12,
         permission_engine: PermissionEngine | None = None,
         on_ask: AskCallback | None = None,
+        chat_options: dict[str, Any] | None = None,
         resilient: bool = True,
     ):
         self.agent = agent
@@ -48,6 +49,7 @@ class AgentRunner:
         self.max_iterations = max_iterations
         self.permission_engine = permission_engine
         self.on_ask = on_ask
+        self.chat_options = dict(chat_options or {})
         self.provider = provider if (isinstance(provider, FallbackChain) or not resilient) else build_default_chain(provider)
 
         from ..plugin.builtins.tools import WRITE_TOOLS, DELETE_TOOLS, NETWORK_TOOLS
@@ -58,6 +60,8 @@ class AgentRunner:
         self._chat_chain: FallbackChain = build_default_chain(self.provider, "primary")
 
     def _perm_key_for(self, tool_name: str) -> str:
+        if tool_name in {"run_bash"}:
+            return "bash"
         if tool_name in self._write_tools:
             return "edit"
         if tool_name in self._network_tools:
@@ -66,8 +70,6 @@ class AgentRunner:
             return "read"
         if tool_name in {"list_files"}:
             return "list"
-        if tool_name in {"run_bash"}:
-            return "bash"
         return "task"
 
     def _enabled_schemas(self) -> list[dict]:
@@ -78,6 +80,9 @@ class AgentRunner:
         return out
 
     async def _check_permission(self, tool_name: str, target: str | None) -> tuple[bool, str]:
+        if not tool_name.startswith("mcp_") and tool_name not in set(self.agent.tools):
+            return False, f"[permission denied: {tool_name} not enabled for agent '{self.agent.name}']"
+
         if self.permission_engine is None:
             allowed = self.agent.permissions.allows_tool(
                 tool_name, self._write_tools, self._delete_tools, self._network_tools
@@ -154,6 +159,7 @@ class AgentRunner:
                     stream=True,
                     tools=tools_param,
                     system=self.agent.system_prompt or None,
+                    **self.chat_options,
                 ):
                     if delta.content:
                         content += delta.content

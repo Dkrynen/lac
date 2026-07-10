@@ -36,6 +36,19 @@ def test_list_sessions(isolated_home):
     assert sessions[0]["updated_at"] >= sessions[-1]["updated_at"]
 
 
+def test_list_sessions_limit_returns_recent_rows(isolated_home):
+    a = persistence.create_session(name="a", model="m1")
+    time.sleep(0.001)
+    b = persistence.create_session(name="b", model="m2")
+    time.sleep(0.001)
+    c = persistence.create_session(name="c", model="m3")
+
+    sessions = persistence.list_sessions(limit=2)
+
+    assert [s["id"] for s in sessions] == [c, b]
+    assert a not in [s["id"] for s in sessions]
+
+
 def test_delete_session(isolated_home):
     sid = persistence.create_session(model="m")
     persistence.save_session(sid, model="m", messages=[{"role": "user", "content": "x"}])
@@ -53,3 +66,20 @@ def test_save_upsert_new_session(isolated_home):
 
 def test_get_missing_session_returns_none(isolated_home):
     assert persistence.get_session("doesnotexist") is None
+
+
+def test_session_events_are_persisted_separately(isolated_home):
+    sid = persistence.create_session(model="m")
+    event_id = persistence.add_session_event(
+        sid,
+        "tool_result",
+        {"name": "list_files", "ok": True, "result": "f api.py"},
+    )
+
+    events = persistence.list_session_events(sid)
+    session = persistence.get_session(sid)
+
+    assert event_id > 0
+    assert events[0]["type"] == "tool_result"
+    assert events[0]["payload"]["name"] == "list_files"
+    assert session["events"][0]["payload"]["result"] == "f api.py"

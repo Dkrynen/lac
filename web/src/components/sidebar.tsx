@@ -20,7 +20,7 @@ const NAV = [
   { to: "/browse", label: "Browse models", icon: Search, end: false },
   { to: "/scan", label: "Scan & recommend", icon: Cpu, end: false },
   { to: "/installed", label: "Installed", icon: Boxes, end: false },
-  { to: "/chat", label: "Chat", icon: MessageSquare, end: false },
+  { to: "/chat", label: "Workbench", icon: MessageSquare, end: false },
   { to: "/performance", label: "Performance", icon: Activity, end: false },
   { to: "/downloads", label: "Downloads", icon: Download, end: false },
   { to: "/pro", label: "Pro", icon: Sparkles, end: false },

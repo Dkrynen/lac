@@ -21,7 +21,7 @@ PAGE_ROUTES = [
     ("/browse", "Browse models"),
     ("/scan", "Scan & recommend"),
     ("/installed", "Installed"),
-    ("/chat", "Chat"),
+    ("/chat", "Workbench"),
     ("/performance", "Performance Doctor"),
     ("/downloads", "Downloads"),
     ("/pro", "LAC Pro"),

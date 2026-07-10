@@ -337,7 +337,7 @@ export function Settings() {
             </div>
           </Section>
 
-          <Section icon={Sparkles} title="Account & Pro" description="Unlock the Pro cockpit on this machine.">
+          <Section icon={Sparkles} title="Account & Pro" description="Activate a license key or join the Pro launch waitlist.">
             <ProActivation embedded />
           </Section>
         </div>
