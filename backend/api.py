@@ -1049,6 +1049,103 @@ def agent_file():
     })
 
 
+def _staged_summary(row: dict) -> dict:
+    out = {k: v for k, v in row.items() if k not in ("old_content", "new_content")}
+    out["new_size"] = len((row.get("new_content") or "").encode("utf-8"))
+    return out
+
+
+@app.route("/api/agent/sessions/<session_id>/changes")
+def agent_session_changes(session_id):
+    from .cookbook.persistence import get_session, list_staged_changes
+
+    if get_session(session_id) is None:
+        return jsonify({"error": "Session not found"}), 404
+    rows = list_staged_changes(
+        session_id,
+        run_id=request.args.get("run_id") or None,
+        status=request.args.get("status") or None,
+    )
+    return jsonify({"changes": [_staged_summary(r) for r in rows]})
+
+
+@app.route("/api/agent/changes/<change_id>")
+def agent_change_detail(change_id):
+    from .cookbook.persistence import get_staged_change
+
+    row = get_staged_change(change_id)
+    if row is None:
+        return jsonify({"error": "Change not found"}), 404
+    return jsonify(row)
+
+
+@app.route("/api/agent/changes/<change_id>/apply", methods=["POST"])
+def agent_change_apply(change_id):
+    from .cookbook.persistence import apply_staged_change
+
+    result = apply_staged_change(change_id)
+    if result["status"] == "not_found":
+        return jsonify({"error": "Change not found"}), 404
+    if result["status"] == "applied":
+        return jsonify(result)
+    return jsonify(result), 409
+
+
+@app.route("/api/agent/changes/<change_id>/reject", methods=["POST"])
+def agent_change_reject(change_id):
+    from .cookbook.persistence import get_staged_change, set_staged_status
+
+    row = get_staged_change(change_id)
+    if row is None:
+        return jsonify({"error": "Change not found"}), 404
+    if row["status"] != "pending":
+        return jsonify({"status": "not_pending", "current": row["status"]}), 409
+    set_staged_status(change_id, "rejected")
+    return jsonify({"status": "rejected", "path": row["path"]})
+
+
+@app.route("/api/agent/changes/<change_id>/revert", methods=["POST"])
+def agent_change_revert(change_id):
+    from .cookbook.persistence import revert_applied_change
+
+    result = revert_applied_change(change_id)
+    if result["status"] == "not_found":
+        return jsonify({"error": "Change not found"}), 404
+    if result["status"] == "reverted":
+        return jsonify(result)
+    return jsonify(result), 409
+
+
+@app.route("/api/agent/sessions/<session_id>/changes/apply", methods=["POST"])
+def agent_session_changes_apply(session_id):
+    from .cookbook.persistence import apply_staged_change, get_session, list_staged_changes
+
+    if get_session(session_id) is None:
+        return jsonify({"error": "Session not found"}), 404
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids")
+    pending = list_staged_changes(session_id, status="pending")  # created_at ASC
+    if isinstance(ids, list):
+        wanted = [str(i) for i in ids]
+        pending = [r for r in pending if r["id"] in wanted]
+        known = {r["id"] for r in pending}
+        unknown = [i for i in wanted if i not in known]
+    else:
+        unknown = []
+    applied, conflicts, errors = [], [], []
+    for row in pending:
+        result = apply_staged_change(row["id"])
+        if result["status"] == "applied":
+            applied.append(row["id"])
+        elif result["status"] == "conflict":
+            conflicts.append(row["id"])
+        else:
+            errors.append({"id": row["id"], "error": result.get("error") or result["status"]})
+    for i in unknown:
+        errors.append({"id": i, "error": "not pending"})
+    return jsonify({"applied": applied, "conflicts": conflicts, "errors": errors})
+
+
 def _agent_chat_options(provider: object) -> dict:
     if getattr(provider, "name", "") != "ollama":
         return {}
