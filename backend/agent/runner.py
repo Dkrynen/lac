@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from ..permission import Decision, PermissionEngine
@@ -99,6 +100,7 @@ class AgentRunner:
         self._write_tools = WRITE_TOOLS
         self._delete_tools = DELETE_TOOLS
         self._network_tools = NETWORK_TOOLS
+        self._filesystem_tools = {"read_file", "write_file", "list_files"} | self._delete_tools
         self._chat_chain: FallbackChain = build_default_chain(self.provider, "primary")
 
     def _perm_key_for(self, tool_name: str) -> str:
@@ -121,6 +123,24 @@ class AgentRunner:
             out.extend(self.mcp.tool_schemas_for_agent())
         return out
 
+    def _canonical_permission_target(self, tool_name: str, target: Any) -> Any:
+        """Canonicalize local path policy input without changing handler arguments."""
+
+        if tool_name not in self._filesystem_tools or not isinstance(target, str):
+            return target
+        base = Path(self.ctx.get("cwd", ".")).resolve()
+        path = Path(target)
+        resolved = path.resolve() if path.is_absolute() else (base / path).resolve()
+        try:
+            relative = resolved.relative_to(base)
+        except ValueError:
+            # Handlers retain their own workspace jail, but an outside target
+            # must fail before policy evaluation, prompting, or remembering.
+            raise ValueError(
+                f"filesystem target resolves outside workspace: {target}"
+            )
+        return relative.as_posix()
+
     async def _check_permission(
         self, tool_name: str, target: Any, tool_args: dict
     ) -> tuple[bool, str]:
@@ -135,6 +155,10 @@ class AgentRunner:
                 return False, f"[permission denied: {tool_name} not permitted for agent '{self.agent.name}']"
             return True, ""
 
+        try:
+            target = self._canonical_permission_target(tool_name, target)
+        except (OSError, RuntimeError, ValueError) as e:
+            return False, f"[permission denied: {tool_name} invalid filesystem target: {e}]"
         base_key = self._perm_key_for(tool_name)
         loop_detected = self.permission_engine.record_tool_call(
             self.agent.name, tool_name, tool_args

@@ -446,10 +446,28 @@ class PermissionEngine:
         self._history: dict[tuple[str, str], deque] = defaultdict(lambda: deque(maxlen=doom_window))
 
     @classmethod
-    def from_config(cls, start_dir: str | Path | None = None, store: AlwaysAllowStore | None = None) -> "PermissionEngine":
+    def from_config(
+        cls,
+        start_dir: str | Path | None = None,
+        store: AlwaysAllowStore | None = None,
+        *,
+        permission_scope_root: str | Path | None = None,
+    ) -> "PermissionEngine":
         cfg = resolve_config(start_dir)
         rules = parse_rules(cfg.project.permission)
-        root = cfg.project_root
+        if permission_scope_root is not None:
+            # Rule discovery still follows start_dir and its ancestor config;
+            # this explicit root only partitions remembered grants.
+            root = Path(permission_scope_root).resolve()
+        else:
+            root = cfg.project_root
+        if root is None and start_dir is not None:
+            # The web Workbench always supplies its chosen cwd. Even when that
+            # folder has no .apt config yet, remembered approvals must remain
+            # scoped to that exact project instead of sharing the legacy
+            # catch-all "default" scope with every unconfigured directory.
+            explicit = Path(start_dir).resolve()
+            root = explicit if explicit.is_dir() else explicit.parent
         return cls(rules=rules, project_id=project_id_for(root), store=store)
 
     def evaluate(

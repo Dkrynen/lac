@@ -242,6 +242,72 @@ def test_project_id_stable():
     assert a != c
 
 
+def test_from_config_scopes_unconfigured_explicit_start_directories(
+    isolated_home, tmp_path
+):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    first_engine = PermissionEngine.from_config(start_dir=first)
+    second_engine = PermissionEngine.from_config(start_dir=second)
+
+    assert first_engine.project_id == project_id_for(first.resolve())
+    assert second_engine.project_id == project_id_for(second.resolve())
+    assert first_engine.project_id != second_engine.project_id
+
+
+def test_from_config_can_scope_grants_to_sibling_cwds_under_one_project(
+    isolated_home, tmp_path
+):
+    configured = tmp_path / "configured"
+    apt_dir = configured / ".apt"
+    first = configured / "first"
+    second = configured / "second"
+    apt_dir.mkdir(parents=True)
+    first.mkdir()
+    second.mkdir()
+    (apt_dir / "apt.jsonc").write_text(
+        json.dumps({"permission": {"build": {"edit": "ask"}}}),
+        encoding="utf-8",
+    )
+    store = AlwaysAllowStore()
+
+    project_scoped_first = PermissionEngine.from_config(start_dir=first, store=store)
+    project_scoped_second = PermissionEngine.from_config(start_dir=second, store=store)
+    ancestor_project_id = project_id_for(configured.resolve())
+    assert project_scoped_first.project_id == ancestor_project_id
+    assert project_scoped_second.project_id == ancestor_project_id
+
+    first_engine = PermissionEngine.from_config(
+        start_dir=first, store=store, permission_scope_root=first
+    )
+    second_engine = PermissionEngine.from_config(
+        start_dir=second, store=store, permission_scope_root=second
+    )
+
+    assert first_engine.project_id == project_id_for(first.resolve())
+    assert second_engine.project_id == project_id_for(second.resolve())
+    assert first_engine.evaluate(
+        "build", "edit", "same.txt", tool_name="write_file"
+    ) is Decision.ASK
+    assert second_engine.evaluate(
+        "build", "edit", "same.txt", tool_name="write_file"
+    ) is Decision.ASK
+
+    first_engine.remember(
+        "build", "edit", "same.txt", tool_name="write_file"
+    )
+
+    assert first_engine.evaluate(
+        "build", "edit", "same.txt", tool_name="write_file"
+    ) is Decision.ALLOW
+    assert second_engine.evaluate(
+        "build", "edit", "same.txt", tool_name="write_file"
+    ) is Decision.ASK
+
+
 def test_runner_uses_engine_deny(mock_provider, tool_registry, isolated_home):
     from backend.agent import AgentRunner, get_agent
     from backend.plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
@@ -794,6 +860,120 @@ def test_list_files_default_target_is_canonicalized_for_approval(
     )
     asyncio.run(runner.run("list"))
     assert seen == ["."]
+
+
+def test_runner_canonicalizes_filesystem_target_before_rule_ask_and_remember(
+    mock_provider, isolated_home, tmp_path
+):
+    from backend.agent import AgentRunner, get_agent
+    from backend.agent.runner import AskResult
+    from backend.plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+    from backend.provider.base import ChatDelta
+
+    project = tmp_path / "project"
+    project.mkdir()
+    agent = get_agent("build")
+    agent.model = "mock:1b"
+    raw_target = "src/../outside.txt"
+    call = {
+        "function": {
+            "name": "write_file",
+            "arguments": json.dumps({"path": raw_target, "content": "x"}),
+        }
+    }
+    mock_provider.set_script([ChatDelta(content="", tool_calls=[call], done=True)])
+    store = AlwaysAllowStore()
+    engine = PermissionEngine(
+        rules=parse_rules(
+            {"build": {"edit": {"src/**": "allow", "*": "ask"}}}
+        ),
+        project_id="t",
+        store=store,
+    )
+    seen = []
+    executed = []
+
+    async def ask(agent_name, tool, target, key):
+        seen.append((agent_name, tool, target, key))
+        return AskResult(decision=Decision.ALLOW, remember=True)
+
+    def write(args, ctx):
+        executed.append((dict(args), dict(ctx)))
+        return "ok"
+
+    runner = AgentRunner(
+        mock_provider,
+        agent,
+        {**TOOL_HANDLERS, "write_file": write},
+        TOOL_SCHEMAS,
+        ctx={"cwd": str(project)},
+        permission_engine=engine,
+        on_ask=ask,
+        max_iterations=1,
+    )
+    asyncio.run(runner.run("write"))
+
+    assert seen == [("build", "write_file", "outside.txt", "edit")]
+    assert executed == [
+        ({"path": raw_target, "content": "x"}, {"cwd": str(project)})
+    ]
+    assert store.is_allowed("t", "build", "edit@write_file", "outside.txt")
+    assert not store.is_allowed("t", "build", "edit@write_file", raw_target)
+
+
+def test_runner_denies_filesystem_target_outside_cwd_before_ask(
+    mock_provider, isolated_home, tmp_path
+):
+    from backend.agent import AgentRunner, get_agent
+    from backend.agent.runner import AskResult
+    from backend.plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+    from backend.provider.base import ChatDelta
+
+    project = tmp_path / "project"
+    project.mkdir()
+    agent = get_agent("build")
+    agent.model = "mock:1b"
+    raw_target = "../escape.txt"
+    call = {
+        "function": {
+            "name": "write_file",
+            "arguments": json.dumps({"path": raw_target, "content": "x"}),
+        }
+    }
+    mock_provider.set_script([ChatDelta(content="", tool_calls=[call], done=True)])
+    engine = PermissionEngine(
+        rules=parse_rules({"build": {"edit": "ask"}}),
+        project_id="t",
+        store=AlwaysAllowStore(),
+    )
+    asked = []
+    executed = []
+
+    async def ask(agent_name, tool, target, key):
+        asked.append(target)
+        return AskResult(decision=Decision.ALLOW, remember=True)
+
+    def write(args, ctx):
+        executed.append(args)
+        return "ok"
+
+    runner = AgentRunner(
+        mock_provider,
+        agent,
+        {**TOOL_HANDLERS, "write_file": write},
+        TOOL_SCHEMAS,
+        ctx={"cwd": str(project)},
+        permission_engine=engine,
+        on_ask=ask,
+        max_iterations=1,
+    )
+    result = asyncio.run(runner.run("write"))
+
+    tool_result = [e for e in result.events if e["type"] == "tool_result"][0]
+    assert tool_result["ok"] is False
+    assert "outside workspace" in tool_result["result"]
+    assert asked == []
+    assert executed == []
 
 
 def test_runner_rejects_invalid_json_without_executing_default_tool(
