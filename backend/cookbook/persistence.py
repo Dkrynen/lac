@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import time
@@ -50,6 +51,27 @@ def _ensure_db():
             timestamp   REAL NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS staged_changes (
+            id          TEXT PRIMARY KEY,
+            session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            run_id      TEXT NOT NULL,
+            root        TEXT NOT NULL,
+            path        TEXT NOT NULL,
+            base_hash   TEXT,
+            old_content TEXT,
+            new_content TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'pending',
+            created_at  REAL NOT NULL,
+            updated_at  REAL NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_staged_pending_unique ON staged_changes(session_id, path) WHERE status = 'pending'"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_staged_session ON staged_changes(session_id, status)"
+    )
     if not _MIGRATED:
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT 'default'")
@@ -184,6 +206,7 @@ def save_session(session_id: str, model: str, messages: list[dict], name: str = 
 
 def delete_session(session_id: str) -> None:
     conn = _ensure_db()
+    conn.execute("DELETE FROM staged_changes WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
@@ -220,3 +243,106 @@ def list_session_events(session_id: str) -> list[dict]:
         }
         for r in rows
     ]
+
+
+_STAGED_COLUMNS = "id, session_id, run_id, root, path, base_hash, old_content, new_content, status, created_at, updated_at"
+
+
+def _staged_row_to_dict(r: tuple) -> dict:
+    return {
+        "id": r[0],
+        "session_id": r[1],
+        "run_id": r[2],
+        "root": r[3],
+        "path": r[4],
+        "base_hash": r[5],
+        "old_content": r[6],
+        "new_content": r[7],
+        "status": r[8],
+        "created_at": r[9],
+        "updated_at": r[10],
+    }
+
+
+def _resolve_staged_target(root: str, path: str) -> Path:
+    """Re-jail a staged path under its recorded root. Raises ValueError on escape."""
+    base = Path(root).resolve()
+    target = (base / path).resolve()
+    try:
+        rel = target.relative_to(base)
+    except ValueError:
+        raise ValueError(f"path escapes project root: {path!r}")
+    if str(rel) == ".":
+        raise ValueError("path is the project root itself")
+    return target
+
+
+def stage_change(session_id: str, run_id: str, root: str, path: str, new_content: str) -> dict:
+    """Upsert the session's pending row for this path (latest-wins, original snapshot kept)."""
+    base = Path(root).resolve()
+    target = _resolve_staged_target(root, path)
+    rel = target.relative_to(base).as_posix()
+    conn = _ensure_db()
+    now = time.time()
+    row = conn.execute(
+        "SELECT id FROM staged_changes WHERE session_id = ? AND path = ? AND status = 'pending'",
+        (session_id, rel),
+    ).fetchone()
+    if row:
+        change_id = row[0]
+        conn.execute(
+            "UPDATE staged_changes SET new_content = ?, run_id = ?, updated_at = ? WHERE id = ?",
+            (new_content, run_id, now, change_id),
+        )
+    else:
+        change_id = uuid.uuid4().hex[:14]
+        if target.exists() and target.is_file():
+            data = target.read_bytes()
+            base_hash = hashlib.sha256(data).hexdigest()
+            old_content = data.decode("utf-8", errors="replace")
+        else:
+            base_hash = None
+            old_content = None
+        conn.execute(
+            f"INSERT INTO staged_changes ({_STAGED_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (change_id, session_id, run_id, str(base), rel, base_hash, old_content, new_content, "pending", now, now),
+        )
+    conn.commit()
+    conn.close()
+    return get_staged_change(change_id)
+
+
+def list_staged_changes(session_id: str, run_id: str | None = None, status: str | None = None) -> list[dict]:
+    conn = _ensure_db()
+    sql = f"SELECT {_STAGED_COLUMNS} FROM staged_changes WHERE session_id = ?"
+    params: list = [session_id]
+    if run_id is not None:
+        sql += " AND run_id = ?"
+        params.append(run_id)
+    if status is not None:
+        sql += " AND status = ?"
+        params.append(status)
+    # rowid tie-break: time.time() can collide on Windows; insertion order must hold
+    sql += " ORDER BY created_at ASC, rowid ASC"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [_staged_row_to_dict(r) for r in rows]
+
+
+def get_staged_change(change_id: str) -> Optional[dict]:
+    conn = _ensure_db()
+    row = conn.execute(
+        f"SELECT {_STAGED_COLUMNS} FROM staged_changes WHERE id = ?", (change_id,)
+    ).fetchone()
+    conn.close()
+    return _staged_row_to_dict(row) if row else None
+
+
+def set_staged_status(change_id: str, status: str) -> None:
+    conn = _ensure_db()
+    conn.execute(
+        "UPDATE staged_changes SET status = ?, updated_at = ? WHERE id = ?",
+        (status, time.time(), change_id),
+    )
+    conn.commit()
+    conn.close()
