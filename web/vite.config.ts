@@ -15,7 +15,9 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://localhost:5050",
-        changeOrigin: true,
+        // Preserve the browser authority so Flask can enforce exact
+        // same-origin Host/Origin checks during development.
+        changeOrigin: false,
       },
     },
   },

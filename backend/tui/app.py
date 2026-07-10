@@ -461,12 +461,38 @@ class AptApp(App):
     async def _permission_ask(self, agent_name: str, tool_name: str, target: str | None, key: str):
         from backend.agent.runner import AskResult
         from backend.permission import Decision
+        from backend.permission.engine import is_dangerous
         from backend.tui.permission_modal import PermissionModal
 
-        modal = PermissionModal(agent_name, tool_name, target)
+        doom_loop = key == "doom_loop"
+        dangerous = is_dangerous(tool_name, target)
+        missing_target = target is None
+        rememberable = not doom_loop and not dangerous and not missing_target
+        modal = PermissionModal(
+            agent_name,
+            tool_name,
+            target,
+            allow_always=rememberable,
+            notice=(
+                "Loop detected; Always is disabled."
+                if doom_loop
+                else (
+                    "Sensitive target; Always is disabled."
+                    if dangerous
+                    else (
+                        "No target; Always is disabled."
+                        if missing_target
+                        else None
+                    )
+                )
+            ),
+        )
         result = await self.app.push_screen(modal, wait_for_dismiss=True)
         if isinstance(result, tuple) and result[0] == "allow_always":
-            return AskResult(decision=result[1], remember=(key != "doom_loop"))
+            return AskResult(
+                decision=result[1],
+                remember=rememberable,
+            )
         if isinstance(result, Decision):
             return AskResult(decision=result)
         return AskResult(decision=Decision.DENY)
