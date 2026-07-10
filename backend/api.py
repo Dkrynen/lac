@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 import json
 import os
 import platform
@@ -984,6 +985,68 @@ def _resolve_agent_cwd(raw: object) -> Path:
     if not resolved.exists() or not resolved.is_dir():
         raise ValueError(f"Project root not found: {resolved}")
     return resolved
+
+
+_AGENT_SKIP_ENTRIES = {"node_modules", "__pycache__"}
+AGENT_FILE_MAX_BYTES = 1024 * 1024
+
+
+def _resolve_in_root(root: Path, rel: str) -> Path:
+    """Resolve rel under root, refusing any path that escapes it."""
+    target = (root / rel).resolve() if rel else root
+    if target != root and root not in target.parents:
+        raise ValueError(f"path escapes project root: {rel!r}")
+    return target
+
+
+@app.route("/api/agent/files")
+def agent_files():
+    try:
+        root = _resolve_agent_cwd(request.args.get("cwd"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    rel = str(request.args.get("path") or "").strip()
+    try:
+        target = _resolve_in_root(root, rel)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not target.exists() or not target.is_dir():
+        return jsonify({"error": f"Directory not found: {rel or '.'}"}), 404
+    entries = []
+    for p in sorted(target.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+        if p.name.startswith(".") or p.name in _AGENT_SKIP_ENTRIES:
+            continue
+        entries.append({
+            "name": p.name,
+            "type": "file" if p.is_file() else "dir",
+            "size": p.stat().st_size if p.is_file() else 0,
+        })
+    return jsonify({"path": rel, "entries": entries})
+
+
+@app.route("/api/agent/file")
+def agent_file():
+    try:
+        root = _resolve_agent_cwd(request.args.get("cwd"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    rel = str(request.args.get("path") or "").strip()
+    try:
+        target = _resolve_in_root(root, rel)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not target.exists() or not target.is_file():
+        return jsonify({"error": f"File not found: {rel}"}), 404
+    size = target.stat().st_size
+    if size > AGENT_FILE_MAX_BYTES:
+        return jsonify({"error": f"File exceeds {AGENT_FILE_MAX_BYTES} bytes: {size}"}), 413
+    data = target.read_bytes()
+    return jsonify({
+        "path": rel,
+        "content": data.decode("utf-8", errors="replace"),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data),
+    })
 
 
 def _agent_chat_options(provider: object) -> dict:
