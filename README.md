@@ -35,18 +35,19 @@ lac chat          # TUI chat
 
 Coming soon — **[join the waitlist](https://dkrynen.github.io/lac/)** and each platform release lands in your inbox.
 
-## LAC Pro — the Tuning Cockpit
+## LAC Pro - the Tuning Cockpit
 
-The free tier is complete and stays free. **LAC Pro** adds the power tools:
+The free tier is complete and stays free. **LAC Pro** adds the paid power tools:
 
-- **Autopilot** — after Pro is installed and licensed, supported model installs can be benchmarked, GPU-offload swept, and tuned to your exact rig
-- **`lac pro tune <model>` / `lac pro benchmark <model>`** — manual on-demand re-runs of the same sweep and benchmark steps autopilot uses
-- **Offload controls** — per-model layer splits, iGPU control, context presets
-- **Insights** — calibration history and regression detection ("your tok/s dropped 12% since that driver update")
+- **Autopilot** - after Pro is installed and licensed, supported model installs can be benchmarked, GPU-offload swept, and tuned to your exact rig
+- **`lac pro tune <model>` / `lac pro benchmark <model>`** - manual on-demand re-runs of the same sweep and benchmark steps autopilot uses
+- **Private Hugging Face imports** - GGUF-first import for compatible repos, with local token storage for gated/private models
+- **Local coding cockpit** - readiness checks and launch guidance for stronger coding models and agent workflows
+- **Insights** - calibration history and regression detection ("your tok/s dropped 12% since that driver update")
 
-Cheap subscription, priced to be a no-brainer. Public purchase opens after Duan-gated delivery/payment smoke; the [waitlist](https://dkrynen.github.io/lac/) hears first.
+Planned at **$3/month billed annually**. Checkout opens after the final delivery and payment smoke test; the [waitlist](https://dkrynen.github.io/lac/) hears first.
 
-**At public launch,** Polar will email a license key after checkout. Run `lac unlock <key>` or use **Settings → Activate Pro** in the web UI; LAC downloads the private Pro plugin and activates this machine with that same key. Restart LAC after activation so the Pro cockpit mounts cleanly. (Buying doesn't install Pro; the key does.)
+**At public launch,** Polar will email a license key after checkout. Run `lac unlock <key>` or use **Settings -> Activate Pro** in the web UI; LAC downloads the private Pro plugin and activates this machine with that same key. Restart LAC after activation so the Pro cockpit mounts cleanly. Free installs ship no Pro code.
 
 ## Hardware detection
 
@@ -69,6 +70,7 @@ cd web && npm ci && npm run dev       # Vite dev server (proxies /api)
 .venv/Scripts/python scripts/installed_launch_smoke.py  # clean installed-exe launch/audit/shutdown proof
 .venv/Scripts/python scripts/public_readiness_gate.py --include-live-import --include-launch-smoke --allow-existing-launch  # full gate against an already-running app
 .venv/Scripts/python scripts/release_readiness.py  # read-only local/public release check
+.venv/Scripts/python scripts/pro_commerce_readiness.py  # read-only Pro checkout/delivery readiness check
 .venv/Scripts/python scripts/installed_app_audit.py  # installed app page/API audit
 .venv/Scripts/python scripts/installed_launch_smoke.py --allow-existing  # audit an already-running installed app
 .venv/Scripts/python scripts/runtime_smoke.py --model qwen2.5:0.5b  # live installed-app chat/session smoke test

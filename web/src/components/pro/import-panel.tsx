@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { KeyRound, RotateCcw, Search, Trash2, UploadCloud, XCircle } from "lucide-react";
 import { toast } from "sonner";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useAsync, useInterval } from "@/lib/hooks";
 import { api } from "@/lib/api";
+import { useAsync, useInterval } from "@/lib/hooks";
 import { importModelWithToast, normalizeRepoId } from "@/lib/installer";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface ImportEntry {
   repo_id: string;
@@ -49,9 +50,9 @@ const QUANT_OPTIONS = [
   { value: "Q8", label: "Q8" },
   { value: "F16", label: "F16" },
 ];
+
 const ACTIVE_STATES = new Set(["starting", "checking", "downloading", "uploading", "converting", "cancel_requested"]);
 
-/** Compact "Nh ago" / "Nd ago" from a Unix epoch-seconds timestamp. */
 function relativeTime(epochSeconds: number): string {
   const diffMs = Date.now() - epochSeconds * 1000;
   const diffSec = Math.round(diffMs / 1000);
@@ -85,19 +86,31 @@ export function ImportPanel() {
   const [savingToken, setSavingToken] = useState(false);
   const [sourceCheck, setSourceCheck] = useState<ImportResolveResponse | null>(null);
   const [checkingSource, setCheckingSource] = useState(false);
+
   const history = useAsync(() => api.proImportHistory());
   const tokenStatus = useAsync(() => api.hfTokenStatus().catch(() => null));
   const data = history.data as ImportHistoryResponse | null;
   const entries = data?.state === "ok" ? data.entries ?? [] : [];
-  const known = new Set(entries.map((e) => e.repo_id));
-  const displayEntries = [...pending.filter((e) => !known.has(e.repo_id)), ...entries];
-  const hasActiveImport = displayEntries.some((e) => ACTIVE_STATES.has(e.state));
+  const known = new Set(entries.map((entry) => entry.repo_id));
+  const displayEntries = [...pending.filter((entry) => !known.has(entry.repo_id)), ...entries];
+  const hasActiveImport = displayEntries.some((entry) => ACTIVE_STATES.has(entry.state));
+
+  const normalizedInput = repoId.trim() ? normalizeRepoId(repoId.trim()) : "";
+  const checkedRepoId = sourceCheck?.repo_id ? normalizeRepoId(sourceCheck.repo_id) : normalizedInput;
+  const sourceCheckMatchesInput = Boolean(sourceCheck && normalizedInput && checkedRepoId === normalizedInput);
+  const sourceReady = sourceCheckMatchesInput && sourceCheck?.state === "ok";
+  const directGgufReady = sourceReady && sourceCheck?.strategy === "gguf";
+  const advancedConvertReady = sourceReady && sourceCheck?.strategy === "safetensors";
 
   useInterval(history.reload, hasActiveImport ? 3000 : null);
 
   function handleImport() {
     const id = repoId.trim();
     if (!id) return;
+    if (!sourceReady) {
+      toast.info("Analyze the source before importing.");
+      return;
+    }
     const normalized = normalizeRepoId(id);
     setPending((rows) => [
       { repo_id: normalized, state: "starting", updated_at: Date.now() / 1000 },
@@ -128,7 +141,7 @@ export function ImportPanel() {
         toast.info("Activate Pro to check Hugging Face import compatibility.");
       }
     } catch (e) {
-      toast.error("Could not check import source", { description: e instanceof Error ? e.message : String(e) });
+      toast.error("Could not analyze import source", { description: e instanceof Error ? e.message : String(e) });
     } finally {
       setCheckingSource(false);
     }
@@ -233,37 +246,68 @@ export function ImportPanel() {
         <Input
           placeholder="Hugging Face repo id, e.g. TheBloke/Mistral-7B-GGUF"
           value={repoId}
-          onChange={(e) => setRepoId(e.target.value)}
+          onChange={(e) => {
+            setRepoId(e.target.value);
+            setSourceCheck(null);
+          }}
           className="h-9 min-w-[180px] flex-1"
         />
-        <Select value={quant} onValueChange={setQuant}>
+        <Select
+          value={quant}
+          onValueChange={(value) => {
+            setQuant(value);
+            setSourceCheck(null);
+          }}
+        >
           <SelectTrigger className="h-9 w-[130px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {QUANT_OPTIONS.map((q) => (
-              <SelectItem key={q.value} value={q.value}>
-                {q.label}
+            {QUANT_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
-        <Button size="sm" onClick={handleImport} disabled={!repoId.trim()}>
-          Import
-        </Button>
-        <Button size="sm" variant="secondary" onClick={checkSource} disabled={!repoId.trim() || checkingSource}>
+        <Button size="sm" onClick={checkSource} disabled={!repoId.trim() || checkingSource}>
           <Search className="h-4 w-4" />
-          {checkingSource ? "Checking" : "Check"}
+          {checkingSource ? "Analyzing" : "Analyze source"}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={handleImport} disabled={!directGgufReady}>
+          Import checked GGUF
         </Button>
       </div>
 
       {sourceCheck && sourceCheck.state !== "not_licensed" && (
         <div className="mb-4 rounded border border-line bg-panel-2/60 p-3 text-[13px]">
-          <div className="flex flex-wrap items-center gap-2 font-medium">
-            <span>{sourceCheck.strategy === "gguf" ? "GGUF direct import" : sourceCheck.strategy === "safetensors" ? "Advanced convert" : "Import check"}</span>
-            {sourceCheck.quant && <span className="rounded border border-line px-2 py-0.5 font-mono text-[11px]">{sourceCheck.quant}</span>}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2 font-medium">
+              <Badge variant={directGgufReady ? "success" : advancedConvertReady ? "warning" : "outline"}>
+                {sourceCheck.strategy === "gguf"
+                  ? "GGUF direct import"
+                  : sourceCheck.strategy === "safetensors"
+                    ? "Advanced convert"
+                    : "Import check"}
+              </Badge>
+              {sourceCheck.quant && (
+                <span className="rounded border border-line px-2 py-0.5 font-mono text-[11px]">
+                  {sourceCheck.quant}
+                </span>
+              )}
+            </div>
+            {advancedConvertReady && (
+              <Button size="sm" variant="secondary" onClick={handleImport}>
+                Start advanced convert
+              </Button>
+            )}
           </div>
-          {sourceCheck.message && <p className="mt-1 text-fg-muted">{sourceCheck.message}</p>}
+          {advancedConvertReady && (
+            <p className="mt-2 text-[12px] leading-relaxed text-warning">
+              GGUF is the happy path. Conversion is slower, uses scratch disk, and can fail if the architecture is unsupported.
+            </p>
+          )}
+          {sourceCheck.message && <p className="mt-2 text-fg-muted">{sourceCheck.message}</p>}
           {sourceCheck.selected_file && (
             <p className="mt-1 font-mono text-[12px] text-fg-faint">
               {sourceCheck.selected_file}
@@ -294,7 +338,7 @@ export function ImportPanel() {
       {history.loading ? (
         <Skeleton className="h-20 w-full" />
       ) : displayEntries.length === 0 ? (
-        <p className="text-[13px] text-fg-muted">No imports yet — paste a Hugging Face repo id above.</p>
+        <p className="text-[13px] text-fg-muted">No imports yet - paste a Hugging Face repo id above.</p>
       ) : (
         <div className="overflow-hidden rounded-lg border border-line">
           <table className="w-full text-sm">
@@ -307,48 +351,48 @@ export function ImportPanel() {
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {displayEntries.map((e, i) => (
-                <tr key={`${e.repo_id}-${i}`} className="transition-colors hover:bg-panel-3/40">
-                  <td className="px-4 py-3 font-mono text-[13px] font-medium">{e.repo_id}</td>
+              {displayEntries.map((entry, i) => (
+                <tr key={`${entry.repo_id}-${i}`} className="transition-colors hover:bg-panel-3/40">
+                  <td className="px-4 py-3 font-mono text-[13px] font-medium">{entry.repo_id}</td>
                   <td className="px-4 py-3 text-[13px] text-fg-muted">
-                    <div>{e.state}</div>
-                    {e.current_file && (
+                    <div>{entry.state}</div>
+                    {entry.current_file && (
                       <div className="text-[11px] text-fg-faint">
-                        {e.current_file}
-                        {e.bytes_total ? ` - ${formatBytes(e.bytes_done)} / ${formatBytes(e.bytes_total)}` : ""}
+                        {entry.current_file}
+                        {entry.bytes_total ? ` - ${formatBytes(entry.bytes_done)} / ${formatBytes(entry.bytes_total)}` : ""}
                       </div>
                     )}
-                    {(e.model_name || e.quant) && (
+                    {(entry.model_name || entry.quant) && (
                       <div className="text-[11px] text-fg-faint">
-                        {[e.model_name, e.quant].filter(Boolean).join(" · ")}
+                        {[entry.model_name, entry.quant].filter(Boolean).join(" - ")}
                       </div>
                     )}
-                    {e.message && <div className="text-[11px] text-danger">{e.message}</div>}
+                    {entry.message && <div className="text-[11px] text-danger">{entry.message}</div>}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {ACTIVE_STATES.has(e.state) ? (
+                    {ACTIVE_STATES.has(entry.state) ? (
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => cancelImport(e)}
-                        aria-label={`Cancel import of ${e.repo_id}`}
+                        onClick={() => cancelImport(entry)}
+                        aria-label={`Cancel import of ${entry.repo_id}`}
                       >
                         <XCircle className="h-4 w-4" />
                       </Button>
-                    ) : e.state === "failed" || e.state === "cancelled" ? (
+                    ) : entry.state === "failed" || entry.state === "cancelled" ? (
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => retryImport(e)}
-                        aria-label={`Retry import of ${e.repo_id}`}
+                        onClick={() => retryImport(entry)}
+                        aria-label={`Retry import of ${entry.repo_id}`}
                       >
                         <RotateCcw className="h-4 w-4" />
                       </Button>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3 text-right text-[12px] text-fg-faint">{relativeTime(e.updated_at)}</td>
+                  <td className="px-4 py-3 text-right text-[12px] text-fg-faint">{relativeTime(entry.updated_at)}</td>
                 </tr>
               ))}
             </tbody>

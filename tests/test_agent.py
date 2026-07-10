@@ -111,3 +111,29 @@ def test_runner_denies_tool_for_readonly_agent(mock_provider, tool_registry):
     assert tool_results
     assert tool_results[0]["ok"] is False
     assert "permission denied" in tool_results[0]["result"]
+
+
+def test_runner_denies_tool_not_enabled_for_agent(mock_provider, tool_registry):
+    agent = get_agent("plan")
+    agent.model = "mock:1b"
+    call = {"function": {"name": "web_search", "arguments": json.dumps({"query": "lac"})}}
+    mock_provider.set_script(
+        [
+            ChatDelta(content="", tool_calls=[call], done=True),
+            ChatDelta(content="ok", done=True),
+        ]
+    )
+    runner = AgentRunner(
+        mock_provider, agent, tool_registry["handlers"], tool_registry["schemas"]
+    )
+
+    import asyncio
+
+    async def go():
+        return await runner.run("search the web")
+
+    result = asyncio.run(go())
+    tool_results = [e for e in result.events if e["type"] == "tool_result"]
+    assert tool_results
+    assert tool_results[0]["ok"] is False
+    assert "not enabled" in tool_results[0]["result"]

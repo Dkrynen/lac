@@ -1,9 +1,10 @@
 import { useEffect } from "react";
-import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { Sidebar } from "@/components/sidebar";
 import { Topbar } from "@/components/topbar";
 import { useTheme } from "@/components/theme";
+import { cn } from "@/lib/utils";
 import { Dashboard } from "@/pages/dashboard";
 import { Browse } from "@/pages/browse";
 import { Scan } from "@/pages/scan";
@@ -18,6 +19,8 @@ import { Pro } from "./pages/pro";
 export default function App() {
   const { theme } = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
+  const isWorkbench = location.pathname === "/chat";
 
   // On boot, a relaunch after Pro activation passes `?view=<path>` so the
   // window lands back where it left off instead of the dashboard.
@@ -49,7 +52,12 @@ export default function App() {
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[1180px] px-[var(--app-pad-x)] py-[var(--app-pad-y)]">
+          <div
+            className={cn(
+              "mx-auto w-full px-[var(--app-pad-x)] py-[var(--app-pad-y)]",
+              isWorkbench ? "max-w-none" : "max-w-[1180px]"
+            )}
+          >
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/browse" element={<Browse />} />

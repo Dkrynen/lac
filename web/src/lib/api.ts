@@ -155,6 +155,22 @@ export const api = {
 
   config: () => getJSON<import("./types").AptConfig>("/api/config"),
   saveConfig: (patch: Partial<import("./types").AptConfig>) => putJSON("/api/config", patch),
+  workspaces: () => getJSON<import("./types").WorkspaceInfo[]>("/api/workspaces"),
+  switchWorkspace: (workspace: string) => postJSON<{ success: boolean; workspace: string }>(
+    `/api/workspaces/${encodeURIComponent(workspace)}/switch`,
+    {}
+  ),
+  sessions: (workspace?: string, limit?: number) => {
+    const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+    const sep = q ? "&" : "?";
+    const capped = limit ? `${sep}limit=${encodeURIComponent(String(limit))}` : "";
+    return getJSON<import("./types").SessionSummary[]>(`/api/sessions${q}${capped}`);
+  },
+  session: (id: string) => getJSON<import("./types").SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`),
+  createSession: (body: { name?: string; model?: string; system_prompt?: string; workspace?: string }) =>
+    postJSON<{ id: string }>("/api/sessions", body),
+  saveSession: (id: string, body: { name?: string; model?: string; messages?: import("./types").SessionMessage[]; workspace?: string }) =>
+    putJSON<{ success: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, body),
 
   version: () => getJSON<import("./types").VersionInfo>("/api/system/version"),
   storage: () => getJSON<import("./types").StorageInfo>("/api/system/storage"),
@@ -178,6 +194,10 @@ export const api = {
   /** Stream a chat completion. Yields {message:{content}, done} or {error}. */
   chat(model: string, messages: { role: string; content: string }[], signal?: AbortSignal) {
     return sse("/api/ollama/chat", { model, messages }, signal);
+  },
+  /** Stream a Workbench read-only agent run. Yields {session_id}, deltas, tool events, done/error. */
+  agentChat(payload: import("./types").AgentChatPayload, signal?: AbortSignal) {
+    return sse("/api/agent/chat", payload, signal);
   },
   /** Poll LAC Pro's autopilot status for a just-installed model. */
   proOptimizeStatus: (model: string) =>
@@ -240,7 +260,7 @@ export const api = {
       | { state: "failed"; error_type: string; message: string }
     >("/api/pro/unlock", { key }),
 
-  proStatus: async () => {
+  proStatus: async (): Promise<import("./types").ProStatus> => {
     const r = await fetch("/api/pro/status");
     if (r.status === 404) return { licensed: false, plan: null, expires_human: null, machine: null, checked: null };
     return r.json();

@@ -41,6 +41,15 @@ def _ensure_db():
             metadata    TEXT DEFAULT '{}'
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS session_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            type        TEXT NOT NULL,
+            payload     TEXT NOT NULL DEFAULT '{}',
+            timestamp   REAL NOT NULL
+        )
+    """)
     if not _MIGRATED:
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT 'default'")
@@ -49,6 +58,11 @@ def _ensure_db():
             pass
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace)")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, timestamp)")
             conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -74,13 +88,15 @@ def create_session(name: str = "", model: str = "", system_prompt: str = "", wor
     return session_id
 
 
-def list_sessions(workspace: str = "") -> list[dict]:
+def list_sessions(workspace: str = "", limit: int | None = None) -> list[dict]:
     conn = _ensure_db()
     ws = workspace or current_workspace()
-    rows = conn.execute(
-        "SELECT id, name, model, system_prompt, workspace, created_at, updated_at FROM sessions WHERE workspace = ? ORDER BY updated_at DESC",
-        (ws,),
-    ).fetchall()
+    sql = "SELECT id, name, model, system_prompt, workspace, created_at, updated_at FROM sessions WHERE workspace = ? ORDER BY updated_at DESC"
+    params: tuple = (ws,)
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (ws, max(1, int(limit)))
+    rows = conn.execute(sql, params).fetchall()
     conn.close()
     return [
         {
@@ -109,6 +125,10 @@ def get_session(session_id: str) -> Optional[dict]:
         "SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
         (session_id,),
     ).fetchall()
+    events = conn.execute(
+        "SELECT id, type, payload, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC, id ASC",
+        (session_id,),
+    ).fetchall()
     conn.close()
     return {
         "id": row[0],
@@ -120,6 +140,15 @@ def get_session(session_id: str) -> Optional[dict]:
         "created_at": row[6],
         "updated_at": row[7],
         "messages": [{"role": m[0], "content": m[1], "timestamp": m[2]} for m in messages],
+        "events": [
+            {
+                "id": e[0],
+                "type": e[1],
+                "payload": json.loads(e[2] or "{}"),
+                "timestamp": e[3],
+            }
+            for e in events
+        ],
     }
 
 
@@ -141,10 +170,13 @@ def save_session(session_id: str, model: str, messages: list[dict], name: str = 
         )
 
     conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-    for msg in messages:
+    for idx, msg in enumerate(messages):
+        timestamp = msg.get("timestamp", now)
+        if not isinstance(timestamp, (int, float)):
+            timestamp = now + (idx * 0.000001)
         conn.execute(
             "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-            (session_id, msg.get("role", "user"), msg.get("content", ""), msg.get("timestamp", now)),
+            (session_id, msg.get("role", "user"), msg.get("content", ""), timestamp),
         )
     conn.commit()
     conn.close()
@@ -152,7 +184,39 @@ def save_session(session_id: str, model: str, messages: list[dict], name: str = 
 
 def delete_session(session_id: str) -> None:
     conn = _ensure_db()
+    conn.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     conn.commit()
     conn.close()
+
+
+def add_session_event(session_id: str, event_type: str, payload: dict) -> int:
+    conn = _ensure_db()
+    now = time.time()
+    cur = conn.execute(
+        "INSERT INTO session_events (session_id, type, payload, timestamp) VALUES (?, ?, ?, ?)",
+        (session_id, event_type, json.dumps(payload or {}), now),
+    )
+    conn.commit()
+    event_id = int(cur.lastrowid)
+    conn.close()
+    return event_id
+
+
+def list_session_events(session_id: str) -> list[dict]:
+    conn = _ensure_db()
+    rows = conn.execute(
+        "SELECT id, type, payload, timestamp FROM session_events WHERE session_id = ? ORDER BY timestamp ASC, id ASC",
+        (session_id,),
+    ).fetchall()
+    conn.close()
+    return [
+        {
+            "id": r[0],
+            "type": r[1],
+            "payload": json.loads(r[2] or "{}"),
+            "timestamp": r[3],
+        }
+        for r in rows
+    ]

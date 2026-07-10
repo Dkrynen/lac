@@ -312,6 +312,53 @@ export interface AptConfig {
   theme: string;
   default_model: string;
 }
+
+export interface WorkspaceInfo {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface SessionMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+  timestamp?: number;
+}
+
+export interface SessionEvent {
+  id?: number;
+  type: string;
+  payload: Record<string, unknown>;
+  timestamp?: number;
+}
+
+export interface SessionSummary {
+  id: string;
+  name: string;
+  model: string;
+  system_prompt: string;
+  workspace: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SessionDetail extends SessionSummary {
+  context: string;
+  messages: SessionMessage[];
+  events: SessionEvent[];
+}
+
+export interface AgentChatPayload {
+  agent: "plan" | "explore";
+  model: string;
+  message: string;
+  messages?: SessionMessage[];
+  session_id?: string;
+  workspace?: string;
+  cwd?: string;
+  name?: string;
+}
+
 export interface VersionInfo {
   version: string;
   github_url: string;
@@ -396,4 +443,12 @@ export interface ImportScratchClearResponse {
   deleted_entries?: number;
   deleted_bytes?: number;
   error?: string;
+}
+
+export interface ProStatus {
+  licensed: boolean;
+  plan?: string | null;
+  expires_human?: string | null;
+  machine?: string | null;
+  checked?: string | null;
 }

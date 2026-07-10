@@ -178,6 +178,28 @@ def test_runner_ask_callback_allows(mock_provider, tool_registry):
     assert tool_results and tool_results[0]["ok"] is True
 
 
+def test_runner_uses_bash_permission_key(mock_provider, tool_registry):
+    from backend.agent import AgentRunner, get_agent
+    from backend.plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+    from backend.provider.base import ChatDelta
+
+    agent = get_agent("build")
+    agent.model = "mock:1b"
+    call = {"function": {"name": "run_bash", "arguments": '{"command":"echo hi"}'}}
+    mock_provider.set_script([ChatDelta(content="", tool_calls=[call], done=True), ChatDelta(content="done", done=True)])
+    engine = PermissionEngine(
+        rules=parse_rules({"build": {"edit": "allow", "bash": "deny"}}),
+        project_id="t",
+        store=AlwaysAllowStore(),
+    )
+    runner = AgentRunner(mock_provider, agent, TOOL_HANDLERS, TOOL_SCHEMAS, permission_engine=engine)
+
+    result = asyncio.run(runner.run("run echo"))
+    tool_results = [e for e in result.events if e["type"] == "tool_result"]
+    assert tool_results and tool_results[0]["ok"] is False
+    assert "(bash) denied" in tool_results[0]["result"]
+
+
 def test_runner_falls_back_to_boolean_permissions_without_engine(mock_provider, tool_registry):
     from backend.agent import AgentRunner, get_agent
     from backend.plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS

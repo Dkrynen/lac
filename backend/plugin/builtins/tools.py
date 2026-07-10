@@ -47,8 +47,12 @@ def _list_files(args: dict, ctx: dict) -> str:
     path = Path(args.get("path", "."))
     base = Path(ctx.get("cwd", ".")).resolve()
     target = (base / path).resolve() if not path.is_absolute() else path.resolve()
+    try:
+        rel = target.relative_to(base)
+    except ValueError:
+        return f"error: path outside workspace: {target}"
     if not target.exists():
-        return f"error: not found: {target}"
+        return f"error: not found: {rel}"
     entries = []
     for p in sorted(target.iterdir()):
         kind = "d" if p.is_dir() else "f"

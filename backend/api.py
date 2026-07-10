@@ -1,3 +1,5 @@
+import asyncio
+import copy
 import json
 import os
 import platform
@@ -14,12 +16,15 @@ from urllib.parse import urlsplit, urlunsplit
 from flask import Flask, Response, jsonify, request, stream_with_context
 
 from . import self_invoke
+from .agent import Agent, AgentRunner, READONLY_PERMISSIONS
 from .cookbook import proc
 from .cookbook.config import load_config
 from .cookbook.downloads import download_history
 from .cookbook.hardware import detect, print_system
 from .cookbook.recommend import recommend, load_models
+from .plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 from .pro_install import install_pro_plugin
+from .provider.registry import default_provider
 from .update import is_newer, select_release_download_url
 
 try:
@@ -913,6 +918,227 @@ def ollama_chat():
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         yield "data: [DONE]\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+_WEB_AGENT_MODES = {"plan", "explore"}
+_WEB_AGENT_TOOLS = {
+    "plan": ["read_file", "list_files"],
+    "explore": ["read_file", "list_files", "web_search"],
+}
+_WEB_AGENT_PROMPTS = {
+    "plan": "You are the LAC Workbench plan agent. You have read-only access. Inspect context, reason carefully, and propose concrete implementation steps. Never claim you changed files.",
+    "explore": "You are the LAC Workbench explore agent. You have read-only code and web search access. Gather context, summarize findings, and cite the files or sources you used.",
+}
+_SESSION_MESSAGE_ROLES = {"system", "user", "assistant"}
+_PERSISTED_AGENT_EVENT_TYPES = {"tool_calls", "tool_call", "tool_result", "error"}
+
+
+def _web_agent(agent_name: str, model: str) -> Agent:
+    return Agent(
+        name=agent_name,
+        type=agent_name,
+        description=f"Read-only web {agent_name} agent",
+        model=model,
+        system_prompt=_WEB_AGENT_PROMPTS[agent_name],
+        permissions=copy.deepcopy(READONLY_PERMISSIONS),
+        tools=list(_WEB_AGENT_TOOLS[agent_name]),
+        raw={"source": "web_builtin"},
+    )
+
+
+def _clean_session_messages(raw: object) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+    messages: list[dict] = []
+    for msg in raw:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip()
+        content = msg.get("content", "")
+        if role not in _SESSION_MESSAGE_ROLES or not isinstance(content, str):
+            continue
+        out = {"role": role, "content": content}
+        if isinstance(msg.get("timestamp"), (int, float)):
+            out["timestamp"] = msg["timestamp"]
+        messages.append(out)
+    return messages
+
+
+def _agent_sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _resolve_agent_cwd(raw: object) -> Path:
+    base = Path.cwd()
+    cwd = Path(str(raw or base)).expanduser()
+    if cwd.is_absolute():
+        resolved = cwd.resolve()
+    else:
+        resolved = (base / cwd).resolve()
+    if not resolved.exists() or not resolved.is_dir():
+        raise ValueError(f"Project root not found: {resolved}")
+    return resolved
+
+
+def _agent_chat_options(provider: object) -> dict:
+    if getattr(provider, "name", "") != "ollama":
+        return {}
+    return {
+        "keep_alive": "30m",
+        "options": {"num_ctx": _interactive_context()},
+    }
+
+
+@app.route("/api/agent/chat", methods=["POST"])
+def agent_chat():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+
+    message = data.get("message", "")
+    if not isinstance(message, str) or not message.strip():
+        return jsonify({"error": "Message required"}), 400
+    message = message.strip()
+
+    agent_name = str(data.get("agent") or "plan").strip().lower()
+    if agent_name not in _WEB_AGENT_MODES:
+        return jsonify({
+            "error": "Build mode requires an approval UI and is disabled in this Workbench slice",
+            "allowed_agents": sorted(_WEB_AGENT_MODES),
+        }), 403
+
+    model = str(data.get("model") or "").strip()
+    if not model:
+        model = (load_config().default_model or "").strip()
+    if not model:
+        return jsonify({"error": "Model required"}), 400
+
+    try:
+        cwd = _resolve_agent_cwd(data.get("cwd"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    workspace = str(data.get("workspace") or "").strip()
+    session_id_raw = data.get("session_id")
+    session_id = str(session_id_raw).strip() if session_id_raw else ""
+    session_name = str(data.get("name") or message.replace("\n", " ")[:64]).strip()
+
+    from .cookbook.persistence import create_session, get_session, save_session, add_session_event
+
+    saved_session = get_session(session_id) if session_id else None
+    if session_id and saved_session is None:
+        return jsonify({"error": "Session not found"}), 404
+    if saved_session is not None and not workspace:
+        workspace = str(saved_session.get("workspace") or "")
+    if not session_id:
+        session_id = create_session(name=session_name, model=model, workspace=workspace)
+
+    history = _clean_session_messages(data.get("messages"))
+    if not history and saved_session is not None:
+        history = _clean_session_messages(saved_session.get("messages", []))
+    runner_history = [{"role": m["role"], "content": m["content"]} for m in history]
+
+    agent = _web_agent(agent_name, model)
+
+    try:
+        max_iterations = int(data.get("max_iterations") or 6)
+    except (TypeError, ValueError):
+        max_iterations = 6
+    max_iterations = max(1, min(max_iterations, 12))
+
+    provider = default_provider()
+    chat_options = _agent_chat_options(provider)
+
+    def generate():
+        assistant_content = ""
+        saved_done = False
+        started_at = time.time()
+        persisted_messages = [
+            {
+                **m,
+                "timestamp": m.get("timestamp") if isinstance(m.get("timestamp"), (int, float)) else started_at + (i * 0.000001),
+            }
+            for i, m in enumerate(history)
+        ]
+        persisted_messages.append({
+            "role": "user",
+            "content": message,
+            "timestamp": started_at + (len(persisted_messages) * 0.000001),
+        })
+
+        yield _agent_sse({"type": "session", "session_id": session_id})
+        yield _agent_sse({"type": "status", "message": f"{agent_name.title()} agent started"})
+
+        runner = AgentRunner(
+            provider,
+            agent,
+            TOOL_HANDLERS,
+            TOOL_SCHEMAS,
+            ctx={"cwd": str(cwd)},
+            max_iterations=max_iterations,
+            chat_options=chat_options,
+        )
+        loop = asyncio.new_event_loop()
+        stream = runner.run_stream(message, runner_history)
+
+        try:
+            while True:
+                try:
+                    ev = loop.run_until_complete(stream.__anext__())
+                except StopAsyncIteration:
+                    break
+
+                ev_type = ev.get("type")
+                if ev_type == "delta":
+                    assistant_content += str(ev.get("content") or "")
+                elif ev_type == "done":
+                    assistant_content = str(ev.get("content") or assistant_content)
+                    if assistant_content:
+                        persisted_messages.append({
+                            "role": "assistant",
+                            "content": assistant_content,
+                            "timestamp": started_at + (len(persisted_messages) * 0.000001),
+                        })
+                    save_session(
+                        session_id=session_id,
+                        model=model,
+                        messages=persisted_messages,
+                        name=session_name,
+                        workspace=workspace,
+                    )
+                    saved_done = True
+                elif ev_type in _PERSISTED_AGENT_EVENT_TYPES:
+                    add_session_event(session_id, str(ev_type), ev)
+
+                yield _agent_sse(ev)
+        except Exception as e:
+            err = {"type": "error", "message": str(e)}
+            add_session_event(session_id, "error", err)
+            yield _agent_sse(err)
+        finally:
+            if not saved_done:
+                if assistant_content:
+                    persisted_messages.append({
+                        "role": "assistant",
+                        "content": assistant_content,
+                        "timestamp": started_at + (len(persisted_messages) * 0.000001),
+                    })
+                save_session(
+                    session_id=session_id,
+                    model=model,
+                    messages=persisted_messages,
+                    name=session_name,
+                    workspace=workspace,
+                )
+            loop.run_until_complete(stream.aclose())
+            loop.close()
+            yield "data: [DONE]\n\n"
 
     return Response(
         stream_with_context(generate()),
@@ -2257,7 +2483,14 @@ def api_switch_workspace(workspace_id):
 def api_list_sessions():
     from .cookbook.persistence import list_sessions
     ws = request.args.get("workspace", "")
-    return jsonify(list_sessions(workspace=ws))
+    raw_limit = request.args.get("limit")
+    limit = None
+    if raw_limit:
+        try:
+            limit = max(1, min(int(raw_limit), 500))
+        except ValueError:
+            return jsonify({"error": "limit must be an integer"}), 400
+    return jsonify(list_sessions(workspace=ws, limit=limit))
 
 
 @app.route("/api/sessions", methods=["POST"])

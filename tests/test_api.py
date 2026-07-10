@@ -234,6 +234,25 @@ def test_sessions_crud(flask_app, isolated_home):
         assert r2.status_code == 200
 
 
+def test_sessions_list_limit(flask_app, isolated_home):
+    client = flask_app.test_client()
+    for i in range(3):
+        r = client.post("/api/sessions", json={"name": f"s{i}", "model": "m"})
+        assert r.status_code in (200, 201)
+
+    limited = client.get("/api/sessions?limit=2")
+
+    assert limited.status_code == 200
+    assert len(limited.get_json()) == 2
+
+
+def test_sessions_list_limit_must_be_integer(flask_app, isolated_home):
+    response = flask_app.test_client().get("/api/sessions?limit=nope")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "limit must be an integer"
+
+
 def test_ollama_status(flask_app, ollama_available):
     if not ollama_available:
         pytest.skip("Ollama not running")
