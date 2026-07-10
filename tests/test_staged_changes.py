@@ -406,3 +406,46 @@ def test_staged_read_list_root_isolated_same_session(isolated_home, tmp_path):
     # Verify projA still sees its staged content
     result_a = handlers_a["read_file"]({"path": "same.txt"}, ctx_a)
     assert result_a == "projA staged"
+
+
+def test_list_overlay_synthesizes_nested_staged_dirs(isolated_home, tmp_path):
+    """A staged-only path nested >1 level deep (a/b/c.txt) must surface synthesized
+    intermediate directories, not fall through to 'error: not found' for 'a'."""
+    sid = _mk_session()
+    handlers = _build_handlers(sid)
+    ctx = {"cwd": str(tmp_path)}
+
+    handlers["write_file"]({"path": "a/b/c.txt", "content": "nested staged"}, ctx)
+
+    listing_a = handlers["list_files"]({"path": "a"}, ctx)
+    assert not listing_a.startswith("error:")
+    assert "b" in listing_a
+    assert "(staged)" in listing_a
+
+    listing_ab = handlers["list_files"]({"path": "a/b"}, ctx)
+    assert "c.txt (staged)" in listing_ab
+
+    listing_root = handlers["list_files"]({"path": "."}, ctx)
+    assert "d" in listing_root
+    assert "a (staged)" in listing_root
+
+
+def test_list_overlay_no_duplicate_for_disk_dirs(isolated_home, tmp_path):
+    """When a directory already exists on disk, the synthesized-dir overlay must not
+    duplicate it with a second '(staged)' entry."""
+    sid = _mk_session()
+    handlers = _build_handlers(sid)
+    ctx = {"cwd": str(tmp_path)}
+    (tmp_path / "real").mkdir()
+
+    handlers["write_file"]({"path": "real/new.txt", "content": "staged in real dir"}, ctx)
+
+    listing_root = handlers["list_files"]({"path": "."}, ctx)
+    real_lines = [line for line in listing_root.split("\n") if " real" in line or line.endswith("real")]
+    assert len([line for line in listing_root.split("\n") if "real" in line]) == 1, (
+        f"'real' should appear exactly once: {listing_root}"
+    )
+    assert "(staged)" not in [line for line in listing_root.split("\n") if "real" in line][0]
+
+    listing_real = handlers["list_files"]({"path": "real"}, ctx)
+    assert "new.txt (staged)" in listing_real

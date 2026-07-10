@@ -83,18 +83,27 @@ def build_staged_handlers(
             return jailed
         base, rel = jailed
         dir_rel = "" if rel == "." else rel
-        extra = []
+        prefix = dir_rel + "/" if dir_rel else ""
+        synth_dirs: set[str] = set()
+        staged_files: list[str] = []
         for row in _pending(base):
-            p = Path(row["path"])
-            parent = p.parent.as_posix()
-            if parent == ".":
-                parent = ""
-            if parent != dir_rel:
+            path = row["path"]
+            if prefix and not path.startswith(prefix):
                 continue
-            if (base / row["path"]).exists():
-                continue  # exists on disk; base listing already shows it
-            size = len(row["new_content"].encode("utf-8"))
-            extra.append(f"f {size:>10} {p.name} (staged)")
+            remainder = path[len(prefix):]
+            if not remainder:
+                continue
+            if "/" not in remainder:
+                if (base / path).exists():
+                    continue  # exists on disk; base listing already shows it
+                size = len(row["new_content"].encode("utf-8"))
+                staged_files.append(f"f {size:>10} {remainder} (staged)")
+            else:
+                seg = remainder.split("/", 1)[0]
+                if (base / (prefix + seg)).exists():
+                    continue  # real dir already listed by the base handler
+                synth_dirs.add(seg)
+        extra = [f"d {0:>10} {seg} (staged)" for seg in sorted(synth_dirs)] + staged_files
         listing = base_list(args, ctx)
         if not extra:
             return listing
