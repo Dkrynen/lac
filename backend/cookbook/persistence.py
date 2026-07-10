@@ -362,8 +362,12 @@ def _atomic_write(target: Path, data: bytes) -> None:
     """Write via a sibling tmp file + os.replace so a crash never leaves a partial file."""
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.parent / f".{target.name}.lac-tmp"
-    tmp.write_bytes(data)
-    os.replace(tmp, target)
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _disk_hash(target: Path) -> Optional[str]:
@@ -387,7 +391,10 @@ def apply_staged_change(change_id: str) -> dict:
     if disk_hash != row["base_hash"]:
         set_staged_status(change_id, "conflict")
         return {"status": "conflict", "disk_hash": disk_hash, "base_hash": row["base_hash"]}
-    _atomic_write(target, row["new_content"].encode("utf-8"))
+    try:
+        _atomic_write(target, row["new_content"].encode("utf-8"))
+    except OSError as e:
+        return {"status": "error", "error": str(e)}
     set_staged_status(change_id, "applied")
     return {"status": "applied", "path": row["path"]}
 
@@ -407,9 +414,12 @@ def revert_applied_change(change_id: str) -> dict:
     disk_hash = _disk_hash(target)
     if disk_hash != expected:
         return {"status": "conflict", "disk_hash": disk_hash, "expected_hash": expected}
-    if row["base_hash"] is None:
-        target.unlink(missing_ok=True)
-    else:
-        _atomic_write(target, (row["old_content"] or "").encode("utf-8"))
+    try:
+        if row["base_hash"] is None:
+            target.unlink(missing_ok=True)
+        else:
+            _atomic_write(target, (row["old_content"] or "").encode("utf-8"))
+    except OSError as e:
+        return {"status": "error", "error": str(e)}
     set_staged_status(change_id, "reverted")
     return {"status": "reverted", "path": row["path"]}
