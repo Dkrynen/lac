@@ -12,15 +12,49 @@ from .base import Agent
 from .permissions import Permissions
 
 ToolHandler = Callable[[dict, dict], str]
+RememberAction = Callable[[], Any]
+AskCommit = Callable[
+    [RememberAction | None, RememberAction | None, str | None],
+    "Decision",
+]
 
 
 @dataclass
 class AskResult:
     decision: "Decision"
     remember: bool = False
+    _commit: AskCommit | None = field(default=None, repr=False, compare=False)
+
+    def consume(
+        self,
+        remember_action: RememberAction | None = None,
+        rollback_action: RememberAction | None = None,
+        grant_id: str | None = None,
+    ) -> "Decision":
+        """Commit an answer before its decision can authorize tool execution.
+
+        Ordinary callers use the default path, which applies the optional
+        remembered permission. The web bridge supplies a commit callback that
+        couples permission persistence, audit persistence, and HTTP
+        acknowledgement under its run-state lock.
+        """
+
+        if self._commit is not None:
+            return self._commit(remember_action, rollback_action, grant_id)
+        if self.decision is Decision.ALLOW and remember_action is not None:
+            try:
+                remember_action()
+            except Exception:
+                # SQLite/networked stores can fail after an ambiguous partial
+                # write. Best-effort exact rollback keeps a failed approval
+                # from silently becoming permanent.
+                if rollback_action is not None:
+                    rollback_action()
+                raise
+        return self.decision
 
 
-AskCallback = Callable[[str, str, str | None, str], Awaitable["AskResult"]]
+AskCallback = Callable[[str, str, Any, str], Awaitable["AskResult | Decision"]]
 
 Event = dict
 
@@ -87,7 +121,9 @@ class AgentRunner:
             out.extend(self.mcp.tool_schemas_for_agent())
         return out
 
-    async def _check_permission(self, tool_name: str, target: str | None) -> tuple[bool, str]:
+    async def _check_permission(
+        self, tool_name: str, target: Any, tool_args: dict
+    ) -> tuple[bool, str]:
         if not tool_name.startswith("mcp_") and tool_name not in set(self.agent.tools):
             return False, f"[permission denied: {tool_name} not enabled for agent '{self.agent.name}']"
 
@@ -99,11 +135,28 @@ class AgentRunner:
                 return False, f"[permission denied: {tool_name} not permitted for agent '{self.agent.name}']"
             return True, ""
 
-        if self.permission_engine.record_tool_call(self.agent.name, tool_name, {"target": target or ""}):
-            key = "doom_loop"
-        else:
-            key = self._perm_key_for(tool_name)
-        decision = self.permission_engine.evaluate(self.agent.name, key, target)
+        base_key = self._perm_key_for(tool_name)
+        loop_detected = self.permission_engine.record_tool_call(
+            self.agent.name, tool_name, tool_args
+        )
+        base_decision = self.permission_engine.evaluate(
+            self.agent.name, base_key, target, tool_name=tool_name
+        )
+        key = base_key
+        decision = base_decision
+        if loop_detected and base_decision is not Decision.DENY:
+            loop_decision = self.permission_engine.evaluate(
+                self.agent.name, "doom_loop", target, tool_name=tool_name
+            )
+            if loop_decision is Decision.DENY:
+                key = "doom_loop"
+                decision = Decision.DENY
+            else:
+                # The third identical call always asks. A configured ALLOW may
+                # never disable loop protection, and the doom key prevents the
+                # answer from becoming a permanent approval.
+                key = "doom_loop"
+                decision = Decision.ASK
         if decision == Decision.ALLOW:
             return True, ""
         if decision == Decision.DENY:
@@ -111,20 +164,62 @@ class AgentRunner:
         if self.on_ask is not None:
             try:
                 result = await self.on_ask(self.agent.name, tool_name, target, key)
+                if isinstance(result, Decision):
+                    # Backward-compatible callers are treated as allow-once;
+                    # only the explicit AskResult contract can persist.
+                    result = AskResult(decision=result)
+                if not isinstance(result, AskResult):
+                    raise TypeError("ask callback must return AskResult")
             except Exception as e:
                 return False, f"[permission ask failed: {e}]"
-            if result.decision == Decision.ALLOW:
-                if result.remember and key != "doom_loop":
-                    self.permission_engine.remember(self.agent.name, key, target)
+            remember_requested = (
+                result.decision is Decision.ALLOW
+                and result.remember is True
+                and key != "doom_loop"
+            )
+            remember_action = None
+            rollback_action = None
+            owner_token = None
+            if remember_requested:
+                owner_token = self.permission_engine.new_remember_token()
+                remember_action = lambda: self.permission_engine.remember(
+                    self.agent.name,
+                    key,
+                    target,
+                    tool_name=tool_name,
+                    owner_token=owner_token,
+                )
+                rollback_action = lambda: self.permission_engine.forget_remembered(
+                    self.agent.name,
+                    key,
+                    target,
+                    tool_name=tool_name,
+                    owner_token=owner_token,
+                )
+            try:
+                final_decision = result.consume(
+                    remember_action,
+                    rollback_action,
+                    owner_token,
+                )
+            except Exception as e:
+                return False, f"[permission ask failed: {e}]"
+            if final_decision == Decision.ALLOW:
                 return True, ""
-            if result.decision == Decision.DENY:
+            if final_decision == Decision.DENY:
                 return False, f"[permission denied by user: {tool_name}]"
             return False, f"[permission denied: {tool_name} (ask returned no decision)]"
         return False, f"[permission denied: {tool_name} ({key}) requires approval (no ask handler)]"
 
     async def _execute_tool(self, name: str, args: dict) -> tuple[bool, str]:
-        target = args.get("path") or args.get("command") or args.get("query") or args.get("url")
-        ok, reason = await self._check_permission(name, target)
+        if name == "list_files":
+            list_path = args.get("path", ".")
+            if not isinstance(list_path, str):
+                return False, "[tool error: list_files path must be a string]"
+            target = list_path or "."
+        else:
+            target = args.get("path") or args.get("command") or args.get("query") or args.get("url")
+        ok, reason = await self._check_permission(name, target, args)
         if not ok:
             return False, reason
 
@@ -187,14 +282,50 @@ class AgentRunner:
                 yield {"type": "tool_calls", "calls": tool_calls}
 
                 for call in tool_calls:
+                    if not isinstance(call, dict):
+                        name = "<invalid>"
+                        args = {}
+                        result = "[tool error: tool call must be a JSON object]"
+                        yield {"type": "tool_call", "name": name, "args": args}
+                        yield {"type": "tool_result", "name": name, "ok": False, "result": result}
+                        messages.append({"role": "tool", "name": name, "content": result})
+                        continue
                     fn = call.get("function", call)
+                    if not isinstance(fn, dict):
+                        name = "<invalid>"
+                        args = {}
+                        result = "[tool error: function must be a JSON object]"
+                        yield {"type": "tool_call", "name": name, "args": args}
+                        yield {"type": "tool_result", "name": name, "ok": False, "result": result}
+                        messages.append({"role": "tool", "name": name, "content": result})
+                        continue
                     name = fn.get("name", "")
+                    if not isinstance(name, str) or not name:
+                        safe_name = "<invalid>"
+                        args = {}
+                        result = "[tool error: tool name must be a non-empty string]"
+                        yield {"type": "tool_call", "name": safe_name, "args": args}
+                        yield {"type": "tool_result", "name": safe_name, "ok": False, "result": result}
+                        messages.append({"role": "tool", "name": safe_name, "content": result})
+                        continue
                     raw_args = fn.get("arguments", "{}")
+                    parse_error = None
                     try:
-                        args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                     except json.JSONDecodeError:
                         args = {}
+                        parse_error = "[tool error: arguments must be valid JSON]"
                     yield {"type": "tool_call", "name": name, "args": args}
+                    if parse_error is not None or not isinstance(args, dict):
+                        result = parse_error or "[tool error: arguments must be a JSON object]"
+                        yield {
+                            "type": "tool_result",
+                            "name": name,
+                            "ok": False,
+                            "result": result,
+                        }
+                        messages.append({"role": "tool", "name": name, "content": result})
+                        continue
                     ok, result = await self._execute_tool(name, args)
                     yield {"type": "tool_result", "name": name, "ok": ok, "result": result[:4000]}
                     messages.append({"role": "tool", "name": name, "content": result})

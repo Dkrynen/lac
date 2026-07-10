@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 
@@ -69,7 +70,7 @@ def test_agent_chat_streams_and_persists_tool_events(flask_app, isolated_home, m
     assert response.status_code == 200
     assert response.mimetype == "text/event-stream"
     events = _events(response)
-    assert [e["type"] for e in events] == ["session", "status", "delta", "tool_call", "tool_result", "done"]
+    assert [e["type"] for e in events] == ["session", "run", "status", "delta", "tool_call", "tool_result", "done"]
     assert captured["agent"].model == "mock:1b"
     assert captured["agent"].tools == ["read_file", "list_files"]
     assert not captured["agent"].permissions.can_write()
@@ -184,3 +185,1252 @@ def test_agent_chat_requires_message(flask_app, isolated_home):
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "Message required"
+
+
+def _iter_events(resp):
+    """Incrementally parse SSE data frames from a streaming test-client response.
+
+    resp.response is Werkzeug's LAZY app iterator; .get_data() would drain the
+    whole stream (and hang on a paused run) - never use it in bridge tests.
+    """
+    for chunk in resp.response:
+        text = chunk.decode() if isinstance(chunk, bytes) else chunk
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                data = line.removeprefix("data:").strip()
+                if data != "[DONE]":
+                    yield json.loads(data)
+
+
+def test_agent_chat_emits_run_event_and_registers_run(flask_app, isolated_home, monkeypatch, tmp_path):
+    import backend.api as api_mod
+
+    class FakeRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_stream(self, user_text, history=None):
+            yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "go", "cwd": str(project)},
+    )
+    events = list(_iter_events(resp))
+    run_events = [e for e in events if e["type"] == "run"]
+    assert len(run_events) == 1 and run_events[0]["run_id"]
+    # run completed -> registry swept clean by the finally block
+    assert api_mod._AGENT_RUNS == {}
+
+
+def test_agent_run_registry_enforces_capacity(monkeypatch):
+    import queue as queue_mod
+    import threading
+
+    import pytest
+
+    import backend.api as api_mod
+
+    monkeypatch.setattr(api_mod, "MAX_AGENT_RUNS", 1)
+
+    def make_run(session_id):
+        return api_mod._AgentRun(
+            ask_event=threading.Event(),
+            queue=queue_mod.Queue(),
+            session_id=session_id,
+            created_at=time.time(),
+        )
+
+    with api_mod._AGENT_RUNS_LOCK:
+        api_mod._AGENT_RUNS.clear()
+    try:
+        api_mod._register_agent_run("one", make_run("s1"))
+        with pytest.raises(RuntimeError, match="Too many active agent runs"):
+            api_mod._register_agent_run("two", make_run("s2"))
+    finally:
+        with api_mod._AGENT_RUNS_LOCK:
+            api_mod._AGENT_RUNS.clear()
+
+
+def test_agent_chat_heartbeats_while_runner_is_slow(flask_app, isolated_home, monkeypatch, tmp_path):
+    import asyncio as aio
+
+    import backend.api as api_mod
+
+    monkeypatch.setattr(api_mod, "HEARTBEAT_INTERVAL", 0.05)
+
+    class SlowRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_stream(self, user_text, history=None):
+            await aio.sleep(0.4)
+            yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", SlowRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "go", "cwd": str(project)},
+    )
+    raw = b"".join(c if isinstance(c, bytes) else c.encode() for c in resp.response)
+    assert b": ping" in raw  # SSE comment heartbeat reached the wire
+    assert b'"type": "done"' in raw or b'"type":"done"' in raw
+
+
+def test_agent_chat_disconnect_cancels_worker(flask_app, isolated_home, monkeypatch, tmp_path):
+    import asyncio as aio
+
+    import backend.api as api_mod
+
+    started = {"flag": False}
+
+    class DripRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_stream(self, user_text, history=None):
+            started["flag"] = True
+            for i in range(1000):
+                yield {"type": "delta", "content": f"chunk{i}"}
+                await aio.sleep(0.01)
+            yield {"type": "done", "content": "never", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", DripRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "go", "cwd": str(project)},
+    )
+    events = _iter_events(resp)
+    for ev in events:
+        if ev["type"] == "delta":
+            break  # stream is live
+    resp.response.close()  # simulate client disconnect -> GeneratorExit in generate()
+
+    assert started["flag"]
+    deadline = time.time() + 5
+    while time.time() < deadline and api_mod._AGENT_RUNS:
+        time.sleep(0.05)
+    assert api_mod._AGENT_RUNS == {}  # registry entry dropped by the finally block
+
+
+def test_agent_chat_disconnect_after_first_event_cleans_registry(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.api as api_mod
+
+    class FakeRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_stream(self, user_text, history=None):
+            yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "go", "cwd": str(project)},
+    )
+    events = _iter_events(resp)
+    assert next(events)["type"] == "session"
+    assert api_mod._AGENT_RUNS
+    try:
+        resp.response.close()
+        assert api_mod._AGENT_RUNS == {}
+    finally:
+        with api_mod._AGENT_RUNS_LOCK:
+            api_mod._AGENT_RUNS.clear()
+
+
+def test_agent_chat_runner_constructor_failure_does_not_register_run(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import pytest
+
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    class FailingRunner:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("runner init failed")
+
+    monkeypatch.setattr(api_mod, "AgentRunner", FailingRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    before = [s["id"] for s in persistence.list_sessions()]
+    with pytest.raises(RuntimeError, match="runner init failed"):
+        flask_app.test_client().post(
+            "/api/agent/chat",
+            json={"agent": "plan", "model": "mock:1b", "message": "go", "cwd": str(project)},
+        )
+    try:
+        assert api_mod._AGENT_RUNS == {}
+        assert [s["id"] for s in persistence.list_sessions()] == before
+    finally:
+        with api_mod._AGENT_RUNS_LOCK:
+            api_mod._AGENT_RUNS.clear()
+
+
+def test_blocked_worker_stays_tracked_until_it_exits(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import asyncio as aio
+    import threading
+
+    import backend.api as api_mod
+
+    release = threading.Event()
+    monkeypatch.setattr(api_mod, "WORKER_JOIN_TIMEOUT", 0.05, raising=False)
+
+    class BlockedRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_stream(self, user_text, history=None):
+            yield {"type": "delta", "content": "started"}
+            loop = aio.get_running_loop()
+            await loop.run_in_executor(None, release.wait)
+            yield {"type": "done", "content": "late", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", BlockedRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "go", "cwd": str(project)},
+    )
+    events = _iter_events(resp)
+    run_id = None
+    try:
+        for ev in events:
+            if ev["type"] == "run":
+                run_id = ev["run_id"]
+            if ev["type"] == "delta":
+                break
+        assert run_id
+        run = api_mod._AGENT_RUNS[run_id]
+        assert run.queue.maxsize == api_mod.AGENT_EVENT_QUEUE_MAX
+        resp.response.close()
+        assert run.thread is not None and run.thread.is_alive()
+        assert api_mod._AGENT_RUNS.get(run_id) is run
+    finally:
+        release.set()
+
+    deadline = time.time() + 5
+    while time.time() < deadline and run_id in api_mod._AGENT_RUNS:
+        time.sleep(0.01)
+    assert run_id not in api_mod._AGENT_RUNS
+
+
+def _ask_fake_runner(captured, *, key="bash"):
+    """Fake runner whose stream asks once and reacts to the verdict."""
+    from backend.agent.runner import AskResult
+    from backend.permission import Decision
+
+    class AskingRunner:
+        def __init__(self, *args, **kwargs):
+            captured["on_ask"] = kwargs.get("on_ask")
+
+        async def run_stream(self, user_text, history=None):
+            result = await captured["on_ask"](
+                "build", "run_bash", "pytest -q", key
+            )
+            captured["ask_result"] = result
+            assert isinstance(result, AskResult)
+
+            def remember():
+                captured["remembered"] = True
+                return "fake-web-grant"
+
+            def rollback():
+                captured["remembered"] = False
+
+            consumed = result.consume(
+                remember if result.remember else None,
+                rollback if result.remember else None,
+                "fake-web-grant" if result.remember else None,
+            )
+            captured["consumed_decision"] = consumed
+            ok = consumed == Decision.ALLOW
+            yield {
+                "type": "tool_result",
+                "name": "run_bash",
+                "ok": ok,
+                "result": "[exit 0]" if ok else "[denied]",
+            }
+            yield {"type": "done", "content": "finished", "messages": [], "iterations": 1}
+
+    return AskingRunner
+
+
+def test_ask_bridge_allow_flow_and_replay(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+    from backend.permission import Decision
+
+    captured: dict = {}
+    monkeypatch.setattr(api_mod, "AgentRunner", _ask_fake_runner(captured))
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "run tests", "cwd": str(project)},
+    )
+    events = _iter_events(resp)
+    run_id = session_id = approval_token = None
+    ask = None
+    for ev in events:
+        if ev["type"] == "session":
+            session_id = ev["session_id"]
+        elif ev["type"] == "run":
+            run_id = ev["run_id"]
+            approval_token = ev["approval_token"]
+        elif ev["type"] == "ask":
+            ask = ev
+            break
+    assert ask is not None and ask["ask_id"]
+    assert ask["tool"] == "run_bash"
+    assert ask["target"] == "pytest -q"
+    assert ask["key"] == "bash"
+    assert ask["doom_loop"] is False
+
+    answer = flask_app.test_client().post(
+        f"/api/agent/runs/{run_id}/answer",
+        json={
+            "ask_id": ask["ask_id"],
+            "approval_token": approval_token,
+            "decision": "allow",
+            "remember": True,
+        },
+    )
+    assert answer.status_code == 200
+    assert answer.get_json() == {"ok": True}
+
+    # A 200 means the decision is durable even before the SSE consumer drains it.
+    immediate = persistence.list_session_events(session_id)
+    assert [e["type"] for e in immediate].count("ask_resolved") == 1
+
+    rest = list(events)
+    types = [e["type"] for e in rest]
+    assert "ask_resolved" in types
+    resolved = [e for e in rest if e["type"] == "ask_resolved"][0]
+    assert resolved["ask_id"] == ask["ask_id"]
+    assert resolved["decision"] == "allow" and resolved["remember"] is True
+    assert [e for e in rest if e["type"] == "tool_result"][0]["ok"] is True
+    assert captured["ask_result"].decision == Decision.ALLOW
+    assert captured["ask_result"].remember is True
+
+    stored = persistence.list_session_events(session_id)
+    stored_types = [e["type"] for e in stored]
+    assert stored_types.count("ask") == 1
+    assert stored_types.count("ask_resolved") == 1
+    stored_resolved = [e["payload"] for e in stored if e["type"] == "ask_resolved"][0]
+    assert stored_resolved["ask_id"] == ask["ask_id"]
+    assert stored_resolved["decision"] == "allow"
+
+
+def test_ask_bridge_deny_flow(flask_app, isolated_home, monkeypatch, tmp_path):
+    import backend.api as api_mod
+    from backend.permission import Decision
+
+    captured: dict = {}
+    monkeypatch.setattr(api_mod, "AgentRunner", _ask_fake_runner(captured))
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "run", "cwd": str(project)},
+    )
+    events = _iter_events(resp)
+    run_id = approval_token = ask = None
+    for ev in events:
+        if ev["type"] == "run":
+            run_id = ev["run_id"]
+            approval_token = ev["approval_token"]
+        elif ev["type"] == "ask":
+            ask = ev
+            break
+    answer = flask_app.test_client().post(
+        f"/api/agent/runs/{run_id}/answer",
+        json={
+            "ask_id": ask["ask_id"],
+            "approval_token": approval_token,
+            "decision": "deny",
+            "remember": True,
+        },
+    )
+    assert answer.status_code == 200
+    rest = list(events)
+    assert captured["ask_result"].decision == Decision.DENY
+    assert captured["ask_result"].remember is False
+    assert [e for e in rest if e["type"] == "tool_result"][0]["ok"] is False
+    resolved = [e for e in rest if e["type"] == "ask_resolved"][0]
+    assert resolved["decision"] == "deny" and resolved["remember"] is False
+
+
+def test_ask_timeout_denies_and_run_continues(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+    from backend.permission import Decision
+
+    monkeypatch.setattr(api_mod, "ASK_TIMEOUT", 0.05)
+    captured: dict = {}
+    monkeypatch.setattr(api_mod, "AgentRunner", _ask_fake_runner(captured))
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "run", "cwd": str(project)},
+    )
+    events = list(_iter_events(resp))
+    types = [e["type"] for e in events]
+    ask = [e for e in events if e["type"] == "ask"][0]
+    timeout = [e for e in events if e["type"] == "ask_timeout"][0]
+    assert timeout["ask_id"] == ask["ask_id"]
+    assert "done" in types
+    assert captured["ask_result"].decision == Decision.DENY
+    session_id = [e for e in events if e["type"] == "session"][0]["session_id"]
+    assert "ask_timeout" in [e["type"] for e in persistence.list_session_events(session_id)]
+
+
+def _registered_pending_run(
+    api_mod,
+    persistence,
+    *,
+    key="bash",
+    target="pytest -q",
+    event=None,
+    remember_action=None,
+    rollback_action=None,
+    before_consume=None,
+):
+    import asyncio
+    import queue as queue_mod
+    import threading
+
+    sid = persistence.create_session(model="mock:1b")
+    run = api_mod._AgentRun(
+        ask_event=event or threading.Event(),
+        queue=queue_mod.Queue(),
+        session_id=sid,
+        created_at=time.time(),
+    )
+    captured = {}
+    with api_mod._AGENT_RUNS_LOCK:
+        api_mod._AGENT_RUNS["testrun"] = run
+
+    def drive_ask():
+        result = asyncio.run(
+            api_mod._make_web_ask("testrun", run)(
+                "build", "run_bash", target, key
+            )
+        )
+        captured["result"] = result
+        if before_consume is not None:
+            before_consume.wait()
+        grant_id = (
+            f"test-{run.approval_token[:16]}" if result.remember else None
+        )
+        if result.remember and remember_action is None:
+            def action():
+                captured["remembered"] = True
+                return grant_id
+
+            rollback = lambda: captured.__setitem__("remembered", False)
+        elif remember_action is not None:
+            def action():
+                committed = remember_action()
+                return grant_id if committed is None else committed
+
+            rollback = rollback_action
+        else:
+            action = None
+            rollback = rollback_action
+        try:
+            captured["grant_id"] = grant_id
+            captured["decision"] = result.consume(action, rollback, grant_id)
+        except Exception as e:
+            captured["error"] = e
+
+    thread = threading.Thread(target=drive_ask, daemon=True)
+    thread.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and run.pending_ask is None:
+        time.sleep(0.01)
+    assert run.pending_ask is not None
+    return run, sid, thread, captured
+
+
+def _cleanup_registered_run(api_mod, run, thread):
+    with run.state_lock:
+        run.cancelled = True
+        run.cancel_reason = "test_cleanup"
+        run.ask_event.set()
+    thread.join(timeout=5)
+    with api_mod._AGENT_RUNS_LOCK:
+        api_mod._AGENT_RUNS.pop("testrun", None)
+
+
+def test_answer_endpoint_validation_and_stale_ask_guard(flask_app, isolated_home):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    client = flask_app.test_client()
+    assert client.post(
+        "/api/agent/runs/nosuch/answer",
+        json={"ask_id": "x", "approval_token": "x", "decision": "allow"},
+    ).status_code == 404
+    assert client.post(
+        "/api/agent/runs/nosuch/answer",
+        json={"ask_id": "x", "approval_token": "x", "decision": "maybe"},
+    ).status_code == 400
+    assert client.post(
+        "/api/agent/runs/nosuch/answer",
+        json={"approval_token": "x", "decision": "allow"},
+    ).status_code == 400
+    assert client.post(
+        "/api/agent/runs/nosuch/answer",
+        json={
+            "ask_id": "x",
+            "approval_token": "x",
+            "decision": "allow",
+            "remember": "false",
+        },
+    ).status_code == 400
+
+    run, _, thread, _ = _registered_pending_run(api_mod, persistence)
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        assert client.post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": "wrong-token",
+                "decision": "allow",
+            },
+        ).status_code == 403
+        assert client.post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": "old-ask",
+                "approval_token": run.approval_token,
+                "decision": "allow",
+            },
+        ).status_code == 409
+        assert not run.ask_event.is_set()
+
+        response = client.post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": False,
+            },
+        )
+        assert response.status_code == 200
+        assert client.post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": False,
+            },
+        ).status_code == 409
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_answer_endpoint_normalizes_unrememberable_decisions(flask_app, isolated_home):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    client = flask_app.test_client()
+    for key, target in (
+        ("doom_loop", "pytest -q"),
+        ("bash", "cat ~/.ssh/id_rsa"),
+        ("task", None),
+    ):
+        run, sid, thread, _ = _registered_pending_run(
+            api_mod, persistence, key=key, target=target
+        )
+        ask_id = run.pending_ask["ask_id"]
+        try:
+            response = client.post(
+                "/api/agent/runs/testrun/answer",
+                json={
+                    "ask_id": ask_id,
+                    "approval_token": run.approval_token,
+                    "decision": "allow",
+                    "remember": True,
+                },
+            )
+            assert response.status_code == 200
+            assert run.remember is False
+            resolved = [
+                e["payload"]
+                for e in persistence.list_session_events(sid)
+                if e["type"] == "ask_resolved"
+            ]
+            assert len(resolved) == 1 and resolved[0]["remember"] is False
+        finally:
+            _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_concurrent_duplicate_answers_are_atomic(flask_app, isolated_home):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    class RacingEvent:
+        def __init__(self):
+            self._event = threading.Event()
+            self._lock = threading.Lock()
+            self._reads = 0
+            self._partner = threading.Event()
+
+        def is_set(self):
+            value = self._event.is_set()
+            with self._lock:
+                self._reads += 1
+                read_no = self._reads
+            if read_no == 1:
+                self._partner.wait(0.1)
+            elif read_no == 2:
+                self._partner.set()
+            return value
+
+        def set(self):
+            self._event.set()
+
+        def clear(self):
+            self._event.clear()
+
+        def wait(self, timeout=None):
+            return self._event.wait(timeout)
+
+    run, sid, thread, _ = _registered_pending_run(
+        api_mod, persistence, event=RacingEvent()
+    )
+    ask_id = run.pending_ask["ask_id"]
+    start = threading.Barrier(3)
+
+    def answer_once():
+        start.wait()
+        return flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": False,
+            },
+        ).status_code
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(answer_once) for _ in range(2)]
+            start.wait()
+            statuses = sorted(f.result(timeout=5) for f in futures)
+        assert statuses == [200, 409]
+        resolved = [e for e in persistence.list_session_events(sid) if e["type"] == "ask_resolved"]
+        assert len(resolved) == 1
+        assert run.ask_event.is_set()
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_answer_endpoint_is_loopback_only(flask_app, isolated_home):
+    response = flask_app.test_client().post(
+        "/api/agent/runs/nosuch/answer",
+        json={"ask_id": "x", "decision": "allow"},
+        environ_base={"REMOTE_ADDR": "192.0.2.10"},
+    )
+    assert response.status_code == 403
+    rebound = flask_app.test_client().post(
+        "/api/agent/runs/nosuch/answer",
+        json={"ask_id": "x", "approval_token": "x", "decision": "allow"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"Host": "attacker.example:5050"},
+    )
+    assert rebound.status_code == 403
+    cross_origin = flask_app.test_client().post(
+        "/api/agent/runs/nosuch/answer",
+        json={"ask_id": "x", "approval_token": "x", "decision": "allow"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"Host": "localhost:5050", "Origin": "https://attacker.example"},
+    )
+    assert cross_origin.status_code == 403
+
+
+def test_answer_timeout_boundary_honors_a_just_committed_decision(
+    flask_app, isolated_home
+):
+    import threading
+
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    class FalseAtBoundary:
+        """Report timeout after the worker has already committed the result."""
+
+        def __init__(self):
+            self.committed = threading.Event()
+
+        def set(self):
+            self.committed.set()
+
+        def wait(self, timeout=None):
+            assert self.committed.wait(timeout)
+            return False
+
+    run, _, thread, _ = _registered_pending_run(api_mod, persistence)
+    boundary = FalseAtBoundary()
+    with run.state_lock:
+        run.pending_ask["consumed_event"] = boundary
+        ask_id = run.pending_ask["ask_id"]
+    try:
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": False,
+            },
+        )
+        assert response.status_code == 200
+        assert response.get_json() == {"ok": True}
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_unacknowledged_answer_is_revoked_and_journaled_with_reason(
+    flask_app, isolated_home, monkeypatch
+):
+    import threading
+
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    release = threading.Event()
+    monkeypatch.setattr(api_mod, "ANSWER_ACK_TIMEOUT", 0.05)
+    run, sid, thread, captured = _registered_pending_run(
+        api_mod,
+        persistence,
+        before_consume=release,
+    )
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": False,
+            },
+        )
+        assert response.status_code == 504
+        release.set()
+        thread.join(timeout=5)
+        assert captured["decision"].value == "deny"
+        resolved = [
+            e["payload"]
+            for e in persistence.list_session_events(sid)
+            if e["type"] == "ask_resolved"
+        ]
+        assert len(resolved) == 1
+        assert resolved[0]["decision"] == "deny"
+        assert resolved[0]["reason"] == "answer_ack_timeout"
+    finally:
+        release.set()
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_answer_audit_failure_is_not_acknowledged_for_deny(
+    flask_app, isolated_home, monkeypatch
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    original = api_mod._persist_run_event
+
+    def fail_resolution(run, event):
+        if event.get("type") == "ask_resolved":
+            raise OSError("audit database unavailable")
+        return original(run, event)
+
+    monkeypatch.setattr(api_mod, "_persist_run_event", fail_resolution)
+    run, _, thread, captured = _registered_pending_run(api_mod, persistence)
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "deny",
+            },
+        )
+        assert response.status_code == 500
+        assert "audit database unavailable" in response.get_json()["detail"]
+        thread.join(timeout=5)
+        assert "audit database unavailable" in str(captured["error"])
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_remember_failure_denies_and_returns_500(
+    flask_app, isolated_home
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    def fail_remember():
+        raise OSError("permission database unavailable")
+
+    run, sid, thread, captured = _registered_pending_run(
+        api_mod,
+        persistence,
+        remember_action=fail_remember,
+    )
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": True,
+            },
+        )
+        assert response.status_code == 500
+        assert "permission database unavailable" in response.get_json()["detail"]
+        thread.join(timeout=5)
+        assert "permission database unavailable" in str(captured["error"])
+        resolved = [
+            e["payload"]
+            for e in persistence.list_session_events(sid)
+            if e["type"] == "ask_resolved"
+        ]
+        assert resolved == [
+            {
+                "type": "ask_resolved",
+                "run_id": "testrun",
+                "ask_id": ask_id,
+                "grant_id": captured["grant_id"],
+                "tool": "run_bash",
+                "decision": "deny",
+                "remember": False,
+                "reason": "remember_persistence_failed",
+            }
+        ]
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_audit_failure_rolls_back_a_just_remembered_approval(
+    flask_app, isolated_home, monkeypatch
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    state = {"remembered": False}
+
+    def remember():
+        state["remembered"] = True
+
+    def rollback():
+        state["remembered"] = False
+
+    original = api_mod._persist_run_event
+
+    def fail_resolution(run, event):
+        if event.get("type") == "ask_resolved":
+            raise OSError("audit write failed")
+        return original(run, event)
+
+    monkeypatch.setattr(api_mod, "_persist_run_event", fail_resolution)
+    run, _, thread, _ = _registered_pending_run(
+        api_mod,
+        persistence,
+        remember_action=remember,
+        rollback_action=rollback,
+    )
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": True,
+            },
+        )
+        assert response.status_code == 500
+        assert state["remembered"] is False
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_remember_is_never_applied_before_a_durable_start_audit(
+    flask_app, isolated_home
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    sid = None
+    state = {"remembered": False}
+
+    def remember():
+        assert sid is not None
+        stored_types = [e["type"] for e in persistence.list_session_events(sid)]
+        assert stored_types == ["ask", "ask_remember_started"]
+        state["remembered"] = True
+
+    run, sid, thread, _ = _registered_pending_run(
+        api_mod,
+        persistence,
+        remember_action=remember,
+        rollback_action=lambda: state.__setitem__("remembered", False),
+    )
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": True,
+            },
+        )
+        assert response.status_code == 200
+        assert state["remembered"] is True
+        stored = persistence.list_session_events(sid)
+        stored_types = [e["type"] for e in stored]
+        assert stored_types == ["ask", "ask_remember_started", "ask_resolved"]
+        started = stored[1]["payload"]
+        assert started["grant_id"]
+        assert started["agent"] == "build"
+        assert started["tool"] == "run_bash"
+        assert started["target"] == "pytest -q"
+        assert started["key"] == "bash"
+        assert stored[2]["payload"]["grant_id"] == started["grant_id"]
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_failed_start_audit_prevents_remember_action(
+    flask_app, isolated_home, monkeypatch
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    original = api_mod._persist_run_event
+    state = {"remembered": False}
+
+    def fail_start(run, event):
+        if event.get("type") == "ask_remember_started":
+            raise OSError("start audit unavailable")
+        return original(run, event)
+
+    monkeypatch.setattr(api_mod, "_persist_run_event", fail_start)
+    run, sid, thread, _ = _registered_pending_run(
+        api_mod,
+        persistence,
+        remember_action=lambda: state.__setitem__("remembered", True),
+    )
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": True,
+            },
+        )
+        assert response.status_code == 500
+        assert state["remembered"] is False
+        assert "ask_remember_started" not in [
+            e["type"] for e in persistence.list_session_events(sid)
+        ]
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_failed_final_audit_and_rollback_leave_a_durable_start_record(
+    flask_app, isolated_home, monkeypatch
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    original = api_mod._persist_run_event
+    state = {"remembered": False}
+
+    def remember():
+        state["remembered"] = True
+
+    def rollback():
+        raise OSError("rollback unavailable")
+
+    def fail_final(run, event):
+        if event.get("type") == "ask_resolved":
+            raise OSError("final audit unavailable")
+        return original(run, event)
+
+    monkeypatch.setattr(api_mod, "_persist_run_event", fail_final)
+    run, sid, thread, _ = _registered_pending_run(
+        api_mod,
+        persistence,
+        remember_action=remember,
+        rollback_action=rollback,
+    )
+    ask_id = run.pending_ask["ask_id"]
+    try:
+        response = flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": True,
+            },
+        )
+        assert response.status_code == 500
+        assert state["remembered"] is True
+        assert [e["type"] for e in persistence.list_session_events(sid)] == [
+            "ask",
+            "ask_remember_started",
+        ]
+    finally:
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_answer_disconnect_race_reports_actual_denial(flask_app, isolated_home):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+    from backend.permission import Decision
+
+    class DelayedWakeEvent:
+        def __init__(self):
+            self._event = threading.Event()
+            self.release = threading.Event()
+            self.set_called = threading.Event()
+
+        def is_set(self):
+            return self._event.is_set()
+
+        def set(self):
+            self._event.set()
+            self.set_called.set()
+
+        def clear(self):
+            self._event.clear()
+            self.set_called.clear()
+
+        def wait(self, timeout=None):
+            if not self._event.wait(timeout):
+                return False
+            return self.release.wait(timeout)
+
+    gate = DelayedWakeEvent()
+    run, sid, thread, captured = _registered_pending_run(
+        api_mod, persistence, event=gate
+    )
+    ask_id = run.pending_ask["ask_id"]
+
+    def answer():
+        return flask_app.test_client().post(
+            "/api/agent/runs/testrun/answer",
+            json={
+                "ask_id": ask_id,
+                "approval_token": run.approval_token,
+                "decision": "allow",
+                "remember": False,
+            },
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(answer)
+            assert gate.set_called.wait(5)
+            with run.state_lock:
+                run.cancelled = True
+                run.cancel_reason = "disconnect"
+            gate.release.set()
+            response = future.result(timeout=5)
+        thread.join(timeout=5)
+        assert response.status_code == 409
+        assert captured["decision"] == Decision.DENY
+        journal = persistence.list_session_events(sid)
+        assert [e["type"] for e in journal] == ["ask", "ask_resolved"]
+        assert journal[-1]["payload"]["decision"] == "deny"
+        assert journal[-1]["payload"]["reason"] == "disconnect"
+    finally:
+        gate.release.set()
+        _cleanup_registered_run(api_mod, run, thread)
+
+
+def test_disconnect_while_ask_pending_denies_and_persists_resolution(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+    from backend.permission import Decision
+
+    captured: dict = {}
+    monkeypatch.setattr(api_mod, "AgentRunner", _ask_fake_runner(captured))
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "run", "cwd": str(project)},
+    )
+    events = _iter_events(resp)
+    session_id = None
+    for ev in events:
+        if ev["type"] == "session":
+            session_id = ev["session_id"]
+        elif ev["type"] == "ask":
+            break
+    resp.response.close()
+
+    deadline = time.time() + 5
+    while time.time() < deadline and "ask_result" not in captured:
+        time.sleep(0.01)
+    assert captured["ask_result"].decision == Decision.DENY
+    assert api_mod._AGENT_RUNS == {}
+    resolved = [
+        e["payload"]
+        for e in persistence.list_session_events(session_id)
+        if e["type"] == "ask_resolved"
+    ]
+    assert len(resolved) == 1
+    assert resolved[0]["decision"] == "deny"
+    assert resolved[0]["reason"] == "disconnect"
+    journal = persistence.list_session_events(session_id)
+    assert [e["type"] for e in journal] == ["ask", "ask_resolved", "tool_result"]
+    assert journal[-1]["payload"]["ok"] is False
+
+
+def test_staged_change_event_is_persisted(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    class StagingRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_stream(self, user_text, history=None):
+            yield {"type": "staged_change", "change_id": "c1", "path": "src/app.py"}
+            yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", StagingRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "stage", "cwd": str(project)},
+    )
+    events = list(_iter_events(resp))
+    session_id = [e for e in events if e["type"] == "session"][0]["session_id"]
+    stored = persistence.list_session_events(session_id)
+    assert [e["type"] for e in stored] == ["staged_change"]
+
+
+def test_staged_change_is_audited_even_after_sse_disconnect(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import asyncio as aio
+    import threading
+
+    import backend.api as api_mod
+    from backend.cookbook import persistence
+
+    release = threading.Event()
+    monkeypatch.setattr(api_mod, "WORKER_JOIN_TIMEOUT", 0.05)
+
+    class LateStagingRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_stream(self, user_text, history=None):
+            yield {"type": "delta", "content": "working"}
+            await aio.get_running_loop().run_in_executor(None, release.wait)
+            yield {"type": "staged_change", "change_id": "c-late", "path": "src/late.py"}
+            yield {"type": "done", "content": "late", "messages": [], "iterations": 1}
+
+    monkeypatch.setattr(api_mod, "AgentRunner", LateStagingRunner)
+    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    project = tmp_path / "project"
+    project.mkdir()
+    resp = flask_app.test_client().post(
+        "/api/agent/chat",
+        json={"agent": "plan", "model": "mock:1b", "message": "stage", "cwd": str(project)},
+    )
+    events = _iter_events(resp)
+    session_id = run_id = None
+    try:
+        for ev in events:
+            if ev["type"] == "session":
+                session_id = ev["session_id"]
+            elif ev["type"] == "run":
+                run_id = ev["run_id"]
+            elif ev["type"] == "delta":
+                break
+        resp.response.close()
+    finally:
+        release.set()
+
+    deadline = time.time() + 5
+    while time.time() < deadline and run_id in api_mod._AGENT_RUNS:
+        time.sleep(0.01)
+    stored = persistence.list_session_events(session_id)
+    assert [e["type"] for e in stored] == ["staged_change"]

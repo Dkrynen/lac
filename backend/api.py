@@ -1,15 +1,20 @@
 import asyncio
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import platform
+import queue
 import re
+import secrets
 import shutil
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -40,6 +45,100 @@ _DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 _FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 _STATIC = str(_DIST) if (_DIST / "index.html").exists() else str(_FRONTEND)
 app = Flask(__name__, static_folder=_STATIC, static_url_path="", template_folder=_STATIC)
+
+_TRUSTED_BROWSER_HOSTNAMES = {
+    "localhost",
+    str(platform.node() or "").strip().lower().rstrip("."),
+}
+_TRUSTED_BROWSER_HOSTNAMES.discard("")
+
+
+def _trusted_authority(value: str) -> tuple[str, int | None] | None:
+    """Return a normalized trusted Host authority, rejecting DNS-rebind names."""
+
+    raw = str(value or "").strip()
+    if not raw or any(char in raw for char in "/\\?#@"):
+        return None
+    try:
+        parsed = urlsplit(f"//{raw}")
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        host = str(parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    if host in _TRUSTED_BROWSER_HOSTNAMES:
+        return host, port
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return host, port
+
+
+def _trusted_origin(value: str) -> tuple[str, str, int | None] | None:
+    raw = str(value or "").strip()
+    try:
+        parsed = urlsplit(raw)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        authority = _trusted_authority(parsed.netloc)
+    except ValueError:
+        return None
+    if authority is None:
+        return None
+    return parsed.scheme, authority[0], authority[1]
+
+
+def _effective_port(scheme: str, port: int | None) -> int | None:
+    if port is not None:
+        return port
+    return 443 if scheme == "https" else 80 if scheme == "http" else None
+
+
+@app.before_request
+def _enforce_trusted_browser_request():
+    """Block DNS rebinding and cross-origin browser access to the local API."""
+
+    authority = _trusted_authority(request.host)
+    if authority is None:
+        return jsonify({"error": "Untrusted request host"}), 403
+    origin_raw = request.headers.get("Origin")
+    if not origin_raw:
+        return None
+    origin = _trusted_origin(origin_raw)
+    if origin is None:
+        return jsonify({"error": "Untrusted request origin"}), 403
+    origin_scheme, origin_host, origin_port = origin
+    if (
+        origin_scheme != request.scheme
+        or origin_host != authority[0]
+        or _effective_port(origin_scheme, origin_port)
+        != _effective_port(request.scheme, authority[1])
+    ):
+        return jsonify({"error": "Cross-origin request rejected"}), 403
+    return None
+
+
+def _configure_trusted_server_host(host: str) -> None:
+    """Allow an explicit named bind host while retaining DNS-rebinding checks."""
+
+    normalized = str(host or "").strip().lower().rstrip(".")
+    if normalized and normalized not in {"0.0.0.0", "::", "[::]"}:
+        try:
+            ipaddress.ip_address(normalized.strip("[]"))
+        except ValueError:
+            _TRUSTED_BROWSER_HOSTNAMES.add(normalized)
 
 PULL_PROGRESS = {}
 PULL_PROGRESS_LOCK = threading.Lock()
@@ -79,6 +178,290 @@ def _pull_progress_snapshot(model_name: str | None = None) -> dict:
         "active": sum(1 for p in pulls if p.get("state") not in _PULL_TERMINAL_STATES),
         "pulls": pulls,
     }
+
+
+ASK_TIMEOUT = 300.0
+ANSWER_ACK_TIMEOUT = 5.0
+HEARTBEAT_INTERVAL = 15.0
+WORKER_JOIN_TIMEOUT = 2.0
+AGENT_EVENT_QUEUE_MAX = 256
+QUEUE_PUT_TIMEOUT = 0.1
+MAX_AGENT_RUNS = 32
+_RUN_SENTINEL = object()
+_ASK_COMMIT_FAILED = object()
+
+
+@dataclass(frozen=True)
+class _PersistedAgentEvent:
+    """Queue wrapper for an event already committed to the session timeline."""
+
+    payload: dict
+
+
+@dataclass
+class _AgentRun:
+    """Registry entry bridging a streaming agent run and the answer endpoint."""
+
+    ask_event: threading.Event
+    queue: "queue.Queue"
+    session_id: str
+    created_at: float
+    answer: object | None = None       # Decision | None; None at timeout/disconnect => DENY
+    remember: bool = False
+    pending_ask: dict | None = None
+    cancelled: bool = False
+    thread: threading.Thread | None = None
+    approval_token: str = field(default_factory=lambda: secrets.token_urlsafe(32), repr=False)
+    cancel_reason: str | None = None
+    state_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+_AGENT_RUNS: dict[str, _AgentRun] = {}
+_AGENT_RUNS_LOCK = threading.Lock()
+
+
+def _register_agent_run(run_id: str, run: _AgentRun) -> None:
+    now = time.time()
+    with _AGENT_RUNS_LOCK:
+        stale = [
+            rid
+            for rid, r in _AGENT_RUNS.items()
+            if now - r.created_at > 3600 and (r.thread is None or not r.thread.is_alive())
+        ]
+        for rid in stale:
+            _AGENT_RUNS.pop(rid, None)
+        if len(_AGENT_RUNS) >= MAX_AGENT_RUNS:
+            raise RuntimeError("Too many active agent runs")
+        _AGENT_RUNS[run_id] = run
+
+
+def _persist_run_event(run: _AgentRun, event: dict) -> None:
+    from .cookbook.persistence import add_session_event
+
+    add_session_event(run.session_id, str(event["type"]), event)
+
+
+def _put_run_item(run: _AgentRun, item: object) -> bool:
+    """Bound each run's event buffer and stop waiting once the client is gone."""
+
+    while not run.cancelled:
+        try:
+            run.queue.put(item, timeout=QUEUE_PUT_TIMEOUT)
+            return True
+        except queue.Full:
+            continue
+    return False
+
+
+def _make_web_ask(run_id: str, run: _AgentRun):
+    """Bridge an async runner ask to SSE output and a separate answer POST."""
+
+    async def on_ask(agent_name: str, tool_name: str, target, key: str):
+        from .agent.runner import AskResult
+        from .permission import Decision
+
+        ask_id = uuid.uuid4().hex
+        ask_event = {
+            "type": "ask",
+            "run_id": run_id,
+            "ask_id": ask_id,
+            "tool": tool_name,
+            "target": target,
+            "key": key,
+            "doom_loop": key == "doom_loop",
+        }
+        with run.state_lock:
+            if run.cancelled:
+                return AskResult(decision=Decision.DENY)
+            if run.pending_ask is not None:
+                raise RuntimeError("agent run already has a pending ask")
+            # Persist while holding the state lock, before publishing
+            # pending_ask. Disconnect can therefore never journal a terminal
+            # resolution ahead of the ask it resolves.
+            _persist_run_event(run, ask_event)
+            run.answer = None
+            run.remember = False
+            run.ask_event.clear()
+            run.cancel_reason = None
+            run.pending_ask = {
+                "ask_id": ask_id,
+                "tool": tool_name,
+                "target": target,
+                "key": key,
+                "consumed_event": threading.Event(),
+                "result": None,
+            }
+        _put_run_item(run, _PersistedAgentEvent(dict(ask_event)))
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, run.ask_event.wait, ASK_TIMEOUT)
+
+        with run.state_lock:
+            pending = run.pending_ask
+            matches = pending is not None and pending.get("ask_id") == ask_id
+            if not matches:
+                return AskResult(decision=Decision.DENY)
+            if run.cancelled:
+                decision = Decision.DENY
+                remember = False
+            elif run.ask_event.is_set():
+                decision = run.answer if isinstance(run.answer, Decision) else Decision.DENY
+                remember = bool(
+                    run.remember and decision is Decision.ALLOW and key != "doom_loop"
+                )
+            else:
+                # Close the ask before returning to AgentRunner so an answer
+                # arriving just after the timeout cannot become executable.
+                decision = Decision.DENY
+                remember = False
+                pending["timed_out"] = True
+                run.ask_event.set()
+            pending["claimed"] = True
+
+        def commit_answer(remember_action, rollback_action, grant_id):
+            resolution = None
+            failure = None
+            failure_reason = None
+            remembered = False
+            persisted_events = []
+            commit_exception = None
+            with run.state_lock:
+                pending = run.pending_ask
+                matches = pending is not None and pending.get("ask_id") == ask_id
+                if not matches:
+                    return Decision.DENY
+
+                if run.cancelled:
+                    actual = Decision.DENY
+                    actual_remember = False
+                    resolution = {
+                        "type": "ask_resolved",
+                        "run_id": run_id,
+                        "ask_id": ask_id,
+                        "tool": tool_name,
+                        "decision": "deny",
+                        "remember": False,
+                        "reason": run.cancel_reason or "cancelled",
+                    }
+                elif pending.get("timed_out"):
+                    actual = Decision.DENY
+                    actual_remember = False
+                    resolution = {
+                        "type": "ask_timeout",
+                        "run_id": run_id,
+                        "ask_id": ask_id,
+                        "tool": tool_name,
+                    }
+                else:
+                    actual = run.answer if isinstance(run.answer, Decision) else Decision.DENY
+                    if run.cancel_reason == "answer_ack_timeout":
+                        actual = Decision.DENY
+                    requested_remember = bool(
+                        run.remember and actual is Decision.ALLOW and key != "doom_loop"
+                    )
+                    actual_remember = requested_remember
+                    if requested_remember:
+                        if remember_action is None or not grant_id:
+                            failure = RuntimeError(
+                                "remembered approval has no persistence action or grant id"
+                            )
+                            failure_reason = "remember_persistence_unavailable"
+                            actual = Decision.DENY
+                            actual_remember = False
+                        else:
+                            remember_started = {
+                                "type": "ask_remember_started",
+                                "run_id": run_id,
+                                "ask_id": ask_id,
+                                "grant_id": grant_id,
+                                "agent": agent_name,
+                                "tool": tool_name,
+                                "target": target,
+                                "key": key,
+                                "decision": "allow",
+                                "remember": True,
+                            }
+                            try:
+                                # Load-bearing ordering invariant: an active
+                                # remembered permission must always have a
+                                # durable audit record that predates it.
+                                _persist_run_event(run, remember_started)
+                                persisted_events.append(remember_started)
+                            except Exception as e:
+                                failure = e
+                                failure_reason = "remember_audit_start_failed"
+                                actual = Decision.DENY
+                                actual_remember = False
+                            if failure is None:
+                                try:
+                                    committed_grant_id = remember_action()
+                                    if committed_grant_id != grant_id:
+                                        raise RuntimeError(
+                                            "permission store committed a different grant id"
+                                        )
+                                    remembered = True
+                                except Exception as e:
+                                    failure = e
+                                    failure_reason = "remember_persistence_failed"
+                                    if rollback_action is not None:
+                                        try:
+                                            rollback_action()
+                                        except Exception as rollback_error:
+                                            failure = RuntimeError(
+                                                f"remember failed and rollback failed: {e}; {rollback_error}"
+                                            )
+                                    actual = Decision.DENY
+                                    actual_remember = False
+                    resolution = {
+                        "type": "ask_resolved",
+                        "run_id": run_id,
+                        "ask_id": ask_id,
+                        "tool": tool_name,
+                        "decision": actual.value,
+                        "remember": actual_remember,
+                    }
+                    if requested_remember and grant_id:
+                        resolution["grant_id"] = grant_id
+                    if run.cancel_reason == "answer_ack_timeout":
+                        resolution["reason"] = "answer_ack_timeout"
+                    elif failure is not None:
+                        resolution["reason"] = failure_reason or "remember_persistence_failed"
+
+                try:
+                    _persist_run_event(run, resolution)
+                except Exception as e:
+                    if remembered and rollback_action is not None:
+                        try:
+                            rollback_action()
+                        except Exception as rollback_error:
+                            e = RuntimeError(
+                                f"approval audit failed and rollback failed: {e}; {rollback_error}"
+                            )
+                    commit_exception = e
+                else:
+                    persisted_events.append(resolution)
+
+                if commit_exception is not None or failure is not None:
+                    pending["result"] = _ASK_COMMIT_FAILED
+                    pending["error"] = str(commit_exception or failure)
+                else:
+                    pending["result"] = actual
+                pending["consumed_event"].set()
+                run.pending_ask = None
+                run.answer = None
+                run.remember = False
+
+            for persisted_event in persisted_events:
+                _put_run_item(run, _PersistedAgentEvent(dict(persisted_event)))
+            if commit_exception is not None:
+                raise commit_exception
+            if failure is not None:
+                raise RuntimeError(f"failed to persist remembered approval: {failure}")
+            return actual
+
+        return AskResult(decision=decision, remember=remember, _commit=commit_answer)
+
+    return on_ask
 
 MODEL_WEIGHT_EXTS = {".gguf", ".safetensors", ".bin", ".onnx", ".pt", ".pth"}
 HF_IMPORT_TMP_ENV = "LAC_HF_IMPORT_TMP"
@@ -923,7 +1306,7 @@ def ollama_chat():
     return Response(
         stream_with_context(generate()),
         mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
     )
 
 
@@ -937,7 +1320,17 @@ _WEB_AGENT_PROMPTS = {
     "explore": "You are the LAC Workbench explore agent. You have read-only code and web search access. Gather context, summarize findings, and cite the files or sources you used.",
 }
 _SESSION_MESSAGE_ROLES = {"system", "user", "assistant"}
-_PERSISTED_AGENT_EVENT_TYPES = {"tool_calls", "tool_call", "tool_result", "error"}
+_PERSISTED_AGENT_EVENT_TYPES = {
+    "tool_calls",
+    "tool_call",
+    "tool_result",
+    "error",
+    "ask",
+    "ask_remember_started",
+    "ask_resolved",
+    "ask_timeout",
+    "staged_change",
+}
 
 
 def _web_agent(agent_name: str, model: str) -> Agent:
@@ -1189,14 +1582,21 @@ def agent_chat():
     session_id = str(session_id_raw).strip() if session_id_raw else ""
     session_name = str(data.get("name") or message.replace("\n", " ")[:64]).strip()
 
-    from .cookbook.persistence import create_session, get_session, save_session, add_session_event
+    from .cookbook.persistence import (
+        add_session_event,
+        create_session,
+        delete_session,
+        get_session,
+        save_session,
+    )
 
     saved_session = get_session(session_id) if session_id else None
     if session_id and saved_session is None:
         return jsonify({"error": "Session not found"}), 404
     if saved_session is not None and not workspace:
         workspace = str(saved_session.get("workspace") or "")
-    if not session_id:
+    created_session = not session_id
+    if created_session:
         session_id = create_session(name=session_name, model=model, workspace=workspace)
 
     history = _clean_session_messages(data.get("messages"))
@@ -1204,20 +1604,85 @@ def agent_chat():
         history = _clean_session_messages(saved_session.get("messages", []))
     runner_history = [{"role": m["role"], "content": m["content"]} for m in history]
 
-    agent = _web_agent(agent_name, model)
-
     try:
         max_iterations = int(data.get("max_iterations") or 6)
     except (TypeError, ValueError):
         max_iterations = 6
     max_iterations = max(1, min(max_iterations, 12))
 
-    provider = default_provider()
-    chat_options = _agent_chat_options(provider)
+    try:
+        agent = _web_agent(agent_name, model)
+        provider = default_provider()
+        chat_options = _agent_chat_options(provider)
+        run_id = uuid.uuid4().hex
+        run = _AgentRun(
+            ask_event=threading.Event(),
+            queue=queue.Queue(maxsize=AGENT_EVENT_QUEUE_MAX),
+            session_id=session_id,
+            created_at=time.time(),
+        )
+        runner = AgentRunner(
+            provider,
+            agent,
+            TOOL_HANDLERS,
+            TOOL_SCHEMAS,
+            ctx={"cwd": str(cwd)},
+            max_iterations=max_iterations,
+            chat_options=chat_options,
+            on_ask=_make_web_ask(run_id, run),
+        )
+    except Exception:
+        if created_session:
+            delete_session(session_id)
+        raise
+    try:
+        _register_agent_run(run_id, run)
+    except RuntimeError as e:
+        if created_session:
+            delete_session(session_id)
+        return jsonify({"error": str(e)}), 503
+
+    def pump():
+        async def _drive():
+            stream = runner.run_stream(message, runner_history)
+            try:
+                async for ev in stream:
+                    ev_type = ev.get("type")
+                    if ev_type in _PERSISTED_AGENT_EVENT_TYPES:
+                        # Audit at the source, before the SSE socket can drop.
+                        _persist_run_event(run, ev)
+                        _put_run_item(run, _PersistedAgentEvent(dict(ev)))
+                    elif not run.cancelled:
+                        _put_run_item(run, ev)
+                    if run.cancelled:
+                        break
+            finally:
+                await stream.aclose()
+
+        try:
+            asyncio.run(_drive())
+        except Exception as e:
+            err = {"type": "error", "message": str(e)}
+            try:
+                _persist_run_event(run, err)
+                _put_run_item(run, _PersistedAgentEvent(err))
+            except Exception:
+                _put_run_item(run, err)
+        finally:
+            _put_run_item(run, _RUN_SENTINEL)
+            if run.cancelled:
+                with _AGENT_RUNS_LOCK:
+                    if _AGENT_RUNS.get(run_id) is run:
+                        _AGENT_RUNS.pop(run_id, None)
+
+    worker = threading.Thread(target=pump, daemon=True)
+    run.thread = worker
 
     def generate():
         assistant_content = ""
         saved_done = False
+        disconnected = False
+        worker_started = False
         started_at = time.time()
         persisted_messages = [
             {
@@ -1232,27 +1697,31 @@ def agent_chat():
             "timestamp": started_at + (len(persisted_messages) * 0.000001),
         })
 
-        yield _agent_sse({"type": "session", "session_id": session_id})
-        yield _agent_sse({"type": "status", "message": f"{agent_name.title()} agent started"})
-
-        runner = AgentRunner(
-            provider,
-            agent,
-            TOOL_HANDLERS,
-            TOOL_SCHEMAS,
-            ctx={"cwd": str(cwd)},
-            max_iterations=max_iterations,
-            chat_options=chat_options,
-        )
-        loop = asyncio.new_event_loop()
-        stream = runner.run_stream(message, runner_history)
-
         try:
+            yield _agent_sse({"type": "session", "session_id": session_id})
+            yield _agent_sse(
+                {
+                    "type": "run",
+                    "run_id": run_id,
+                    "approval_token": run.approval_token,
+                }
+            )
+            yield _agent_sse({"type": "status", "message": f"{agent_name.title()} agent started"})
+            worker.start()
+            worker_started = True
+
             while True:
                 try:
-                    ev = loop.run_until_complete(stream.__anext__())
-                except StopAsyncIteration:
+                    queued = run.queue.get(timeout=HEARTBEAT_INTERVAL)
+                except queue.Empty:
+                    # keeps disconnect detectable while the run is paused on an ask
+                    yield ": ping\n\n"
+                    continue
+                if queued is _RUN_SENTINEL:
                     break
+
+                already_persisted = isinstance(queued, _PersistedAgentEvent)
+                ev = queued.payload if already_persisted else queued
 
                 ev_type = ev.get("type")
                 if ev_type == "delta":
@@ -1273,15 +1742,29 @@ def agent_chat():
                         workspace=workspace,
                     )
                     saved_done = True
-                elif ev_type in _PERSISTED_AGENT_EVENT_TYPES:
+                elif ev_type in _PERSISTED_AGENT_EVENT_TYPES and not already_persisted:
                     add_session_event(session_id, str(ev_type), ev)
 
                 yield _agent_sse(ev)
+        except GeneratorExit:
+            disconnected = True
+            raise
         except Exception as e:
             err = {"type": "error", "message": str(e)}
             add_session_event(session_id, "error", err)
             yield _agent_sse(err)
         finally:
+            # cancel-by-disconnect AND normal completion both land here
+            with run.state_lock:
+                run.cancelled = True
+                run.cancel_reason = "disconnect"
+                run.ask_event.set()
+            if worker_started:
+                worker.join(timeout=WORKER_JOIN_TIMEOUT)
+            if not worker_started or not worker.is_alive():
+                with _AGENT_RUNS_LOCK:
+                    if _AGENT_RUNS.get(run_id) is run:
+                        _AGENT_RUNS.pop(run_id, None)
             if not saved_done:
                 if assistant_content:
                     persisted_messages.append({
@@ -1296,15 +1779,125 @@ def agent_chat():
                     name=session_name,
                     workspace=workspace,
                 )
-            loop.run_until_complete(stream.aclose())
-            loop.close()
-            yield "data: [DONE]\n\n"
+            if not disconnected:
+                # yielding after GeneratorExit is a RuntimeError - only emit on normal end
+                yield "data: [DONE]\n\n"
 
     return Response(
         stream_with_context(generate()),
         mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
     )
+
+
+def _is_trusted_local_approval_request() -> bool:
+    try:
+        remote = ipaddress.ip_address(request.remote_addr or "")
+    except ValueError:
+        return False
+    if not remote.is_loopback:
+        return False
+    def is_local_host(host: str) -> bool:
+        if host.lower() == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    host = urlsplit(f"//{request.host}").hostname or ""
+    if not is_local_host(host):
+        return False
+    origin = request.headers.get("Origin")
+    if origin:
+        origin_host = urlsplit(origin).hostname or ""
+        if not is_local_host(origin_host):
+            return False
+    return True
+
+
+@app.route("/api/agent/runs/<run_id>/answer", methods=["POST"])
+def agent_run_answer(run_id):
+    from .permission import Decision
+    from .permission.engine import is_dangerous
+
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Agent approvals are accepted only from this machine"}), 403
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    decision_raw = str(data.get("decision") or "").strip().lower()
+    if decision_raw not in ("allow", "deny"):
+        return jsonify({"error": "decision must be 'allow' or 'deny'"}), 400
+    ask_id = str(data.get("ask_id") or "").strip()
+    if not ask_id:
+        return jsonify({"error": "ask_id required"}), 400
+    remember_raw = data.get("remember", False)
+    if not isinstance(remember_raw, bool):
+        return jsonify({"error": "remember must be a boolean"}), 400
+    approval_token = data.get("approval_token")
+    if not isinstance(approval_token, str) or not approval_token:
+        return jsonify({"error": "approval_token required"}), 400
+
+    with _AGENT_RUNS_LOCK:
+        run = _AGENT_RUNS.get(run_id)
+    if run is None:
+        return jsonify({"error": "Run not found"}), 404
+    if not secrets.compare_digest(approval_token, run.approval_token):
+        return jsonify({"error": "Invalid approval capability"}), 403
+
+    with run.state_lock:
+        pending = run.pending_ask
+        if run.cancelled:
+            return jsonify({"error": "Run is no longer active"}), 409
+        if pending is None or run.ask_event.is_set():
+            return jsonify({"error": "No pending ask"}), 409
+        if pending.get("ask_id") != ask_id:
+            return jsonify({"error": "Ask is no longer pending"}), 409
+
+        decision = Decision.ALLOW if decision_raw == "allow" else Decision.DENY
+        remember = bool(
+            remember_raw
+            and decision is Decision.ALLOW
+            and pending.get("key") != "doom_loop"
+            and pending.get("target") is not None
+            and not is_dangerous(str(pending.get("tool") or ""), pending.get("target"))
+        )
+        run.answer = decision
+        run.remember = remember
+        run.ask_event.set()
+        pending_state = pending
+        consumed_event = pending["consumed_event"]
+
+    consumed = consumed_event.wait(ANSWER_ACK_TIMEOUT)
+    if not consumed:
+        # The worker did not acknowledge the answer. Revoke any unconsumed
+        # ALLOW so a late wake-up cannot execute after this request fails.
+        with run.state_lock:
+            actual = pending_state.get("result")
+            if (
+                actual is None
+                and run.pending_ask is pending_state
+            ):
+                run.answer = Decision.DENY
+                run.remember = False
+                run.cancel_reason = "answer_ack_timeout"
+                run.ask_event.set()
+        if actual is None:
+            return jsonify({"error": "Agent did not acknowledge the answer"}), 504
+
+    with run.state_lock:
+        if pending_state.get("ask_id") != ask_id:
+            return jsonify({"error": "Ask resolution mismatch"}), 409
+        actual = pending_state.get("result")
+        error = pending_state.get("error")
+    if actual is _ASK_COMMIT_FAILED:
+        return jsonify({"error": "Failed to commit approval", "detail": error}), 500
+    if actual is not decision:
+        actual_value = actual.value if isinstance(actual, Decision) else "deny"
+        return jsonify({"error": "Run ended before approval was consumed", "decision": actual_value}), 409
+    return jsonify({"ok": True})
 
 
 @app.route("/api/ollama/check-install")
@@ -2793,11 +3386,14 @@ def method_not_allowed_json(e):
 
 
 def run_server(host="127.0.0.1", port=5050, debug=False):
+    _configure_trusted_server_host(host)
     print(f"  LAC running at http://{host}:{port}")
     print(f"  Open your browser to that address.\n")
     # Pre-warm the library cache in the background so Browse loads instantly.
     threading.Thread(target=_fetch_library, daemon=True).start()
-    app.run(host=host, port=port, debug=debug)
+    # threaded=True is a LOAD-BEARING invariant: /api/agent/runs/<id>/answer must be
+    # servable while /api/agent/chat streams (the ask bridge deadlocks otherwise).
+    app.run(host=host, port=port, debug=debug, threaded=True)
 
 
 # --- plugin seam -----------------------------------------------------------
