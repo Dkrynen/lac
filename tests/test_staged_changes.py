@@ -261,3 +261,32 @@ def test_revert_rejects_non_applied(isolated_home, tmp_path):
     row = persistence.stage_change(sid, "run1", str(tmp_path), "a.txt", "x")
     assert persistence.revert_applied_change(row["id"])["status"] == "not_applied"
     assert persistence.revert_applied_change("nope")["status"] == "not_found"
+
+
+def test_apply_error_when_target_is_directory(isolated_home, tmp_path):
+    from backend.cookbook import persistence
+
+    sid = _mk_session()
+    row = persistence.stage_change(sid, "run1", str(tmp_path), "adir", "content")
+    (tmp_path / "adir").mkdir()
+    result = persistence.apply_staged_change(row["id"])
+    assert result["status"] == "error"
+    assert persistence.get_staged_change(row["id"])["status"] == "pending"
+    assert list(tmp_path.glob(".*.lac-tmp")) == []
+
+
+def test_revert_rejail_blocks_tampered_path(isolated_home, tmp_path):
+    from backend.cookbook import persistence
+
+    sid = _mk_session()
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"original")
+    row = persistence.stage_change(sid, "run1", str(tmp_path), "a.txt", "changed")
+    persistence.apply_staged_change(row["id"])
+    conn = persistence._ensure_db()
+    conn.execute("UPDATE staged_changes SET path = '../evil.txt' WHERE id = ?", (row["id"],))
+    conn.commit()
+    conn.close()
+    result = persistence.revert_applied_change(row["id"])
+    assert result["status"] == "error"
+    assert not (tmp_path.parent / "evil.txt").exists()
