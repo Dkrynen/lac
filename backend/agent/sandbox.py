@@ -35,6 +35,7 @@ from backend.config import (
 from backend.cookbook import persistence, proc
 from backend.cookbook.config import CONFIG_DIR
 from backend.project_paths import validate_relative_project_path
+from backend.project_security import is_sensitive_project_path
 
 DOCKER_PROBE_TIMEOUT_SECONDS = 5.0
 DOCKER_CONTROL_TIMEOUT_SECONDS = 15.0
@@ -943,6 +944,12 @@ def _is_reparse(st: os.stat_result) -> bool:
 
 
 def _is_sensitive_rel(rel: str) -> bool:
+    # Registered-project operations and disposable snapshots share the same
+    # non-configurable secret boundary.  The checks below intentionally remain
+    # broader: Docker snapshots also omit dependencies, build output and model
+    # weights for performance and archive-size safety.
+    if is_sensitive_project_path(rel):
+        return True
     try:
         parts = [part.casefold() for part in PurePosixPath(rel).parts]
     except Exception:
@@ -2199,7 +2206,6 @@ class DockerTaskBroker:
                             "snapshot_too_many_entries",
                             "The project snapshot has too many entries",
                         )
-                    name_folded = entry.name.casefold()
                     src = Path(entry.path)
                     try:
                         # DirEntry.stat can report st_dev=0 for NTFS directories;
@@ -2229,7 +2235,7 @@ class DockerTaskBroker:
                             "A project snapshot path exceeds the sandbox limit",
                         )
                     if stat.S_ISDIR(st.st_mode):
-                        if name_folded in _EXCLUDED_DIR_NAMES:
+                        if _is_sensitive_rel(rel):
                             continue
                         counters["dirs"] += 1
                         if counters["dirs"] > MAX_SNAPSHOT_DIRECTORIES:

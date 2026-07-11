@@ -1,63 +1,100 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import urllib.parse
 import urllib.request
-from pathlib import Path
+import uuid
 from typing import Any, Callable
 
 from backend.cookbook import proc
+from backend.project_security import (
+    SensitiveProjectPathError,
+    list_project_directory,
+    read_project_text,
+    resolve_project_path,
+)
 from backend.version import __version__
 
 ToolHandler = Callable[[dict, dict], str]
 
 
+def _project_tool_error(exc: SensitiveProjectPathError) -> str:
+    if exc.code in {"invalid_project_path", "unsafe_project_path"}:
+        return "error: path outside workspace or unsafe project path"
+    return f"error: {exc.message}"
+
+
 def _read_file(args: dict, ctx: dict) -> str:
-    path = Path(args.get("path", ""))
-    base = Path(ctx.get("cwd", ".")).resolve()
-    target = (base / path).resolve() if not path.is_absolute() else path.resolve()
     try:
-        rel = target.relative_to(base)
-    except ValueError:
-        return f"error: path outside workspace: {target}"
-    if not target.exists() or not target.is_file():
-        return f"error: not found: {rel}"
-    try:
-        return target.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        return f"error reading: {e}"
+        _relative, content = read_project_text(
+            ctx.get("cwd", "."), args.get("path", "")
+        )
+        return content
+    except SensitiveProjectPathError as exc:
+        return _project_tool_error(exc)
 
 
 def _write_file(args: dict, ctx: dict) -> str:
-    path = Path(args.get("path", ""))
     content = args.get("content", "")
-    base = Path(ctx.get("cwd", ".")).resolve()
-    target = (base / path).resolve() if not path.is_absolute() else path.resolve()
+    if not isinstance(content, str):
+        return "error: content must be text"
     try:
-        rel = target.relative_to(base)
-    except ValueError:
-        return f"error: path outside workspace: {target}"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+        target, rel = resolve_project_path(
+            ctx.get("cwd", "."), args.get("path", "")
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target, rel = resolve_project_path(ctx.get("cwd", "."), rel)
+        if target.exists():
+            target_st = target.lstat()
+            if (
+                not stat.S_ISREG(target_st.st_mode)
+                or int(getattr(target_st, "st_nlink", 1) or 1) > 1
+            ):
+                return "error: project file target is unsafe"
+        payload = content.encode("utf-8")
+        tmp = target.parent / f".{target.name}.{uuid.uuid4().hex}.lac-tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= int(getattr(os, "O_BINARY", 0))
+        fd: int | None = None
+        try:
+            fd = os.open(tmp, flags, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                fd = None
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            revalidated, revalidated_rel = resolve_project_path(
+                ctx.get("cwd", "."), rel
+            )
+            if revalidated != target or revalidated_rel != rel:
+                return "error: project file target changed before write"
+            os.replace(tmp, target)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            tmp.unlink(missing_ok=True)
+    except SensitiveProjectPathError as exc:
+        return _project_tool_error(exc)
+    except OSError:
+        return "error: project file could not be written"
     return f"wrote {len(content)} bytes to {rel}"
 
 
 def _list_files(args: dict, ctx: dict) -> str:
-    path = Path(args.get("path", "."))
-    base = Path(ctx.get("cwd", ".")).resolve()
-    target = (base / path).resolve() if not path.is_absolute() else path.resolve()
     try:
-        rel = target.relative_to(base)
-    except ValueError:
-        return f"error: path outside workspace: {target}"
-    if not target.exists():
-        return f"error: not found: {rel}"
-    entries = []
-    for p in sorted(target.iterdir()):
-        kind = "d" if p.is_dir() else "f"
-        size = p.stat().st_size if p.is_file() else 0
-        entries.append(f"{kind} {size:>10} {p.name}")
+        _relative, safe_entries, truncated = list_project_directory(
+            ctx.get("cwd", "."), args.get("path", ".")
+        )
+    except SensitiveProjectPathError as exc:
+        return _project_tool_error(exc)
+    entries = [
+        f"{'d' if entry.is_dir else 'f'} {entry.size:>10} {entry.name}"
+        for entry in safe_entries
+    ]
+    if truncated:
+        entries.append("... (listing truncated)")
     return "\n".join(entries) if entries else "(empty)"
 
 

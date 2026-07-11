@@ -236,14 +236,27 @@ export const api = {
     `/api/workspaces/${encodeURIComponent(workspace)}/switch`,
     {}
   ),
-  sessions: (workspace?: string, limit?: number) => {
-    const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-    const sep = q ? "&" : "?";
-    const capped = limit ? `${sep}limit=${encodeURIComponent(String(limit))}` : "";
-    return getJSON<import("./types").SessionSummary[]>(`/api/sessions${q}${capped}`);
+  projects: (workspace: string) =>
+    getJSON<import("./types").ProjectInfo[]>(
+      `/api/workspaces/${encodeURIComponent(workspace)}/projects`
+    ),
+  registerProject: (workspace: string, body: import("./types").ProjectRegistrationInput) =>
+    postJSON<import("./types").ProjectInfo>(
+      `/api/workspaces/${encodeURIComponent(workspace)}/projects`,
+      body
+    ),
+  project: (projectId: string) =>
+    getJSON<import("./types").ProjectInfo>(`/api/projects/${encodeURIComponent(projectId)}`),
+  sessions: (params: { workspace?: string; projectId?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.workspace) query.set("workspace", params.workspace);
+    if (params.projectId) query.set("project_id", params.projectId);
+    if (params.limit) query.set("limit", String(params.limit));
+    const suffix = query.toString();
+    return getJSON<import("./types").SessionSummary[]>(`/api/sessions${suffix ? `?${suffix}` : ""}`);
   },
   session: (id: string) => getJSON<import("./types").SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`),
-  createSession: (body: { name?: string; model?: string; system_prompt?: string; workspace?: string }) =>
+  createSession: (body: { name?: string; model?: string; system_prompt?: string; workspace?: string; project_id?: string }) =>
     postJSON<{ id: string }>("/api/sessions", body),
   saveSession: (id: string, body: { name?: string; model?: string; messages?: import("./types").SessionMessage[]; workspace?: string }) =>
     putJSON<{ success: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, body),
@@ -275,9 +288,9 @@ export const api = {
   agentChat(payload: import("./types").AgentChatPayload, signal?: AbortSignal) {
     return sse("/api/agent/chat", payload, signal);
   },
-  agentSandbox: async (cwd: string) =>
+  agentSandbox: async (projectId: string) =>
     decodeAgentSandboxStatus(
-      await getJSON<unknown>(`/api/agent/sandbox?cwd=${encodeURIComponent(cwd)}`)
+      await getJSON<unknown>(`/api/agent/sandbox?project_id=${encodeURIComponent(projectId)}`)
     ),
   answerApproval: (
     runId: string,

@@ -2,10 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Bot,
-  Code2,
   Compass,
   FileText,
-  FolderOpen,
   Hammer,
   MessageSquare,
   Send,
@@ -18,14 +16,25 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page";
+import { ContextPicker } from "@/components/workbench/context-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Markdown } from "@/components/markdown";
 import { useAsync } from "@/lib/hooks";
 import { ApiError, api } from "@/lib/api";
+import {
+  buildAgentChatPayload,
+  isCurrentProjectRegistration,
+  isCurrentWorkbenchContext,
+  projectFilterForSelection,
+  projectSelectionAfterLoad,
+  selectedProjectFor,
+  shouldRefreshProjectsAfterRegistration,
+  workbenchContextKey,
+  LEGACY_PROJECT_SELECTION,
+} from "@/lib/agent-context";
 import {
   approvalFailureMessage,
   createApprovalAnswer,
@@ -44,7 +53,7 @@ import {
   STAGED_SNAPSHOT_LABEL,
   approvalLockKey,
   approvalDecisionIntent,
-  buildNeedsProjectRoot,
+  agentModeNeedsProject,
   isApprovalResponseRelevant,
   isCurrentGeneration,
   isCurrentSessionAction,
@@ -63,6 +72,8 @@ import type {
 import type {
   PsResponse,
   AgentSandboxStatus,
+  ProjectInfo,
+  ProjectRegistrationInput,
   SessionDetail,
   SessionEvent,
   SessionMessage,
@@ -100,6 +111,7 @@ interface WorkbenchEvent {
 }
 
 interface SandboxCheckState {
+  projectId: string;
   root: string;
   loading: boolean;
   status: AgentSandboxStatus | null;
@@ -120,8 +132,59 @@ const MODES: { id: Mode; label: string; icon: typeof MessageSquare }[] = [
   { id: "build", label: "Build", icon: Hammer },
 ];
 
-const PROJECT_ROOT_KEY = "lac.workbench.projectRoot";
 const WORKBENCH_SESSION_LIMIT = 80;
+
+interface WorkspaceProjectsState {
+  workspace: string;
+  data: ProjectInfo[] | null;
+  error: string | null;
+  loading: boolean;
+}
+
+function useWorkspaceProjects(workspace: string) {
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const [state, setState] = useState<WorkspaceProjectsState>({
+    workspace: "",
+    data: null,
+    error: null,
+    loading: true,
+  });
+
+  useEffect(() => {
+    let active = true;
+    setState((current) => ({
+      workspace,
+      data: current.workspace === workspace ? current.data : null,
+      error: null,
+      loading: true,
+    }));
+    api.projects(workspace)
+      .then((data) => {
+        if (active) setState({ workspace, data, error: null, loading: false });
+      })
+      .catch((error) => {
+        if (active) {
+          setState({
+            workspace,
+            data: null,
+            error: error instanceof Error ? error.message : String(error),
+            loading: false,
+          });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [reloadVersion, workspace]);
+
+  const current = state.workspace === workspace;
+  return {
+    data: current ? state.data : null,
+    error: current ? state.error : null,
+    loading: current ? state.loading : true,
+    reload: () => setReloadVersion((version) => version + 1),
+  };
+}
 
 export function Chat() {
   const [params] = useSearchParams();
@@ -135,7 +198,25 @@ export function Chat() {
 
   const [workspace, setWorkspace] = useState("");
   const activeWorkspace = workspace || config.data?.workspace || "default";
-  const sessions = useAsync(() => api.sessions(activeWorkspace, WORKBENCH_SESSION_LIMIT), [activeWorkspace]);
+  const projects = useWorkspaceProjects(activeWorkspace);
+  const [projectSelection, setProjectSelection] = useState("");
+  const availableProjects = useMemo(
+    () => (projects.data ?? []).filter((project) => project.workspace === activeWorkspace),
+    [activeWorkspace, projects.data]
+  );
+  const selectedProject = selectedProjectFor(availableProjects, projectSelection);
+  const selectedProjectId = selectedProject?.id ?? "";
+  const projectFilter = projectFilterForSelection(projectSelection);
+  const sessions = useAsync(
+    () => projectFilter
+      ? api.sessions({
+          workspace: activeWorkspace,
+          projectId: projectFilter,
+          limit: WORKBENCH_SESSION_LIMIT,
+        })
+      : Promise.resolve([]),
+    [activeWorkspace, projectFilter]
+  );
 
   const [model, setModel] = useState(params.get("model") ?? "");
   const [mode, setMode] = useState<Mode>("plan");
@@ -148,8 +229,9 @@ export function Chat() {
   const [sessionLoading, setSessionLoading] = useState(false);
   const [warming, setWarming] = useState(false);
   const [lastStats, setLastStats] = useState<ChatStats | null>(null);
-  const [projectRoot, setProjectRoot] = useState(() => localStorage.getItem(PROJECT_ROOT_KEY) ?? "");
+  const [registeringProject, setRegisteringProject] = useState(false);
   const [sandboxCheck, setSandboxCheck] = useState<SandboxCheckState>({
+    projectId: "",
     root: "",
     loading: false,
     status: null,
@@ -163,6 +245,7 @@ export function Chat() {
   const approvalRef = useRef(initialApprovalState);
   const approvalLockRef = useRef("");
   const changeBusyRef = useRef("");
+  const registeringProjectRef = useRef(false);
   const activeSessionRef = useRef("");
   const sessionLoadingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -171,9 +254,18 @@ export function Chat() {
   const sessionLoadGenerationRef = useRef(0);
   const stagedRequestSequenceRef = useRef(0);
   const sandboxRequestSequenceRef = useRef(0);
-  const projectRootRef = useRef(projectRoot);
+  const registrationRequestSequenceRef = useRef(0);
+  const contextGenerationRef = useRef(0);
+  const workspaceContextRef = useRef(activeWorkspace);
+  const activeWorkspaceRef = useRef(activeWorkspace);
+  const projectSelectionRef = useRef(projectSelection);
+  const selectedProjectIdRef = useRef(selectedProjectId);
   const modeRef = useRef<Mode>(mode);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  activeWorkspaceRef.current = activeWorkspace;
+  projectSelectionRef.current = projectSelection;
+  selectedProjectIdRef.current = selectedProjectId;
 
   const applyApprovalAction = (action: ApprovalAction) => {
     const next = reduceApproval(approvalRef.current, action);
@@ -296,11 +388,14 @@ export function Chat() {
       sessionLoadGenerationRef.current += 1;
       stagedRequestSequenceRef.current += 1;
       sandboxRequestSequenceRef.current += 1;
+      registrationRequestSequenceRef.current += 1;
+      contextGenerationRef.current += 1;
       abortRef.current?.abort();
       abortRef.current = null;
       approvalRef.current = initialApprovalState;
       approvalLockRef.current = "";
       changeBusyRef.current = "";
+      registeringProjectRef.current = false;
       sessionLoadingRef.current = false;
     };
   }, []);
@@ -310,45 +405,56 @@ export function Chat() {
   }, [config.data?.workspace, workspace]);
 
   useEffect(() => {
-    if (projectRoot.trim()) localStorage.setItem(PROJECT_ROOT_KEY, projectRoot.trim());
-    else localStorage.removeItem(PROJECT_ROOT_KEY);
-  }, [projectRoot]);
+    if (projects.loading || projects.data === null) return;
+    const dataBelongsToWorkspace = projects.data.every(
+      (project) => project.workspace === activeWorkspace
+    );
+    if (!dataBelongsToWorkspace) return;
+    const nextSelection = projectSelectionAfterLoad(availableProjects, projectSelection);
+    if (nextSelection !== projectSelection) {
+      projectSelectionRef.current = nextSelection;
+      selectedProjectIdRef.current = selectedProjectFor(availableProjects, nextSelection)?.id ?? "";
+      setProjectSelection(nextSelection);
+    }
+  }, [activeWorkspace, availableProjects, projectSelection, projects.data, projects.loading]);
 
   useEffect(() => {
-    const root = projectRoot.trim();
+    const projectId = selectedProject?.id ?? "";
+    const root = selectedProject?.root ?? "";
     const sequence = ++sandboxRequestSequenceRef.current;
-    if (mode !== "build" || !root) {
-      setSandboxCheck({ root: "", loading: false, status: null, error: null });
+    if (mode !== "build" || !projectId) {
+      setSandboxCheck({ projectId: "", root: "", loading: false, status: null, error: null });
       return;
     }
 
-    const request = { root, sequence };
-    setSandboxCheck({ root, loading: true, status: null, error: null });
+    const request = { projectId, sequence };
+    setSandboxCheck({ projectId, root, loading: true, status: null, error: null });
     const timer = window.setTimeout(() => {
-      api.agentSandbox(root)
+      api.agentSandbox(projectId)
         .then((status) => {
           if (
             !mountedRef.current ||
             modeRef.current !== "build" ||
             !shouldCommitSandboxStatus(
-              projectRootRef.current.trim(),
+              selectedProjectIdRef.current,
               sandboxRequestSequenceRef.current,
               request
             )
           ) return;
-          setSandboxCheck({ root, loading: false, status, error: null });
+          setSandboxCheck({ projectId, root, loading: false, status, error: null });
         })
         .catch((error) => {
           if (
             !mountedRef.current ||
             modeRef.current !== "build" ||
             !shouldCommitSandboxStatus(
-              projectRootRef.current.trim(),
+              selectedProjectIdRef.current,
               sandboxRequestSequenceRef.current,
               request
             )
           ) return;
           setSandboxCheck({
+            projectId,
             root,
             loading: false,
             status: null,
@@ -358,7 +464,7 @@ export function Chat() {
     }, 250);
 
     return () => window.clearTimeout(timer);
-  }, [mode, projectRoot]);
+  }, [mode, selectedProject?.id, selectedProject?.root]);
 
   useEffect(() => {
     if (model) return;
@@ -390,10 +496,20 @@ export function Chat() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  const visibleSessions = sessions.data ?? [];
+  const visibleSessions = (sessions.data ?? []).filter((session) => {
+    if (session.workspace !== activeWorkspace) return false;
+    if (projectFilter === "unassigned") return session.project_id == null;
+    return Boolean(projectFilter && session.project_id === projectFilter);
+  });
   const selectedSession = visibleSessions.find((s) => s.id === activeSessionId);
 
   const loadSession = async (id: string) => {
+    const expectedWorkspace = activeWorkspace;
+    const expectedProjectFilter = projectFilter;
+    const contextRequest = {
+      key: workbenchContextKey(activeWorkspace, projectSelection),
+      generation: contextGenerationRef.current,
+    };
     const loadGeneration = ++sessionLoadGenerationRef.current;
     sessionLoadingRef.current = true;
     setSessionLoading(true);
@@ -402,6 +518,12 @@ export function Chat() {
     const isCurrentLoad = () =>
       mountedRef.current &&
       isCurrentGeneration(sessionLoadGenerationRef.current, loadGeneration) &&
+      isCurrentWorkbenchContext(
+        activeWorkspaceRef.current,
+        projectSelectionRef.current,
+        contextGenerationRef.current,
+        contextRequest
+      ) &&
       isActiveSessionAction(identity);
     setMessages([]);
     setSystem("");
@@ -410,13 +532,20 @@ export function Chat() {
     try {
       const detail = await api.session(id);
       if (!isCurrentLoad()) return;
+      const detailMatchesContext =
+        detail.workspace === expectedWorkspace &&
+        (expectedProjectFilter === "unassigned"
+          ? detail.project_id == null
+          : Boolean(expectedProjectFilter && detail.project_id === expectedProjectFilter));
+      if (!detailMatchesContext) {
+        throw new Error("Thread no longer belongs to the selected project context");
+      }
       const split = splitSystem(detail);
       setMessages(split.messages);
       setSystem(split.system);
       setEvents((detail.events ?? []).map(eventFromStored));
       setLastStats(null);
       if (detail.model) setModel(detail.model);
-      if (detail.workspace) setWorkspace(detail.workspace);
       await refreshStagedChanges(detail.id);
     } catch (e) {
       if (isCurrentLoad()) {
@@ -443,19 +572,115 @@ export function Chat() {
     beginSessionContext("");
     setMessages([]);
     setEvents([]);
+    setSystem("");
+    setInput("");
+    setLastStats(null);
+  };
+
+  const resetWorkbenchContext = () => {
+    contextGenerationRef.current += 1;
+    registrationRequestSequenceRef.current += 1;
+    registeringProjectRef.current = false;
+    setRegisteringProject(false);
+    cancelSessionLoad();
+    cancelRunThenAbort(
+      approvalRef.current.run,
+      (runId, approvalToken) => api.cancelAgentRun(runId, approvalToken),
+      invalidateActiveRun
+    );
+    clearStagedContext();
+    selectSession("");
+    sandboxRequestSequenceRef.current += 1;
+    setSandboxCheck({ projectId: "", root: "", loading: false, status: null, error: null });
+    setMessages([]);
+    setEvents([]);
+    setSystem("");
+    setInput("");
     setLastStats(null);
   };
 
   const switchWorkspace = (next: string) => {
-    cancelSessionLoad();
-    beginSessionContext("");
+    if (!next || next === activeWorkspaceRef.current) return;
+    resetWorkbenchContext();
+    activeWorkspaceRef.current = next;
+    projectSelectionRef.current = "";
+    selectedProjectIdRef.current = "";
+    workspaceContextRef.current = next;
+    setProjectSelection("");
     setWorkspace(next);
-    setMessages([]);
-    setEvents([]);
-    api.switchWorkspace(next).catch((e) => {
-      toast.error("Could not switch workspace", { description: e instanceof Error ? e.message : String(e) });
-    });
   };
+
+  const switchProject = (next: string) => {
+    if (!next || next === projectSelectionRef.current) return;
+    resetWorkbenchContext();
+    projectSelectionRef.current = next;
+    selectedProjectIdRef.current = selectedProjectFor(availableProjects, next)?.id ?? "";
+    setProjectSelection(next);
+  };
+
+  const registerProject = async (input: ProjectRegistrationInput): Promise<boolean> => {
+    if (registeringProjectRef.current) return false;
+    const request = {
+      workspaceId: activeWorkspace,
+      context: {
+        key: workbenchContextKey(activeWorkspace, projectSelection),
+        generation: contextGenerationRef.current,
+      },
+      sequence: ++registrationRequestSequenceRef.current,
+    };
+    registeringProjectRef.current = true;
+    setRegisteringProject(true);
+    try {
+      const created = await api.registerProject(request.workspaceId, input);
+      if (shouldRefreshProjectsAfterRegistration(
+        activeWorkspaceRef.current,
+        request.workspaceId
+      )) {
+        projects.reload();
+      }
+      const stillCurrent = mountedRef.current && isCurrentProjectRegistration(
+        activeWorkspaceRef.current,
+        projectSelectionRef.current,
+        contextGenerationRef.current,
+        registrationRequestSequenceRef.current,
+        request
+      );
+      if (!stillCurrent) return false;
+      switchProject(created.id);
+      toast.success("Project registered", { description: created.name });
+      return true;
+    } catch (error) {
+      if (
+        mountedRef.current &&
+        isCurrentProjectRegistration(
+          activeWorkspaceRef.current,
+          projectSelectionRef.current,
+          contextGenerationRef.current,
+          registrationRequestSequenceRef.current,
+          request
+        )
+      ) {
+        toast.error("Could not register project", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return false;
+    } finally {
+      if (registrationRequestSequenceRef.current === request.sequence) {
+        registeringProjectRef.current = false;
+        if (mountedRef.current) setRegisteringProject(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (workspaceContextRef.current === activeWorkspace) return;
+    workspaceContextRef.current = activeWorkspace;
+    resetWorkbenchContext();
+    projectSelectionRef.current = "";
+    selectedProjectIdRef.current = "";
+    setProjectSelection("");
+  }, [activeWorkspace]);
 
   const send = async (text: string) => {
     const trimmed = text.trim();
@@ -464,8 +689,9 @@ export function Chat() {
       toast.error("Select a model first");
       return;
     }
-    if (buildNeedsProjectRoot(mode, projectRoot)) {
-      toast.error("Set a project root before using Build");
+    const runProjectId = selectedProjectIdRef.current;
+    if (agentModeNeedsProject(mode, runProjectId)) {
+      toast.error("Select a registered project before sending");
       return;
     }
     if (!trimmed || streaming || warming) return;
@@ -494,7 +720,15 @@ export function Chat() {
       if (runMode === "ask") {
         await streamPlainChat(trimmed, prior, assistantIndex, generation, ac.signal);
       } else {
-        await streamAgentChat(trimmed, prior, assistantIndex, runMode, generation, ac.signal);
+        await streamAgentChat(
+          trimmed,
+          prior,
+          assistantIndex,
+          runMode,
+          runProjectId,
+          generation,
+          ac.signal
+        );
       }
     } catch (e) {
       if (isActiveRun(generation) && (e as Error).name !== "AbortError") {
@@ -547,6 +781,7 @@ export function Chat() {
     prior: Msg[],
     assistantIndex: number,
     agent: Exclude<Mode, "ask">,
+    projectId: string,
     generation: number,
     signal: AbortSignal
   ) => {
@@ -556,16 +791,15 @@ export function Chat() {
 
     try {
       for await (const ev of api.agentChat(
-        {
+        buildAgentChatPayload({
           agent,
           model,
           message: text,
           messages: prior,
-          session_id: activeSessionRef.current || undefined,
-          workspace: activeWorkspace,
-          cwd: projectRoot.trim() || undefined,
+          sessionId: activeSessionRef.current || undefined,
+          projectId,
           name: selectedSession?.name || text.slice(0, 64),
-        },
+        }),
         signal
       )) {
         if (!isActiveRun(generation)) return;
@@ -885,12 +1119,12 @@ export function Chat() {
     setEvents([]);
     setLastStats(null);
   };
-  const buildRootMissing = buildNeedsProjectRoot(mode, projectRoot);
+  const projectMissing = agentModeNeedsProject(mode, selectedProjectId);
   const workbenchControlsAreDisabled = workbenchControlsDisabled(streaming, sessionLoading);
   const sendDisabled = workbenchSendDisabled({
     model,
     mode,
-    projectRoot,
+    projectId: selectedProjectId,
     input,
     warming,
     streaming,
@@ -910,81 +1144,48 @@ export function Chat() {
 
       <div className="grid min-h-[520px] grid-cols-1 gap-3 xl:h-[calc(100vh-150px)] xl:grid-cols-[270px_minmax(0,1fr)_320px]">
         <aside className="flex min-h-[320px] flex-col overflow-hidden rounded-lg border border-line bg-panel xl:min-h-0">
-          <div className="border-b border-line p-3">
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-faint">
-              <FolderOpen className="h-3.5 w-3.5" /> Workspace
-            </div>
-            {workspaces.loading ? (
-              <Skeleton className="h-8 w-full" />
-            ) : (
-              <Select value={activeWorkspace} onValueChange={switchWorkspace}>
-                <SelectTrigger className="h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(workspaces.data ?? []).map((w) => (
-                    <SelectItem key={w.id} value={w.id}>
-                      {w.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
+          <ContextPicker
+            workspaces={workspaces.data ?? []}
+            workspacesLoading={workspaces.loading}
+            workspaceId={activeWorkspace}
+            projects={availableProjects}
+            projectsLoading={projects.loading}
+            projectsError={projects.error}
+            projectSelection={projectSelection}
+            selectedProject={selectedProject}
+            registering={registeringProject}
+            onWorkspaceChange={switchWorkspace}
+            onProjectChange={switchProject}
+            onRegister={registerProject}
+          />
 
-          <div className="border-b border-line p-3">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <label
-                htmlFor="workbench-project-root"
-                className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-faint"
-              >
-                <Code2 className="h-3.5 w-3.5" /> Project
-              </label>
-              <Badge variant={buildRootMissing ? "warning" : "outline"}>
-                {buildRootMissing ? "Required for Build" : "Root"}
-              </Badge>
-            </div>
-            <Input
-              id="workbench-project-root"
-              value={projectRoot}
-              onChange={(e) => {
-                projectRootRef.current = e.target.value;
-                setProjectRoot(e.target.value);
-              }}
-              placeholder="C:\\Users\\User\\repos\\model-hub"
-              disabled={streaming}
-              aria-invalid={buildRootMissing}
-              aria-describedby={buildRootMissing ? "workbench-project-root-error" : undefined}
-              className="h-8 text-[12.5px]"
-            />
-            {buildRootMissing && (
-              <div id="workbench-project-root-error" className="mt-1.5 text-[11px] leading-relaxed text-warning">
-                Build is disabled until a project root is set.
-              </div>
-            )}
+          {mode === "build" && selectedProject && (
             <div
               id="workbench-sandbox-status"
               role="status"
               aria-live="polite"
               aria-atomic="true"
+              className="border-b border-line px-3 pb-3"
             >
-              {mode === "build" && projectRoot.trim() && (
-                <SandboxStatusPanel root={projectRoot.trim()} check={sandboxCheck} />
-              )}
+              <SandboxStatusPanel
+                projectId={selectedProject.id}
+                root={selectedProject.root}
+                check={sandboxCheck}
+              />
             </div>
-          </div>
+          )}
 
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex items-center justify-between border-b border-line px-3 py-2">
               <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-faint">
-                Sessions
+                Threads
               </span>
               <Button variant="ghost" size="sm" className="h-7 px-2" onClick={newSession}>
                 New
               </Button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {sessions.loading ? (
+              {!projectFilter || sessions.loading ? (
                 <div className="space-y-2">
                   <Skeleton className="h-12 w-full" />
                   <Skeleton className="h-12 w-full" />
@@ -1001,7 +1202,13 @@ export function Chat() {
                   ))}
                 </div>
               ) : (
-                <div className="px-2 py-8 text-center text-[12.5px] text-fg-muted">No saved sessions</div>
+                <div className="px-2 py-8 text-center text-[12.5px] text-fg-muted">
+                  {projectSelection === LEGACY_PROJECT_SELECTION
+                    ? "No legacy threads"
+                    : selectedProject
+                      ? "No project threads"
+                      : "Select or register a project"}
+                </div>
               )}
             </div>
           </div>
@@ -1058,7 +1265,7 @@ export function Chat() {
                     <button
                       key={s}
                       onClick={() => send(s)}
-                      disabled={sessionLoading}
+                      disabled={sessionLoading || projectMissing}
                       className="min-h-[54px] rounded-lg border border-line bg-panel-2 px-3 py-2 text-left text-[13px] text-fg-muted transition-colors hover:border-line-strong hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {s}
@@ -1090,8 +1297,8 @@ export function Chat() {
                   model
                     ? sessionLoading
                       ? "Loading session..."
-                      : buildRootMissing
-                      ? "Set a project root before using Build"
+                      : projectMissing
+                      ? "Select a registered project to start"
                       : `Message ${modeLabel(mode)} with ${model}`
                     : "Install a model to start"
                 }
@@ -1105,7 +1312,7 @@ export function Chat() {
                 </Button>
               ) : (
                 <Button type="submit" disabled={sendDisabled}>
-                  <Send /> {workbenchSendLabel(mode, projectRoot)}
+                  <Send /> {workbenchSendLabel(mode, selectedProjectId)}
                 </Button>
               )}
             </form>
@@ -1200,15 +1407,18 @@ export function Chat() {
 }
 
 function SandboxStatusPanel({
+  projectId,
   root,
   check,
 }: {
+  projectId: string;
   root: string;
   check: SandboxCheckState;
 }) {
-  const status = check.root === root ? check.status : null;
-  const loading = check.root === root && check.loading;
-  const error = check.root === root ? check.error : null;
+  const exactProject = check.projectId === projectId && check.root === root;
+  const status = exactProject ? check.status : null;
+  const loading = exactProject && check.loading;
+  const error = exactProject ? check.error : null;
   const presentation = status ? sandboxPresentation(status) : null;
 
   return (

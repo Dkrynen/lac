@@ -1,7 +1,7 @@
 import type { AgentSandboxStatus, SandboxTaskApprovalTarget } from "./types";
 
 export interface SandboxRequestIdentity {
-  root: string;
+  projectId: string;
   sequence: number;
 }
 
@@ -187,11 +187,11 @@ function parseStagedChanges(value: unknown): RunTaskStagedChangeDetails[] | null
 }
 
 export function shouldCommitSandboxStatus(
-  selectedRoot: string,
+  selectedProjectId: string,
   currentSequence: number,
   request: SandboxRequestIdentity
 ): boolean {
-  return selectedRoot === request.root && currentSequence === request.sequence;
+  return selectedProjectId === request.projectId && currentSequence === request.sequence;
 }
 
 export function sandboxPresentation(status: AgentSandboxStatus): SandboxPresentation {

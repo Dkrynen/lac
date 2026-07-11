@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 from ..config import ProviderConfig, resolve_config
@@ -43,8 +44,13 @@ def known_providers() -> list[str]:
     return sorted(set(_BUILTIN_FACTORIES) | set(_PLUGIN_FACTORIES))
 
 
-def create_provider(name: str | None = None, **overrides: Any) -> LLMProvider:
-    cfg = resolve_config()
+def create_provider(
+    name: str | None = None,
+    *,
+    start: Path | None = None,
+    **overrides: Any,
+) -> LLMProvider:
+    cfg = resolve_config(start)
     providers = cfg.providers
 
     if name is None:
@@ -76,8 +82,8 @@ def create_provider(name: str | None = None, **overrides: Any) -> LLMProvider:
     raise ProviderError(f"Unknown provider: {name!r}. Known: {known_providers()}")
 
 
-def list_providers() -> list[dict]:
-    cfg = resolve_config()
+def list_providers(start: Path | None = None) -> list[dict]:
+    cfg = resolve_config(start)
     out = []
     for name in known_providers():
         out.append(
@@ -90,5 +96,5 @@ def list_providers() -> list[dict]:
     return out
 
 
-def default_provider() -> LLMProvider:
-    return create_provider(None)
+def default_provider(start: Path | None = None) -> LLMProvider:
+    return create_provider(None, start=start)

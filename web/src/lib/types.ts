@@ -319,6 +319,23 @@ export interface WorkspaceInfo {
   description: string;
 }
 
+export interface ProjectInfo {
+  id: string;
+  workspace: string;
+  name: string;
+  description: string;
+  root: string;
+  status: "active";
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ProjectRegistrationInput {
+  name: string;
+  description?: string;
+  root: string;
+}
+
 export interface SessionMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -338,6 +355,7 @@ export interface SessionSummary {
   model: string;
   system_prompt: string;
   workspace: string;
+  project_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -354,8 +372,7 @@ export interface AgentChatPayload {
   message: string;
   messages?: SessionMessage[];
   session_id?: string;
-  workspace?: string;
-  cwd?: string;
+  project_id?: string;
   name?: string;
 }
 
