@@ -584,6 +584,10 @@ def _disk_usage_target(path: Path) -> Path:
     return current
 
 
+def _storage_volume_identity(path: Path) -> int:
+    return int(os.stat(_disk_usage_target(path)).st_dev)
+
+
 def _disk_free_bytes(path: Path) -> int | None:
     try:
         return shutil.disk_usage(_disk_usage_target(path)).free
@@ -3236,30 +3240,54 @@ def _hf_import_preflight(size_bytes: int | None) -> dict:
     """Mirror LAC Pro's import staging locations without importing lac_pro."""
     scratch_dir = _hf_import_scratch_root()
     model_dir = _default_ollama_models_dir()
+    try:
+        shared_volume: bool | None = (
+            _storage_volume_identity(scratch_dir) == _storage_volume_identity(model_dir)
+        )
+    except OSError:
+        shared_volume = None
     size = int(size_bytes or 0)
     if size <= 0:
         return {
             "state": "unknown",
             "scratch_dir": str(scratch_dir),
             "model_store_dir": str(model_dir),
+            "shared_volume": shared_volume,
+            "combined": None,
             "warnings": ["File size is unknown; disk fit cannot be checked before import."],
             "scratch": _space_check(_disk_free_bytes(scratch_dir), 0),
             "model_store": _space_check(_disk_free_bytes(model_dir), 0),
         }
 
     scratch_required = size
-    model_required = int(size * 2.0)
+    # Worst-case Windows create peak: uploaded GGUF/cache, validation or
+    # conversion output, NewLayer's full commit-time copy, plus a possible
+    # recreate for a verified template repair. Pro enforces the same 4x store
+    # reserve; shared volumes add the 1x download scratch requirement below.
+    model_required = int(size * 4.0)
     scratch = _space_check(_disk_free_bytes(scratch_dir), scratch_required)
     model_store = _space_check(_disk_free_bytes(model_dir), model_required)
     warnings = []
-    if not scratch["ok"]:
-        warnings.append("Not enough free space in the Hugging Face staging folder.")
-    if not model_store["ok"]:
-        warnings.append("Not enough free space in the Ollama model store.")
+    combined = None
+    if shared_volume is True:
+        combined = _space_check(_disk_free_bytes(scratch_dir), scratch_required + model_required)
+        if not combined["ok"]:
+            warnings.append(
+                "Not enough combined free space for Hugging Face staging and the Ollama model store."
+            )
+    elif shared_volume is False:
+        if not scratch["ok"]:
+            warnings.append("Not enough free space in the Hugging Face staging folder.")
+        if not model_store["ok"]:
+            warnings.append("Not enough free space in the Ollama model store.")
+    else:
+        warnings.append("Could not verify whether import staging and Ollama storage share a volume.")
     return {
         "state": "ok" if not warnings else "blocked",
         "scratch_dir": str(scratch_dir),
         "model_store_dir": str(model_dir),
+        "shared_volume": shared_volume,
+        "combined": combined,
         "selected_size_bytes": size,
         "selected_size_gb": _bytes_to_gb_display(size),
         "moves_existing_models": False,

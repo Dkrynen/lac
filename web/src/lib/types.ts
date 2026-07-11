@@ -215,6 +215,8 @@ export interface ImportPreflight {
   state: "ok" | "blocked" | "unknown";
   scratch_dir: string;
   model_store_dir: string;
+  shared_volume?: boolean | null;
+  combined?: SpaceCheck | null;
   selected_size_bytes?: number;
   selected_size_gb?: number;
   moves_existing_models?: boolean;
