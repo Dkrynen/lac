@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.cookbook import persistence
-from backend.project_paths import validate_relative_project_path
+from backend.project_security import SensitiveProjectPathError, resolve_project_path
 
 ToolHandler = Callable[[dict, dict], str]
 
@@ -19,21 +19,18 @@ MAX_STAGED_BYTES = 2 * 1024 * 1024
 
 
 def _jail(args: dict, ctx: dict, default_path: str = "") -> tuple[Path, str] | str:
-    """Replicate the builtin tools' path jail. Returns (base, rel_posix) or an error string."""
-    path = Path(args.get("path", default_path))
-    base = Path(ctx.get("cwd", ".")).resolve()
-    target = (base / path).resolve() if not path.is_absolute() else path.resolve()
+    """Resolve a non-sensitive, no-link path below the exact staged root."""
+    value = args.get("path", default_path)
     try:
-        rel = target.relative_to(base)
-    except ValueError:
-        return f"error: path outside workspace: {target}"
-    rel_posix = rel.as_posix()
-    if rel_posix == ".":
-        return base, rel_posix
-    try:
-        return base, validate_relative_project_path(rel_posix)
-    except ValueError as exc:
-        return f"error: {exc}"
+        base, _root_relative = resolve_project_path(
+            ctx.get("cwd", "."), ".", allow_root=True
+        )
+        _target, relative = resolve_project_path(
+            base, value, allow_root=default_path == "."
+        )
+        return base, relative
+    except SensitiveProjectPathError as exc:
+        return f"error: {exc.message}"
 
 
 def build_staged_handlers(
@@ -48,12 +45,23 @@ def build_staged_handlers(
     base_list = base_handlers["list_files"]
 
     def _pending(base: Path) -> list[dict]:
-        """Return pending staged changes for this specific root only."""
-        return [
-            r
-            for r in persistence.list_staged_changes(session_id, status="pending")
-            if r["root"] == str(base)
-        ]
+        """Return safe pending changes for this exact root only.
+
+        Revalidation here keeps manually corrupted rows and newly introduced
+        symlink components out of staged reads and synthesized listings.
+        """
+
+        safe: list[dict] = []
+        for row in persistence.list_staged_changes(session_id, status="pending"):
+            if row["root"] != str(base):
+                continue
+            try:
+                _target, relative = resolve_project_path(base, row["path"])
+            except SensitiveProjectPathError:
+                continue
+            if relative == row["path"]:
+                safe.append(row)
+        return safe
 
     def staged_write(args: dict, ctx: dict) -> str:
         jailed = _jail(args, ctx)
@@ -120,7 +128,11 @@ def build_staged_handlers(
         listing = base_list(args, ctx)
         if not extra:
             return listing
-        if listing.startswith("error: not found") or listing == "(empty)":
+        if (
+            listing.startswith("error: not found")
+            or listing.startswith("error: project directory not found")
+            or listing == "(empty)"
+        ):
             return "\n".join(extra)
         return listing + "\n" + "\n".join(extra)
 

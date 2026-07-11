@@ -4,6 +4,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
+from .project_coordinator import WORKSPACE_PROJECT_LOCK
+
 
 CONFIG_DIR = Path.home() / ".model-hub"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -180,15 +182,23 @@ def create_workspace(name: str, description: str = "") -> Workspace:
 def delete_workspace(workspace_id: str) -> bool:
     if workspace_id == DEFAULT_WORKSPACE:
         return False
-    try:
-        ws_dir = _resolve_within_workspaces(workspace_id)
-    except ValueError:
+    # Projects point at external directories that this workspace organizes.
+    # Refuse removal at the domain layer as well as the HTTP layer so CLI and
+    # future callers cannot orphan those immutable project records.
+    from . import persistence
+
+    with WORKSPACE_PROJECT_LOCK:
+        if persistence.list_projects(workspace_id):
+            return False
+        try:
+            ws_dir = _resolve_within_workspaces(workspace_id)
+        except ValueError:
+            return False
+        if ws_dir.exists():
+            import shutil
+            shutil.rmtree(ws_dir)
+            return True
         return False
-    if ws_dir.exists():
-        import shutil
-        shutil.rmtree(ws_dir)
-        return True
-    return False
 
 
 def switch_workspace(workspace_id: str) -> bool:

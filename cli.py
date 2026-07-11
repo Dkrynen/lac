@@ -975,7 +975,15 @@ def cmd_workspace(args):
         if delete_workspace(name):
             print(f"{C['green']}✓ Deleted workspace '{name}'.{C['reset']}")
         else:
-            print(f"{C['red']}Cannot delete the default workspace.{C['reset']}")
+            from backend.cookbook.persistence import list_projects
+
+            if list_projects(name):
+                print(
+                    f"{C['red']}Cannot delete workspace '{name}' while it has "
+                    f"registered projects.{C['reset']}"
+                )
+            else:
+                print(f"{C['red']}Cannot delete the default workspace.{C['reset']}")
 
     elif args.action == "switch":
         name = args.name

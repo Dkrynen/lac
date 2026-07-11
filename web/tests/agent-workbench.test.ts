@@ -3,9 +3,9 @@ import test from "node:test";
 
 import {
   STAGED_SNAPSHOT_LABEL,
+  agentModeNeedsProject,
   approvalLockKey,
   approvalDecisionIntent,
-  buildNeedsProjectRoot,
   isApprovalResponseRelevant,
   isCurrentGeneration,
   isCurrentSessionAction,
@@ -57,13 +57,13 @@ test("approval lock release clears only the exact lock owner", () => {
   assert.equal(releaseApprovalLock(lockA, "run-b", "ask-a"), lockA);
 });
 
-test("Build requires a nonempty project root and labels its disabled send action", () => {
-  assert.equal(buildNeedsProjectRoot("build", ""), true);
-  assert.equal(buildNeedsProjectRoot("build", "   "), true);
-  assert.equal(buildNeedsProjectRoot("build", "C:\\repo"), false);
-  assert.equal(buildNeedsProjectRoot("plan", ""), false);
-  assert.equal(workbenchSendLabel("build", ""), "Set project root");
-  assert.equal(workbenchSendLabel("build", "C:\\repo"), "Send");
+test("every Workbench mode requires a registered project identity", () => {
+  assert.equal(agentModeNeedsProject("build", ""), true);
+  assert.equal(agentModeNeedsProject("plan", "   "), true);
+  assert.equal(agentModeNeedsProject("explore", "project-1"), false);
+  assert.equal(agentModeNeedsProject("ask", ""), true);
+  assert.equal(workbenchSendLabel("build", ""), "Select project");
+  assert.equal(workbenchSendLabel("plan", "project-1"), "Send");
 });
 
 test("session loading disables Workbench controls and send even with otherwise valid input", () => {
@@ -73,7 +73,7 @@ test("session loading disables Workbench controls and send even with otherwise v
     workbenchSendDisabled({
       model: "qwen",
       mode: "plan",
-      projectRoot: "",
+      projectId: "project-1",
       input: "Inspect this",
       warming: false,
       streaming: false,
@@ -85,7 +85,7 @@ test("session loading disables Workbench controls and send even with otherwise v
     workbenchSendDisabled({
       model: "qwen",
       mode: "plan",
-      projectRoot: "",
+      projectId: "project-1",
       input: "Inspect this",
       warming: false,
       streaming: false,

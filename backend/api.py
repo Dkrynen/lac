@@ -26,6 +26,7 @@ from .agent import Agent, AgentRunner, FULL_PERMISSIONS, READONLY_PERMISSIONS
 from .agent.runner import PreparedToolCall
 from .agent.sandbox import DockerTaskBroker, SandboxError, probe_project_sandbox
 from .agent.staging import build_staged_handlers
+from .config import UnsafeProjectConfigError, resolve_config
 from .cookbook import proc
 from .cookbook.config import load_config
 from .cookbook.downloads import download_history
@@ -1522,6 +1523,97 @@ def _resolve_agent_cwd(raw: object) -> Path:
     return resolved
 
 
+_PRIVATE_PROJECT_FIELDS = {
+    "root_key",
+    "root_dev",
+    "root_ino",
+    "root_device",
+    "root_inode",
+}
+
+
+def _public_project(project: dict) -> dict:
+    """Return the local UI contract without filesystem identity internals."""
+
+    return {
+        key: value
+        for key, value in project.items()
+        if key not in _PRIVATE_PROJECT_FIELDS
+    }
+
+
+def _registered_project_root(project_id: str) -> tuple[dict, Path]:
+    """Load and revalidate one registered project or raise a bounded error."""
+
+    from .cookbook.persistence import get_project, revalidate_project_root
+
+    project = get_project(project_id)
+    if project is None:
+        raise KeyError("Project not found")
+    return project, revalidate_project_root(project)
+
+
+def _agent_request_root(*, project_id: str, raw_cwd: object) -> tuple[dict | None, Path]:
+    """Resolve either the registered path or the isolated legacy cwd path."""
+
+    if project_id:
+        if raw_cwd is not None:
+            raise TypeError("cwd cannot be supplied with project_id")
+        return _registered_project_root(project_id)
+    return None, _resolve_agent_cwd(raw_cwd)
+
+
+class _ProjectRootDriftError(ValueError):
+    """A registered root no longer matches its immutable filesystem identity."""
+
+
+def _assert_registered_project_root(project_id: str, expected_root: Path) -> Path:
+    from .cookbook.persistence import revalidate_project_root
+
+    try:
+        current_root = revalidate_project_root(project_id)
+    except ValueError as exc:
+        raise _ProjectRootDriftError(
+            "Registered project root identity changed or is unavailable"
+        ) from exc
+    if current_root != expected_root:
+        raise _ProjectRootDriftError(
+            "Registered project root identity changed or is unavailable"
+        )
+    return current_root
+
+
+def _project_bound_tool_handlers(
+    base_handlers: dict,
+    *,
+    project_id: str,
+    expected_root: Path,
+) -> dict:
+    """Revalidate the registered root immediately before every local tool call."""
+
+    handlers = dict(base_handlers)
+
+    def guarded(handler):
+        def invoke(args: dict, ctx: dict) -> str:
+            try:
+                current_root = _assert_registered_project_root(
+                    project_id, expected_root
+                )
+            except _ProjectRootDriftError:
+                return "error: registered project root identity changed or is unavailable"
+            scoped_ctx = dict(ctx or {})
+            scoped_ctx["cwd"] = str(current_root)
+            return handler(args, scoped_ctx)
+
+        return invoke
+
+    for name in ("read_file", "list_files", "write_file", "run_bash"):
+        handler = handlers.get(name)
+        if handler is not None:
+            handlers[name] = guarded(handler)
+    return handlers
+
+
 def _require_exact_configured_project_root(cwd: Path) -> None:
     """Reject a descendant when an ancestor owns the applied .apt config."""
 
@@ -1541,14 +1633,22 @@ def _require_exact_configured_project_root(cwd: Path) -> None:
 def agent_sandbox_capability():
     if not _is_trusted_local_approval_request():
         return jsonify({"error": "Agent sandbox status is available only on this machine"}), 403
+    project_id = str(request.args.get("project_id") or "").strip()
     raw_cwd = request.args.get("cwd")
-    if not isinstance(raw_cwd, str) or not raw_cwd.strip():
-        return jsonify({"error": "Project cwd required"}), 400
+    if not project_id and (not isinstance(raw_cwd, str) or not raw_cwd.strip()):
+        return jsonify({"error": "Project id or cwd required"}), 400
     try:
-        cwd = _resolve_agent_cwd(raw_cwd)
+        _project, cwd = _agent_request_root(
+            project_id=project_id,
+            raw_cwd=raw_cwd,
+        )
         _require_exact_configured_project_root(cwd)
-    except ValueError as e:
+    except TypeError as e:
         return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e.args[0])}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409 if project_id else 400
     return jsonify(probe_project_sandbox(cwd).to_dict())
 
 
@@ -1556,59 +1656,103 @@ _AGENT_SKIP_ENTRIES = {"node_modules", "__pycache__"}
 AGENT_FILE_MAX_BYTES = 1024 * 1024
 
 
-def _resolve_in_root(root: Path, rel: str) -> Path:
-    """Resolve rel under root, refusing any path that escapes it."""
-    target = (root / rel).resolve() if rel else root
-    if target != root and root not in target.parents:
-        raise ValueError(f"path escapes project root: {rel!r}")
-    return target
+def _project_file_error(exc: Exception):
+    """Map bounded project-security errors to stable local HTTP responses."""
+
+    code = str(getattr(exc, "code", "unsafe_project_path"))
+    message = str(getattr(exc, "message", str(exc)))
+    if code in {"project_file_not_found", "project_directory_not_found"}:
+        status = 404
+    elif code == "project_file_too_large":
+        status = 413
+    elif code == "project_file_not_utf8":
+        status = 415
+    elif code == "sensitive_project_path":
+        status = 403
+    else:
+        status = 400
+    return jsonify({"error": message, "code": code}), status
 
 
 @app.route("/api/agent/files")
 def agent_files():
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Project files are available only on this machine"}), 403
+    project_id = str(request.args.get("project_id") or "").strip()
     try:
-        root = _resolve_agent_cwd(request.args.get("cwd"))
-    except ValueError as e:
+        _project, root = _agent_request_root(
+            project_id=project_id,
+            raw_cwd=request.args.get("cwd"),
+        )
+    except TypeError as e:
         return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e.args[0])}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409 if project_id else 400
     rel = str(request.args.get("path") or "").strip()
+    from .project_security import SensitiveProjectPathError, list_project_directory
+
     try:
-        target = _resolve_in_root(root, rel)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    if not target.exists() or not target.is_dir():
-        return jsonify({"error": f"Directory not found: {rel or '.'}"}), 404
-    entries = []
-    for p in sorted(target.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
-        if p.name.startswith(".") or p.name in _AGENT_SKIP_ENTRIES:
-            continue
-        entries.append({
-            "name": p.name,
-            "type": "file" if p.is_file() else "dir",
-            "size": p.stat().st_size if p.is_file() else 0,
-        })
-    return jsonify({"path": rel, "entries": entries})
+        canonical_rel, safe_entries, truncated = list_project_directory(
+            root,
+            rel or ".",
+        )
+    except SensitiveProjectPathError as e:
+        return _project_file_error(e)
+    entries = [
+        {
+            "name": entry.name,
+            "type": "dir" if entry.is_dir else "file",
+            "size": entry.size,
+        }
+        for entry in sorted(
+            (
+                entry
+                for entry in safe_entries
+                if entry.name not in _AGENT_SKIP_ENTRIES
+            ),
+            key=lambda item: (not item.is_dir, item.name.casefold(), item.name),
+        )
+    ]
+    return jsonify({
+        "path": "" if canonical_rel == "." else canonical_rel,
+        "entries": entries,
+        "truncated": truncated,
+    })
 
 
 @app.route("/api/agent/file")
 def agent_file():
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Project files are available only on this machine"}), 403
+    project_id = str(request.args.get("project_id") or "").strip()
     try:
-        root = _resolve_agent_cwd(request.args.get("cwd"))
-    except ValueError as e:
+        _project, root = _agent_request_root(
+            project_id=project_id,
+            raw_cwd=request.args.get("cwd"),
+        )
+    except TypeError as e:
         return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e.args[0])}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409 if project_id else 400
     rel = str(request.args.get("path") or "").strip()
+    from .project_security import SensitiveProjectPathError, read_project_text
+
     try:
-        target = _resolve_in_root(root, rel)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    if not target.exists() or not target.is_file():
-        return jsonify({"error": f"File not found: {rel}"}), 404
-    size = target.stat().st_size
-    if size > AGENT_FILE_MAX_BYTES:
-        return jsonify({"error": f"File exceeds {AGENT_FILE_MAX_BYTES} bytes: {size}"}), 413
-    data = target.read_bytes()
+        canonical_rel, content = read_project_text(
+            root,
+            rel,
+            max_bytes=AGENT_FILE_MAX_BYTES,
+        )
+    except SensitiveProjectPathError as e:
+        return _project_file_error(e)
+    data = content.encode("utf-8")
     return jsonify({
-        "path": rel,
-        "content": data.decode("utf-8", errors="replace"),
+        "path": canonical_rel,
+        "content": content,
         "sha256": hashlib.sha256(data).hexdigest(),
         "size": len(data),
     })
@@ -1620,25 +1764,50 @@ def _staged_summary(row: dict) -> dict:
     return out
 
 
+def _staged_scope_conflict(exc: ValueError):
+    return jsonify({"error": str(exc)}), 409
+
+
+def _staged_local_guard():
+    if not _is_trusted_local_approval_request():
+        return jsonify({
+            "error": "Staged changes are available only on this machine"
+        }), 403
+    return None
+
+
 @app.route("/api/agent/sessions/<session_id>/changes")
 def agent_session_changes(session_id):
+    local_guard = _staged_local_guard()
+    if local_guard is not None:
+        return local_guard
     from .cookbook.persistence import get_session, list_staged_changes
 
-    if get_session(session_id) is None:
+    session = get_session(session_id)
+    if session is None:
         return jsonify({"error": "Session not found"}), 404
-    rows = list_staged_changes(
-        session_id,
-        run_id=request.args.get("run_id") or None,
-        status=request.args.get("status") or None,
-    )
+    try:
+        rows = list_staged_changes(
+            session_id,
+            run_id=request.args.get("run_id") or None,
+            status=request.args.get("status") or None,
+        )
+    except ValueError as e:
+        return _staged_scope_conflict(e)
     return jsonify({"changes": [_staged_summary(r) for r in rows]})
 
 
 @app.route("/api/agent/changes/<change_id>")
 def agent_change_detail(change_id):
+    local_guard = _staged_local_guard()
+    if local_guard is not None:
+        return local_guard
     from .cookbook.persistence import get_staged_change
 
-    row = get_staged_change(change_id)
+    try:
+        row = get_staged_change(change_id)
+    except ValueError as e:
+        return _staged_scope_conflict(e)
     if row is None:
         return jsonify({"error": "Change not found"}), 404
     return jsonify(row)
@@ -1646,9 +1815,21 @@ def agent_change_detail(change_id):
 
 @app.route("/api/agent/changes/<change_id>/apply", methods=["POST"])
 def agent_change_apply(change_id):
-    from .cookbook.persistence import apply_staged_change
+    local_guard = _staged_local_guard()
+    if local_guard is not None:
+        return local_guard
+    from .cookbook.persistence import apply_staged_change, get_staged_change
 
-    result = apply_staged_change(change_id)
+    try:
+        row = get_staged_change(change_id)
+    except ValueError as e:
+        return _staged_scope_conflict(e)
+    if row is None:
+        return jsonify({"error": "Change not found"}), 404
+    try:
+        result = apply_staged_change(change_id)
+    except ValueError as e:
+        return _staged_scope_conflict(e)
     if result["status"] == "not_found":
         return jsonify({"error": "Change not found"}), 404
     if result["status"] == "applied":
@@ -1658,22 +1839,43 @@ def agent_change_apply(change_id):
 
 @app.route("/api/agent/changes/<change_id>/reject", methods=["POST"])
 def agent_change_reject(change_id):
+    local_guard = _staged_local_guard()
+    if local_guard is not None:
+        return local_guard
     from .cookbook.persistence import get_staged_change, set_staged_status
 
-    row = get_staged_change(change_id)
+    try:
+        row = get_staged_change(change_id)
+    except ValueError as e:
+        return _staged_scope_conflict(e)
     if row is None:
         return jsonify({"error": "Change not found"}), 404
     if row["status"] != "pending":
         return jsonify({"status": "not_pending", "current": row["status"]}), 409
-    set_staged_status(change_id, "rejected")
+    try:
+        set_staged_status(change_id, "rejected")
+    except ValueError as e:
+        return _staged_scope_conflict(e)
     return jsonify({"status": "rejected", "path": row["path"]})
 
 
 @app.route("/api/agent/changes/<change_id>/revert", methods=["POST"])
 def agent_change_revert(change_id):
-    from .cookbook.persistence import revert_applied_change
+    local_guard = _staged_local_guard()
+    if local_guard is not None:
+        return local_guard
+    from .cookbook.persistence import get_staged_change, revert_applied_change
 
-    result = revert_applied_change(change_id)
+    try:
+        row = get_staged_change(change_id)
+    except ValueError as e:
+        return _staged_scope_conflict(e)
+    if row is None:
+        return jsonify({"error": "Change not found"}), 404
+    try:
+        result = revert_applied_change(change_id)
+    except ValueError as e:
+        return _staged_scope_conflict(e)
     if result["status"] == "not_found":
         return jsonify({"error": "Change not found"}), 404
     if result["status"] == "reverted":
@@ -1683,13 +1885,20 @@ def agent_change_revert(change_id):
 
 @app.route("/api/agent/sessions/<session_id>/changes/apply", methods=["POST"])
 def agent_session_changes_apply(session_id):
+    local_guard = _staged_local_guard()
+    if local_guard is not None:
+        return local_guard
     from .cookbook.persistence import apply_staged_change, get_session, list_staged_changes
 
-    if get_session(session_id) is None:
+    session = get_session(session_id)
+    if session is None:
         return jsonify({"error": "Session not found"}), 404
     data = request.get_json(silent=True) or {}
     ids = data.get("ids")
-    pending = list_staged_changes(session_id, status="pending")  # created_at ASC
+    try:
+        pending = list_staged_changes(session_id, status="pending")  # created_at ASC
+    except ValueError as e:
+        return _staged_scope_conflict(e)
     if isinstance(ids, list):
         wanted = [str(i) for i in ids]
         pending = [r for r in pending if r["id"] in wanted]
@@ -1699,7 +1908,10 @@ def agent_session_changes_apply(session_id):
         unknown = []
     applied, conflicts, errors = [], [], []
     for row in pending:
-        result = apply_staged_change(row["id"])
+        try:
+            result = apply_staged_change(row["id"])
+        except ValueError as e:
+            return _staged_scope_conflict(e)
         if result["status"] == "applied":
             applied.append(row["id"])
         elif result["status"] == "conflict":
@@ -1722,6 +1934,8 @@ def _agent_chat_options(provider: object) -> dict:
 
 @app.route("/api/agent/chat", methods=["POST"])
 def agent_chat():
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Agent runs are available only on this machine"}), 403
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         data = {}
@@ -1739,30 +1953,11 @@ def agent_chat():
         }), 403
 
     model = str(data.get("model") or "").strip()
-    if not model:
-        model = (load_config().default_model or "").strip()
-    if not model:
-        return jsonify({"error": "Model required"}), 400
-
-    raw_cwd = data.get("cwd")
-    if agent_name == "build" and (
-        not isinstance(raw_cwd, str) or not raw_cwd.strip()
-    ):
-        return jsonify({"error": "Build mode requires an explicit project cwd"}), 400
-    try:
-        cwd = _resolve_agent_cwd(raw_cwd)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    if agent_name == "build":
-        try:
-            _require_exact_configured_project_root(cwd)
-        except ValueError as e:
-            configured_root = str(e).split(": ", 1)[-1]
-            return jsonify(
-                {"error": str(e), "configured_root": configured_root}
-            ), 400
 
     workspace = str(data.get("workspace") or "").strip()
+    project_id = str(data.get("project_id") or "").strip()
+    raw_cwd = data.get("cwd")
+    cwd_supplied = "cwd" in data
     session_id_raw = data.get("session_id")
     session_id = str(session_id_raw).strip() if session_id_raw else ""
     session_name = str(data.get("name") or message.replace("\n", " ")[:64]).strip()
@@ -1772,17 +1967,97 @@ def agent_chat():
         create_session,
         delete_session,
         get_session,
+        get_project,
+        revalidate_project_root,
         save_session,
     )
 
     saved_session = get_session(session_id) if session_id else None
     if session_id and saved_session is None:
         return jsonify({"error": "Session not found"}), 404
-    if saved_session is not None and not workspace:
-        workspace = str(saved_session.get("workspace") or "")
+
+    saved_project_id = (
+        str(saved_session.get("project_id") or "") if saved_session is not None else ""
+    )
+    if (project_id or saved_project_id) and not _is_trusted_local_approval_request():
+        return jsonify({
+            "error": "Project-bound agent runs are available only on this machine"
+        }), 403
+    if saved_project_id:
+        if project_id and project_id != saved_project_id:
+            return jsonify({"error": "Thread belongs to a different project"}), 409
+        if cwd_supplied:
+            return jsonify({"error": "cwd cannot be supplied for a project-bound thread"}), 409
+        project_id = saved_project_id
+    elif saved_session is not None and project_id:
+        return jsonify({"error": "Legacy unassigned threads cannot be bound implicitly"}), 409
+
+    project = None
+    if project_id:
+        if cwd_supplied:
+            return jsonify({"error": "cwd cannot be supplied with project_id"}), 400
+        project = get_project(project_id)
+        if project is None:
+            return jsonify({"error": "Project not found"}), 404
+        project_workspace = str(project.get("workspace") or "")
+        if workspace and workspace != project_workspace:
+            return jsonify({"error": "Workspace does not match the selected project"}), 409
+        if saved_session is not None and str(saved_session.get("workspace") or "") != project_workspace:
+            return jsonify({"error": "Thread workspace does not match its project"}), 409
+        try:
+            cwd = revalidate_project_root(project)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 409
+        workspace = project_workspace
+    else:
+        if saved_session is not None:
+            saved_workspace = str(saved_session.get("workspace") or "")
+            if workspace and workspace != saved_workspace:
+                return jsonify({"error": "Thread belongs to a different workspace"}), 409
+            workspace = saved_workspace
+        if agent_name == "build" and (
+            not isinstance(raw_cwd, str) or not raw_cwd.strip()
+        ):
+            return jsonify({"error": "Build mode requires an explicit project cwd"}), 400
+        try:
+            cwd = _resolve_agent_cwd(raw_cwd)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    if agent_name == "build":
+        try:
+            _require_exact_configured_project_root(cwd)
+        except ValueError as e:
+            configured_root = str(e).split(": ", 1)[-1]
+            return jsonify(
+                {"error": str(e), "configured_root": configured_root}
+            ), 409 if project_id else 400
+
+    project_config = None
+    if project_id:
+        try:
+            _assert_registered_project_root(project_id, cwd)
+            project_config = resolve_config(cwd)
+            _assert_registered_project_root(project_id, cwd)
+        except (UnsafeProjectConfigError, _ProjectRootDriftError) as e:
+            return jsonify({"error": str(e)}), 409
+
+    if not model:
+        if project_id:
+            model = (project_config.default_model or "").strip()
+        else:
+            model = (load_config().default_model or "").strip()
+    if not model:
+        return jsonify({"error": "Model required"}), 400
+
     created_session = not session_id
     if created_session:
-        session_id = create_session(name=session_name, model=model, workspace=workspace)
+        session_id = create_session(
+            name=session_name,
+            model=model,
+            workspace=workspace,
+            project_id=project_id or None,
+        )
 
     history = _clean_session_messages(data.get("messages"))
     if not history and saved_session is not None:
@@ -1799,6 +2074,8 @@ def agent_chat():
         sandbox_capability = (
             probe_project_sandbox(cwd) if agent_name == "build" else None
         )
+        if project_id:
+            _assert_registered_project_root(project_id, cwd)
         sandbox_tasks = (
             sandbox_capability.tasks
             if sandbox_capability is not None and sandbox_capability.available
@@ -1809,7 +2086,9 @@ def agent_chat():
             model,
             sandbox_tasks=sandbox_tasks,
         )
-        provider = default_provider()
+        provider = default_provider(cwd)
+        if project_id:
+            _assert_registered_project_root(project_id, cwd)
         chat_options = _agent_chat_options(provider)
         run_id = uuid.uuid4().hex
         run = _AgentRun(
@@ -1818,7 +2097,16 @@ def agent_chat():
             session_id=session_id,
             created_at=time.time(),
         )
-        handlers = TOOL_HANDLERS
+        base_handlers = (
+            _project_bound_tool_handlers(
+                TOOL_HANDLERS,
+                project_id=project_id,
+                expected_root=cwd,
+            )
+            if project_id
+            else TOOL_HANDLERS
+        )
+        handlers = base_handlers
         schemas = list(TOOL_SCHEMAS)
         permission_engine = None
         tool_preparers = {}
@@ -1829,8 +2117,10 @@ def agent_chat():
                 start_dir=cwd,
                 permission_scope_root=cwd,
             )
+            if project_id:
+                _assert_registered_project_root(project_id, cwd)
             handlers = build_staged_handlers(
-                TOOL_HANDLERS,
+                base_handlers,
                 session_id=session_id,
                 run_id=run_id,
                 event_queue=_PersistedRunEventSink(run),
@@ -1845,17 +2135,37 @@ def agent_chat():
                     capability=sandbox_capability,
                 )
 
+                def require_current_project_root() -> None:
+                    if not project_id:
+                        return
+                    try:
+                        _assert_registered_project_root(project_id, cwd)
+                    except _ProjectRootDriftError as exc:
+                        raise SandboxError(
+                            "project_identity_drift",
+                            "Registered project root identity changed",
+                        ) from exc
+
                 def prepare_run_task(args: dict, _ctx: dict) -> PreparedToolCall:
                     if set(args) != {"name"} or not isinstance(args.get("name"), str):
                         raise SandboxError(
                             "invalid_task_request",
                             "run_task accepts only one configured task name",
                         )
+                    require_current_project_root()
                     frozen = broker.prepare_task(args["name"])
+
+                    def execute_frozen_task() -> tuple[bool, str]:
+                        try:
+                            require_current_project_root()
+                        except SandboxError as exc:
+                            return False, f"error: {exc.code}: {exc.message}"
+                        return frozen.execute_outcome()
+
                     return PreparedToolCall(
                         permission_target=frozen.permission_target,
                         approval_target=frozen.approval_target,
-                        execute=frozen.execute_outcome,
+                        execute=execute_frozen_task,
                     )
 
                 tool_preparers["run_task"] = prepare_run_task
@@ -1876,6 +2186,10 @@ def agent_chat():
             always_ask_tools=always_ask_tools,
             never_remember_tools=never_remember_tools,
         )
+    except (UnsafeProjectConfigError, _ProjectRootDriftError) as e:
+        if created_session:
+            delete_session(session_id)
+        return jsonify({"error": str(e)}), 409
     except Exception:
         if created_session:
             delete_session(session_id)
@@ -1889,8 +2203,13 @@ def agent_chat():
 
     def pump():
         async def _drive():
-            stream = runner.run_stream(message, runner_history)
+            stream = None
             try:
+                if project_id:
+                    _assert_registered_project_root(project_id, cwd)
+                stream = runner.run_stream(message, runner_history)
+                if project_id:
+                    _assert_registered_project_root(project_id, cwd)
                 async for ev in stream:
                     if run.cancelled and run.cancel_reason == "user_cancelled":
                         if _is_bounded_late_sandbox_cleanup_failure(ev):
@@ -1908,7 +2227,8 @@ def agent_chat():
                     if run.cancelled:
                         break
             finally:
-                await stream.aclose()
+                if stream is not None:
+                    await stream.aclose()
 
         try:
             asyncio.run(_drive())
@@ -3544,8 +3864,18 @@ def api_get_workspace(workspace_id):
 @app.route("/api/workspaces/<workspace_id>", methods=["DELETE"])
 def api_delete_workspace(workspace_id):
     from .cookbook.config import delete_workspace
+    from .cookbook.persistence import list_projects
+
+    if list_projects(workspace_id):
+        return jsonify({
+            "error": "Cannot delete a workspace with registered projects"
+        }), 409
     if delete_workspace(workspace_id):
         return jsonify({"success": True})
+    if list_projects(workspace_id):
+        return jsonify({
+            "error": "Cannot delete a workspace with registered projects"
+        }), 409
     return jsonify({"error": "Cannot delete default workspace or workspace not found"}), 400
 
 
@@ -3555,6 +3885,62 @@ def api_switch_workspace(workspace_id):
     if not switch_workspace(workspace_id):
         return jsonify({"error": "Workspace not found"}), 404
     return jsonify({"success": True, "workspace": workspace_id})
+
+
+@app.route("/api/workspaces/<workspace_id>/projects", methods=["GET", "POST"])
+def api_workspace_projects(workspace_id):
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Project records are available only on this machine"}), 403
+
+    from .cookbook.config import get_workspace
+    from .cookbook.persistence import (
+        ProjectConflictError,
+        create_project,
+        list_projects,
+    )
+
+    if get_workspace(workspace_id) is None:
+        return jsonify({"error": "Workspace not found"}), 404
+    if request.method == "GET":
+        return jsonify([_public_project(row) for row in list_projects(workspace_id)])
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    name = data.get("name")
+    root = data.get("root")
+    description = data.get("description", "")
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({"error": "Project name required"}), 400
+    if not isinstance(root, str) or not root.strip():
+        return jsonify({"error": "Project root required"}), 400
+    if not isinstance(description, str):
+        return jsonify({"error": "Project description must be text"}), 400
+    try:
+        project = create_project(
+            workspace=workspace_id,
+            name=name,
+            root=root,
+            description=description,
+        )
+    except ProjectConflictError as e:
+        return jsonify({"error": str(e)}), 409
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(_public_project(project)), 201
+
+
+@app.route("/api/projects/<project_id>", methods=["GET"])
+def api_get_project(project_id):
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Project records are available only on this machine"}), 403
+
+    from .cookbook.persistence import get_project
+
+    project = get_project(project_id)
+    if project is None:
+        return jsonify({"error": "Project not found"}), 404
+    return jsonify(_public_project(project))
 
 
 @app.route("/api/sessions", methods=["GET"])
@@ -3568,18 +3954,51 @@ def api_list_sessions():
             limit = max(1, min(int(raw_limit), 500))
         except ValueError:
             return jsonify({"error": "limit must be an integer"}), 400
-    return jsonify(list_sessions(workspace=ws, limit=limit))
+    project_id = request.args.get("project_id")
+    if not _is_trusted_local_approval_request():
+        if project_id not in (None, "", "unassigned"):
+            return jsonify({
+                "error": "Project-bound threads are available only on this machine"
+            }), 403
+        project_id = "unassigned"
+    try:
+        rows = list_sessions(workspace=ws, limit=limit, project_id=project_id)
+    except ValueError as e:
+        message = str(e)
+        if "does not exist" in message:
+            return jsonify({"error": "Project not found"}), 404
+        if "workspace" in message:
+            return jsonify({"error": message}), 409
+        return jsonify({"error": message}), 400
+    return jsonify(rows)
 
 
 @app.route("/api/sessions", methods=["POST"])
 def api_create_session():
-    from .cookbook.persistence import create_session
-    data = request.get_json() or {}
+    from .cookbook.persistence import create_session, get_project
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    workspace = str(data.get("workspace") or "").strip()
+    project_id = str(data.get("project_id") or "").strip()
+    if project_id and not _is_trusted_local_approval_request():
+        return jsonify({
+            "error": "Project-bound threads are available only on this machine"
+        }), 403
+    if project_id:
+        project = get_project(project_id)
+        if project is None:
+            return jsonify({"error": "Project not found"}), 404
+        project_workspace = str(project.get("workspace") or "")
+        if workspace and workspace != project_workspace:
+            return jsonify({"error": "Workspace does not match the selected project"}), 409
+        workspace = project_workspace
     sid = create_session(
         name=data.get("name", ""),
         model=data.get("model", ""),
         system_prompt=data.get("system_prompt", ""),
-        workspace=data.get("workspace", ""),
+        workspace=workspace,
+        project_id=project_id or None,
     )
     return jsonify({"id": sid}), 201
 
@@ -3590,26 +4009,67 @@ def api_get_session(session_id):
     session = get_session(session_id)
     if not session:
         return jsonify({"error": "Session not found"}), 404
+    if session.get("project_id") and not _is_trusted_local_approval_request():
+        return jsonify({
+            "error": "Project-bound threads are available only on this machine"
+        }), 403
     return jsonify(session)
 
 
 @app.route("/api/sessions/<session_id>", methods=["PUT"])
 def api_save_session(session_id):
-    from .cookbook.persistence import save_session
-    data = request.get_json() or {}
+    from .cookbook.persistence import get_project, get_session, save_session
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    existing = get_session(session_id)
+    workspace = str(data.get("workspace") or "").strip()
+    project_id = str(data.get("project_id") or "").strip()
+    if (
+        (project_id or (existing is not None and existing.get("project_id")))
+        and not _is_trusted_local_approval_request()
+    ):
+        return jsonify({
+            "error": "Project-bound threads are available only on this machine"
+        }), 403
+    if existing is not None:
+        existing_workspace = str(existing.get("workspace") or "")
+        existing_project = str(existing.get("project_id") or "")
+        if workspace and workspace != existing_workspace:
+            return jsonify({"error": "Thread belongs to a different workspace"}), 409
+        if project_id and project_id != existing_project:
+            return jsonify({"error": "Thread belongs to a different project"}), 409
+    elif project_id:
+        project = get_project(project_id)
+        if project is None:
+            return jsonify({"error": "Project not found"}), 404
+        project_workspace = str(project.get("workspace") or "")
+        if workspace and workspace != project_workspace:
+            return jsonify({"error": "Workspace does not match the selected project"}), 409
+        workspace = project_workspace
     save_session(
         session_id=session_id,
         model=data.get("model", ""),
         messages=data.get("messages", []),
         name=data.get("name", ""),
-        workspace=data.get("workspace", ""),
+        workspace=workspace,
+        project_id=project_id or None,
     )
     return jsonify({"success": True})
 
 
 @app.route("/api/sessions/<session_id>", methods=["DELETE"])
 def api_delete_session(session_id):
-    from .cookbook.persistence import delete_session
+    from .cookbook.persistence import delete_session, get_session
+    session = get_session(session_id)
+    if (
+        session is not None
+        and session.get("project_id")
+        and not _is_trusted_local_approval_request()
+    ):
+        return jsonify({
+            "error": "Project-bound threads are available only on this machine"
+        }), 403
     delete_session(session_id)
     return jsonify({"success": True})
 

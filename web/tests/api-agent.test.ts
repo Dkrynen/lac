@@ -5,7 +5,7 @@ import { api, ApiError } from "../src/lib/api.ts";
 
 const PINNED_IMAGE = `example/lac@sha256:${"a".repeat(64)}`;
 
-test("agentSandbox requests status for the exact encoded project root", async () => {
+test("agentSandbox requests status for the exact encoded project identity", async () => {
   const originalFetch = globalThis.fetch;
   let capturedUrl: string | URL | Request | undefined;
   globalThis.fetch = (async (url) => {
@@ -24,8 +24,8 @@ test("agentSandbox requests status for the exact encoded project root", async ()
   }) as typeof fetch;
 
   try {
-    const result = await api.agentSandbox("C:\\work\\repo & one");
-    assert.equal(capturedUrl, "/api/agent/sandbox?cwd=C%3A%5Cwork%5Crepo%20%26%20one");
+    const result = await api.agentSandbox("project/one & two");
+    assert.equal(capturedUrl, "/api/agent/sandbox?project_id=project%2Fone%20%26%20two");
     assert.equal(result.code, "daemon_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
@@ -66,7 +66,7 @@ test("agentSandbox fails closed on malformed or contradictory readiness response
             headers: { "Content-Type": "application/json" },
           })) as typeof fetch;
         await assert.rejects(
-          () => api.agentSandbox("C:\\work\\repo"),
+          () => api.agentSandbox("project-1"),
           /Invalid agent sandbox status response/
         );
       });
@@ -105,8 +105,8 @@ test("agentSandbox accepts a consistent ready response and a bounded unavailable
     })) as typeof fetch;
 
   try {
-    assert.equal((await api.agentSandbox("C:\\work\\repo")).available, true);
-    assert.equal((await api.agentSandbox("C:\\work\\repo")).available, false);
+    assert.equal((await api.agentSandbox("project-1")).available, true);
+    assert.equal((await api.agentSandbox("project-1")).available, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

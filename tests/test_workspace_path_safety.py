@@ -45,6 +45,21 @@ def test_delete_workspace_still_works_for_real_workspace(isolated_home):
     assert not (_workspaces_dir() / ws.id).exists()
 
 
+def test_delete_workspace_refuses_registered_projects(
+    isolated_home, tmp_path
+):
+    from backend.cookbook import persistence
+
+    ws = create_workspace("Protected Client")
+    root = tmp_path / "external-project"
+    root.mkdir()
+    persistence.create_project(ws.id, "Project", str(root))
+
+    assert delete_workspace(ws.id) is False
+    assert (_workspaces_dir() / ws.id).is_dir()
+    assert root.is_dir()
+
+
 def test_create_workspace_reserved_device_name_raises_value_error(isolated_home, monkeypatch):
     # "con" (and nul/aux/prn/com1-9/lpt1-9) passes the path-traversal guard
     # cleanly -- it's not an escape attempt -- but Win32 refuses to create
@@ -90,3 +105,25 @@ def test_cli_workspace_create_traversal_exits_clean(isolated_home):
     with pytest.raises(SystemExit) as e:
         cli_mod.cmd_workspace(args)
     assert e.value.code == 1
+
+
+def test_cli_workspace_delete_reports_registered_project_block(
+    isolated_home, tmp_path, capsys
+):
+    import cli as cli_mod
+    from backend.cookbook import persistence
+
+    ws = create_workspace("Protected CLI Client")
+    root = tmp_path / "cli-external-project"
+    root.mkdir()
+    persistence.create_project(ws.id, "Project", str(root))
+    parser = cli_mod.build_parser()
+    args = parser.parse_args(["workspace", "delete", ws.id, "--yes"])
+
+    cli_mod.cmd_workspace(args)
+
+    output = capsys.readouterr().out
+    assert "registered projects" in output.lower()
+    assert "default workspace" not in output.lower()
+    assert (_workspaces_dir() / ws.id).is_dir()
+    assert root.is_dir()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from backend.provider import create_provider, default_provider, list_providers
 from backend.provider.base import ProviderError
@@ -21,6 +22,26 @@ def test_create_default_provider_is_ollama():
 def test_create_unknown_raises():
     with pytest.raises(ProviderError):
         create_provider("nonexistent_provider")
+
+
+def test_default_provider_resolves_configuration_from_explicit_project_root(
+    monkeypatch, tmp_path
+):
+    import backend.provider.registry as registry
+
+    starts = []
+
+    def fake_resolve(start=None):
+        starts.append(start)
+        return SimpleNamespace(providers={}, ollama_host="http://project-ollama:11434")
+
+    monkeypatch.setattr(registry, "resolve_config", fake_resolve)
+
+    provider = registry.default_provider(tmp_path)
+
+    assert starts == [tmp_path]
+    assert isinstance(provider, OllamaProvider)
+    assert provider.base_url == "http://project-ollama:11434"
 
 
 @pytest.mark.live

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from pathlib import Path
 
 import pytest
@@ -334,6 +335,135 @@ def test_revert_rejail_blocks_tampered_path(isolated_home, tmp_path):
     result = persistence.revert_applied_change(row["id"])
     assert result["status"] == "error"
     assert not (tmp_path.parent / "evil.txt").exists()
+
+
+def test_apply_serializes_latest_wins_update_without_marking_newer_content_applied(
+    isolated_home, tmp_path, monkeypatch
+):
+    from backend.cookbook import persistence
+
+    root = tmp_path / "project"
+    root.mkdir()
+    project = persistence.create_project("default", "Project", str(root))
+    sid = persistence.create_session(model="m", project_id=project["id"])
+    row = persistence.stage_change(
+        sid, "run-a", str(root), "result.txt", "first revision"
+    )
+
+    hash_entered = threading.Event()
+    release_hash = threading.Event()
+    update_finished = threading.Event()
+    original_disk_hash = persistence._disk_hash
+    apply_result: dict = {}
+    update_result: dict = {}
+
+    def blocking_disk_hash(target):
+        hash_entered.set()
+        assert release_hash.wait(5)
+        return original_disk_hash(target)
+
+    def apply_change():
+        try:
+            apply_result.update(persistence.apply_staged_change(row["id"]))
+        except BaseException as exc:  # surface thread failures in the test thread
+            apply_result["exception"] = exc
+
+    def update_change():
+        try:
+            update_result.update(
+                persistence.stage_change(
+                    sid, "run-b", str(root), "result.txt", "second revision"
+                )
+            )
+        except BaseException as exc:  # surface thread failures in the test thread
+            update_result["exception"] = exc
+        finally:
+            update_finished.set()
+
+    monkeypatch.setattr(persistence, "_disk_hash", blocking_disk_hash)
+    applying = threading.Thread(target=apply_change)
+    applying.start()
+    assert hash_entered.wait(5)
+    updating = threading.Thread(target=update_change)
+    updating.start()
+
+    # Without a write transaction, the latest-wins update completes here and
+    # apply later writes the stale revision while marking the newer row applied.
+    update_finished.wait(0.5)
+    release_hash.set()
+    applying.join(5)
+    updating.join(5)
+
+    assert not applying.is_alive()
+    assert not updating.is_alive()
+    assert "exception" not in apply_result
+    assert "exception" not in update_result
+    assert apply_result["status"] == "applied"
+    assert (root / "result.txt").read_text(encoding="utf-8") == "first revision"
+    rows = persistence.list_staged_changes(sid)
+    assert [(item["run_id"], item["new_content"], item["status"]) for item in rows] == [
+        ("run-a", "first revision", "applied"),
+        ("run-b", "second revision", "pending"),
+    ]
+
+
+def test_apply_serializes_reject_so_reject_cannot_report_success_before_a_write(
+    isolated_home, tmp_path, monkeypatch
+):
+    from backend.cookbook import persistence
+
+    root = tmp_path / "project"
+    root.mkdir()
+    project = persistence.create_project("default", "Project", str(root))
+    sid = persistence.create_session(model="m", project_id=project["id"])
+    row = persistence.stage_change(sid, "run", str(root), "result.txt", "applied")
+
+    hash_entered = threading.Event()
+    release_hash = threading.Event()
+    reject_finished = threading.Event()
+    original_disk_hash = persistence._disk_hash
+    apply_result: dict = {}
+    reject_result: dict = {}
+
+    def blocking_disk_hash(target):
+        hash_entered.set()
+        assert release_hash.wait(5)
+        return original_disk_hash(target)
+
+    def apply_change():
+        try:
+            apply_result.update(persistence.apply_staged_change(row["id"]))
+        except BaseException as exc:
+            apply_result["exception"] = exc
+
+    def reject_change():
+        try:
+            persistence.set_staged_status(row["id"], "rejected")
+            reject_result["status"] = "rejected"
+        except BaseException as exc:
+            reject_result["exception"] = exc
+        finally:
+            reject_finished.set()
+
+    monkeypatch.setattr(persistence, "_disk_hash", blocking_disk_hash)
+    applying = threading.Thread(target=apply_change)
+    applying.start()
+    assert hash_entered.wait(5)
+    rejecting = threading.Thread(target=reject_change)
+    rejecting.start()
+
+    reject_finished.wait(0.5)
+    release_hash.set()
+    applying.join(5)
+    rejecting.join(5)
+
+    assert not applying.is_alive()
+    assert not rejecting.is_alive()
+    assert "exception" not in apply_result
+    assert apply_result["status"] == "applied"
+    assert isinstance(reject_result.get("exception"), ValueError)
+    assert (root / "result.txt").read_text(encoding="utf-8") == "applied"
+    assert persistence.get_staged_change(row["id"])["status"] == "applied"
 
 
 def _build_handlers(sid, run_id="run1", event_queue=None):

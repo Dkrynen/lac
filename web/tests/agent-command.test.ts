@@ -38,12 +38,12 @@ const validRunTaskTarget = {
   staged_changes: [STAGED_CHANGE],
 } as const;
 
-test("sandbox status commits only for the latest exact selected root", () => {
-  const request = { root: "C:\\work\\repo", sequence: 4 };
+test("sandbox status commits only for the latest exact selected project", () => {
+  const request = { projectId: "project-a", sequence: 4 };
 
-  assert.equal(shouldCommitSandboxStatus("C:\\work\\repo", 4, request), true);
-  assert.equal(shouldCommitSandboxStatus("C:\\work\\other", 4, request), false);
-  assert.equal(shouldCommitSandboxStatus("C:\\work\\repo", 5, request), false);
+  assert.equal(shouldCommitSandboxStatus("project-a", 4, request), true);
+  assert.equal(shouldCommitSandboxStatus("project-b", 4, request), false);
+  assert.equal(shouldCommitSandboxStatus("project-a", 5, request), false);
 });
 
 test("sandbox status presentation stays honest and distinguishes readiness codes", () => {

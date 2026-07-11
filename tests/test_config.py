@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from backend.config import (
     AptProjectConfig,
+    UnsafeProjectConfigError,
     find_project_root,
     parse_jsonc,
     resolve_config,
@@ -62,3 +67,38 @@ def test_resolve_config_env_overrides_host(monkeypatch):
 def test_resolve_config_mcp_servers_filtered_by_enabled():
     cfg = resolve_config()
     assert "filesystem" in cfg.mcp_servers
+
+
+def test_resolve_config_rejects_linked_project_config_directory(tmp_path):
+    root = tmp_path / "project"
+    outside_apt = tmp_path / "outside-apt"
+    root.mkdir()
+    outside_apt.mkdir()
+    (outside_apt / "apt.jsonc").write_text(
+        '{"default_model":"outside:1b"}', encoding="utf-8"
+    )
+    linked_apt = root / ".apt"
+    if os.name == "nt":
+        created = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(linked_apt), str(outside_apt)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode:
+            pytest.skip(f"directory junction unavailable: {created.stderr}")
+    else:
+        try:
+            linked_apt.symlink_to(outside_apt, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlink unavailable: {exc}")
+
+    try:
+        with pytest.raises(UnsafeProjectConfigError, match="config directory"):
+            resolve_config(root)
+    finally:
+        if linked_apt.exists() or linked_apt.is_symlink():
+            if os.name == "nt":
+                linked_apt.rmdir()
+            else:
+                linked_apt.unlink()

@@ -17,7 +17,7 @@ export interface ApprovalResponseState {
 export interface WorkbenchSendState {
   model: string;
   mode: WorkbenchMode;
-  projectRoot: string;
+  projectId: string;
   input: string;
   warming: boolean;
   streaming: boolean;
@@ -78,12 +78,12 @@ export function isApprovalResponseRelevant(
   );
 }
 
-export function buildNeedsProjectRoot(mode: WorkbenchMode, projectRoot: string): boolean {
-  return mode === "build" && projectRoot.trim().length === 0;
+export function agentModeNeedsProject(_mode: WorkbenchMode, projectId: string): boolean {
+  return projectId.trim().length === 0;
 }
 
-export function workbenchSendLabel(mode: WorkbenchMode, projectRoot: string): string {
-  return buildNeedsProjectRoot(mode, projectRoot) ? "Set project root" : "Send";
+export function workbenchSendLabel(mode: WorkbenchMode, projectId: string): string {
+  return agentModeNeedsProject(mode, projectId) ? "Select project" : "Send";
 }
 
 export function workbenchControlsDisabled(streaming: boolean, sessionLoading: boolean): boolean {
@@ -96,7 +96,7 @@ export function workbenchSendDisabled(state: WorkbenchSendState): boolean {
     state.warming ||
     workbenchControlsDisabled(state.streaming, state.sessionLoading) ||
     !state.input.trim() ||
-    buildNeedsProjectRoot(state.mode, state.projectRoot)
+    agentModeNeedsProject(state.mode, state.projectId)
   );
 }
 

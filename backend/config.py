@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -17,8 +18,27 @@ from backend.cookbook.config import (
 
 PROJECT_DIR = Path(".apt")
 PROJECT_CONFIG = PROJECT_DIR / "apt.jsonc"
+MAX_PROJECT_CONFIG_BYTES = 1024 * 1024
+_FILE_ATTRIBUTE_REPARSE_POINT = int(
+    getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+)
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema" / "apt.schema.json"
+
+
+class UnsafeProjectConfigError(ValueError):
+    """A project config path crossed the local no-link trust boundary."""
+
+
+@dataclass(frozen=True)
+class _ProjectConfigIdentity:
+    root: Path
+    path: Path
+    root_file_id: tuple[int, int]
+    apt_file_id: tuple[int, int]
+    config_file_id: tuple[int, int]
+    size: int
+    mtime_ns: int
 
 
 class ProviderConfig(BaseModel):
@@ -217,26 +237,155 @@ def project_config_path() -> Path:
     return cwd / PROJECT_CONFIG
 
 
+def _is_link_or_reparse(st: os.stat_result) -> bool:
+    attributes = int(getattr(st, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(st.st_mode) or bool(
+        attributes & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def _inspect_project_config_at_root(
+    root: Path,
+) -> _ProjectConfigIdentity | None:
+    """Inspect one exact config path without following child indirection."""
+
+    try:
+        canonical_root = root.resolve(strict=True)
+        root_st = canonical_root.stat()
+    except (OSError, RuntimeError):
+        return None
+    if not stat.S_ISDIR(root_st.st_mode):
+        return None
+
+    apt_dir = root / ".apt"
+    try:
+        apt_st = apt_dir.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise UnsafeProjectConfigError(
+            "project config directory is unavailable or unsafe"
+        ) from exc
+    if (
+        _is_link_or_reparse(apt_st)
+        or not stat.S_ISDIR(apt_st.st_mode)
+        or apt_st.st_dev != root_st.st_dev
+        or os.path.ismount(apt_dir)
+    ):
+        raise UnsafeProjectConfigError(
+            "project config directory is linked or unsafe"
+        )
+
+    path = apt_dir / "apt.jsonc"
+    try:
+        config_st = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise UnsafeProjectConfigError(
+            "project config file is unavailable or unsafe"
+        ) from exc
+    if (
+        _is_link_or_reparse(config_st)
+        or not stat.S_ISREG(config_st.st_mode)
+        or config_st.st_dev != root_st.st_dev
+        or int(getattr(config_st, "st_nlink", 1) or 1) != 1
+        or config_st.st_size > MAX_PROJECT_CONFIG_BYTES
+    ):
+        raise UnsafeProjectConfigError(
+            "project config file is linked, oversized, or unsafe"
+        )
+    try:
+        path.resolve(strict=True).relative_to(canonical_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise UnsafeProjectConfigError(
+            "project config file escapes its project root"
+        ) from exc
+    return _ProjectConfigIdentity(
+        root=canonical_root,
+        path=path,
+        root_file_id=(int(root_st.st_dev), int(root_st.st_ino)),
+        apt_file_id=(int(apt_st.st_dev), int(apt_st.st_ino)),
+        config_file_id=(int(config_st.st_dev), int(config_st.st_ino)),
+        size=int(config_st.st_size),
+        mtime_ns=int(config_st.st_mtime_ns),
+    )
+
+
+def _read_project_config(identity: _ProjectConfigIdentity) -> str:
+    """Read one bounded config and prove its path identity stayed stable."""
+
+    flags = os.O_RDONLY | int(getattr(os, "O_BINARY", 0))
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
+    fd: int | None = None
+    try:
+        fd = os.open(identity.path, flags)
+        with os.fdopen(fd, "rb") as handle:
+            fd = None
+            opened = os.fstat(handle.fileno())
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or int(getattr(opened, "st_nlink", 1) or 1) != 1
+                or (int(opened.st_dev), int(opened.st_ino))
+                != identity.config_file_id
+            ):
+                raise UnsafeProjectConfigError(
+                    "project config file changed during read"
+                )
+            payload = handle.read(MAX_PROJECT_CONFIG_BYTES + 1)
+            completed = os.fstat(handle.fileno())
+    except UnsafeProjectConfigError:
+        raise
+    except OSError as exc:
+        raise UnsafeProjectConfigError(
+            "project config file could not be read safely"
+        ) from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if len(payload) > MAX_PROJECT_CONFIG_BYTES:
+        raise UnsafeProjectConfigError("project config file exceeds the size limit")
+    final_identity = _inspect_project_config_at_root(identity.root)
+    if (
+        final_identity != identity
+        or (int(completed.st_dev), int(completed.st_ino))
+        != identity.config_file_id
+        or int(completed.st_size) != identity.size
+        or int(completed.st_mtime_ns) != identity.mtime_ns
+    ):
+        raise UnsafeProjectConfigError("project config file changed during read")
+    try:
+        return payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise UnsafeProjectConfigError(
+            "project config file is not valid UTF-8"
+        ) from exc
+
+
 def find_project_root(start: Path | None = None) -> Path | None:
     here = Path(start) if start else Path.cwd()
-    for cand in [here, *here.parents]:
-        if (cand / ".apt" / "apt.jsonc").exists():
-            return cand
+    for candidate in [here, *here.parents]:
+        identity = _inspect_project_config_at_root(candidate)
+        if identity is not None:
+            return identity.root
     return None
+
+
+def _load_project_config_at_root(root: Path) -> AptProjectConfig:
+    identity = _inspect_project_config_at_root(root)
+    if identity is None:
+        return AptProjectConfig()
+    raw = _read_project_config(identity)
+    try:
+        data = json.loads(strip_jsonc(raw))
+        return AptProjectConfig.model_validate(data)
+    except Exception:
+        return AptProjectConfig()
 
 
 def load_project_config(start: Path | None = None) -> AptProjectConfig:
     root = find_project_root(start)
-    if not root:
-        return AptProjectConfig()
-    path = root / ".apt" / "apt.jsonc"
-    if not path.exists():
-        return AptProjectConfig()
-    try:
-        data = parse_jsonc(path)
-        return AptProjectConfig.model_validate(data)
-    except Exception:
-        return AptProjectConfig()
+    return _load_project_config_at_root(root) if root else AptProjectConfig()
 
 
 @dataclass
@@ -269,8 +418,8 @@ _DEFAULTS = {
 
 def resolve_config(start: Path | None = None) -> ResolvedConfig:
     user = load_user_config()
-    project = load_project_config(start)
     root = find_project_root(start)
+    project = _load_project_config_at_root(root) if root else AptProjectConfig()
 
     def pick(field: str) -> Any:
         pv = getattr(project, field, None)

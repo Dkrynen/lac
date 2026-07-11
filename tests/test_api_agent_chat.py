@@ -54,7 +54,7 @@ def test_agent_chat_streams_and_persists_tool_events(flask_app, isolated_home, m
             }
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: FakeProvider())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: FakeProvider())
 
     project = tmp_path / "project"
     project.mkdir()
@@ -122,7 +122,7 @@ def test_agent_chat_ignores_project_agent_override(flask_app, isolated_home, mon
     )
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
 
     response = flask_app.test_client().post(
         "/api/agent/chat",
@@ -148,7 +148,7 @@ def test_agent_chat_preserves_saved_workspace_when_client_omits_it(flask_app, is
             yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     sid = persistence.create_session(name="t", model="mock:1b", workspace="saved-workspace")
     project = tmp_path / "project"
     project.mkdir()
@@ -185,7 +185,7 @@ def test_agent_chat_accepts_build_and_rejects_unknown_modes(
             yield {"type": "done", "content": "ready", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
     (project / ".apt").mkdir()
@@ -238,7 +238,7 @@ def test_build_requires_configured_project_root_and_evaluates_rules_from_it(
             yield {"type": "done", "content": "ready", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     configured = tmp_path / "configured"
     selected = configured / "backend"
     selected.mkdir(parents=True)
@@ -316,7 +316,7 @@ def test_build_runner_is_project_scoped_and_staged_while_read_modes_stay_read_on
             yield {"type": "done", "content": "ready", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "configured"
     project.mkdir()
     (project / ".apt").mkdir()
@@ -392,7 +392,7 @@ def test_build_exposes_only_named_sandbox_task_when_exact_capability_is_ready(
     monkeypatch.setattr(api_mod, "probe_project_sandbox", lambda root: Capability())
     monkeypatch.setattr(api_mod, "DockerTaskBroker", Broker)
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
 
     project = tmp_path / "configured"
     project.mkdir()
@@ -511,7 +511,7 @@ def test_real_build_run_task_freezes_then_executes_only_after_allow_once(
     )
     monkeypatch.setattr(api_mod, "probe_project_sandbox", lambda root: Capability())
     monkeypatch.setattr(api_mod, "DockerTaskBroker", Broker)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: mock_provider)
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: mock_provider)
 
     response = flask_app.test_client().post(
         "/api/agent/chat",
@@ -599,7 +599,7 @@ def test_build_write_decision_only_stages_after_allow_once(
     from backend.cookbook import persistence
 
     monkeypatch.setattr(api_mod, "AgentRunner", _BuildWriteRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -670,7 +670,7 @@ def test_real_build_runner_remembered_allow_stages_and_replays_exact_scope(
         }
     }
     mock_provider.set_script([ChatDelta(content="", tool_calls=[call], done=True)])
-    monkeypatch.setattr(api_mod, "default_provider", lambda: mock_provider)
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: mock_provider)
 
     response = flask_app.test_client().post(
         "/api/agent/chat",
@@ -751,7 +751,7 @@ def test_agent_chat_emits_run_event_and_registers_run(flask_app, isolated_home, 
             yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -811,7 +811,7 @@ def test_agent_chat_heartbeats_while_runner_is_slow(flask_app, isolated_home, mo
             yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", SlowRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -843,7 +843,7 @@ def test_agent_chat_disconnect_cancels_worker(flask_app, isolated_home, monkeypa
             yield {"type": "done", "content": "never", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", DripRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -877,7 +877,7 @@ def test_agent_chat_disconnect_preserves_existing_cancel_reason(
             yield {"type": "done", "content": "unused", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -916,7 +916,7 @@ def test_agent_chat_disconnect_after_first_event_cleans_registry(
             yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", FakeRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -948,7 +948,7 @@ def test_agent_chat_runner_constructor_failure_does_not_register_run(
             raise RuntimeError("runner init failed")
 
     monkeypatch.setattr(api_mod, "AgentRunner", FailingRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -988,7 +988,7 @@ def test_blocked_worker_stays_tracked_until_it_exits(
             yield {"type": "done", "content": "late", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", BlockedRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -1069,7 +1069,7 @@ def test_ask_bridge_allow_flow_and_replay(
 
     captured: dict = {}
     monkeypatch.setattr(api_mod, "AgentRunner", _ask_fake_runner(captured))
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -1137,7 +1137,7 @@ def test_ask_bridge_deny_flow(flask_app, isolated_home, monkeypatch, tmp_path):
 
     captured: dict = {}
     monkeypatch.setattr(api_mod, "AgentRunner", _ask_fake_runner(captured))
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -1182,7 +1182,7 @@ def test_ask_timeout_denies_and_run_continues(
     monkeypatch.setattr(api_mod, "ASK_TIMEOUT", 0.05)
     captured: dict = {}
     monkeypatch.setattr(api_mod, "AgentRunner", _ask_fake_runner(captured))
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -1931,7 +1931,7 @@ def test_disconnect_while_ask_pending_denies_and_persists_resolution(
 
     captured: dict = {}
     monkeypatch.setattr(api_mod, "AgentRunner", _ask_fake_runner(captured))
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -1981,7 +1981,7 @@ def test_staged_change_event_is_persisted(
             yield {"type": "done", "content": "ok", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", StagingRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
     resp = flask_app.test_client().post(
@@ -2017,7 +2017,7 @@ def test_staged_change_is_audited_even_after_sse_disconnect(
             yield {"type": "done", "content": "late", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", LateStagingRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
     resp = flask_app.test_client().post(
@@ -2186,7 +2186,7 @@ def test_agent_run_cancel_emits_terminal_event_and_audits_late_cleanup_failure(
             yield {"type": "done", "content": "must not escape", "messages": [], "iterations": 1}
 
     monkeypatch.setattr(api_mod, "AgentRunner", CancelAwareRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     project = tmp_path / "project"
     project.mkdir()
 
@@ -2377,7 +2377,7 @@ def test_agent_run_cancel_ends_stream_even_when_runner_ignores_cancel(
             yield {"type": "staged_change", "change_id": "late", "path": "late.py"}
 
     monkeypatch.setattr(api_mod, "AgentRunner", IgnoringRunner)
-    monkeypatch.setattr(api_mod, "default_provider", lambda: object())
+    monkeypatch.setattr(api_mod, "default_provider", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(api_mod, "WORKER_JOIN_TIMEOUT", 0.05)
     project = tmp_path / "project"
     project.mkdir()
