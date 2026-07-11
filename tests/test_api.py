@@ -773,6 +773,7 @@ def test_hf_import_preflight_follows_ollama_models(monkeypatch, tmp_path):
     monkeypatch.delenv("LAC_HF_IMPORT_TMP", raising=False)
     monkeypatch.delenv("LAC_IMPORT_TMP", raising=False)
     monkeypatch.setattr(api_mod, "_disk_free_bytes", lambda path: 1_000)
+    monkeypatch.setattr(api_mod, "_storage_volume_identity", lambda path: "shared", raising=False)
 
     preflight = api_mod._hf_import_preflight(100)
 
@@ -780,7 +781,75 @@ def test_hf_import_preflight_follows_ollama_models(monkeypatch, tmp_path):
     assert preflight["scratch_dir"] == str(models_dir.parent / "lac-hf-import-tmp")
     assert preflight["model_store_dir"] == str(models_dir)
     assert preflight["scratch"]["required_bytes"] == 100
-    assert preflight["model_store"]["required_bytes"] == 200
+    assert preflight["model_store"]["required_bytes"] == 400
+    assert preflight["shared_volume"] is True
+    assert preflight["combined"]["required_bytes"] == 500
+
+
+@pytest.mark.parametrize("free_bytes,state", [(499, "blocked"), (500, "ok")])
+def test_hf_import_preflight_aggregates_shared_volume_budget(monkeypatch, tmp_path, free_bytes, state):
+    from backend import api as api_mod
+
+    models_dir = tmp_path / "ollama" / "models"
+    monkeypatch.setenv("OLLAMA_MODELS", str(models_dir))
+    monkeypatch.delenv("LAC_HF_IMPORT_TMP", raising=False)
+    monkeypatch.delenv("LAC_IMPORT_TMP", raising=False)
+    monkeypatch.setattr(api_mod, "_disk_free_bytes", lambda path: free_bytes)
+    monkeypatch.setattr(api_mod, "_storage_volume_identity", lambda path: "shared", raising=False)
+
+    preflight = api_mod._hf_import_preflight(100)
+
+    assert preflight["state"] == state
+    assert preflight["shared_volume"] is True
+    assert preflight["combined"]["required_bytes"] == 500
+    assert preflight["combined"]["ok"] is (state == "ok")
+
+
+def test_hf_import_preflight_blocks_when_volume_identity_is_unavailable(monkeypatch, tmp_path):
+    from backend import api as api_mod
+
+    models_dir = tmp_path / "ollama" / "models"
+    monkeypatch.setenv("OLLAMA_MODELS", str(models_dir))
+    monkeypatch.setattr(api_mod, "_disk_free_bytes", lambda path: 10_000)
+    monkeypatch.setattr(
+        api_mod,
+        "_storage_volume_identity",
+        lambda path: (_ for _ in ()).throw(OSError("volume unavailable")),
+    )
+
+    preflight = api_mod._hf_import_preflight(100)
+
+    assert preflight["state"] == "blocked"
+    assert preflight["shared_volume"] is None
+    assert preflight["combined"] is None
+    assert "Could not verify" in preflight["warnings"][0]
+
+
+def test_hf_import_preflight_keeps_separate_volume_budgets_independent(monkeypatch, tmp_path):
+    from backend import api as api_mod
+
+    scratch_dir = tmp_path / "scratch"
+    models_dir = tmp_path / "ollama" / "models"
+    monkeypatch.setenv("LAC_HF_IMPORT_TMP", str(scratch_dir))
+    monkeypatch.setenv("OLLAMA_MODELS", str(models_dir))
+    monkeypatch.setattr(
+        api_mod,
+        "_storage_volume_identity",
+        lambda path: "scratch" if path == scratch_dir else "ollama",
+    )
+    monkeypatch.setattr(
+        api_mod,
+        "_disk_free_bytes",
+        lambda path: 100 if path == scratch_dir else 400,
+    )
+
+    preflight = api_mod._hf_import_preflight(100)
+
+    assert preflight["state"] == "ok"
+    assert preflight["shared_volume"] is False
+    assert preflight["combined"] is None
+    assert preflight["scratch"]["required_bytes"] == 100
+    assert preflight["model_store"]["required_bytes"] == 400
 
 
 def test_hf_import_preflight_blocks_when_model_store_is_short(monkeypatch, tmp_path):
@@ -793,10 +862,17 @@ def test_hf_import_preflight_blocks_when_model_store_is_short(monkeypatch, tmp_p
         return 500 if path.name == "lac-hf-import-tmp" else 50
 
     monkeypatch.setattr(api_mod, "_disk_free_bytes", fake_free)
+    monkeypatch.setattr(
+        api_mod,
+        "_storage_volume_identity",
+        lambda path: "scratch" if path.name == "lac-hf-import-tmp" else "ollama",
+        raising=False,
+    )
 
     preflight = api_mod._hf_import_preflight(100)
 
     assert preflight["state"] == "blocked"
+    assert preflight["shared_volume"] is False
     assert preflight["scratch"]["ok"] is True
     assert preflight["model_store"]["ok"] is False
     assert "Ollama model store" in preflight["warnings"][0]
