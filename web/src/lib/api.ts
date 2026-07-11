@@ -129,6 +129,93 @@ export async function putJSON<T>(url: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface ProTuneConfigResult {
+  label: string;
+  num_gpu: number | null;
+  median_tps: number;
+  runs: number[];
+}
+
+export interface ProTuneApplyDecision {
+  allowed: boolean;
+  reason: string;
+  num_gpu: number | null;
+  auto_tps: number | null;
+  reference_tps: number | null;
+  candidate_tps: number | null;
+  improvement_ratio: number | null;
+}
+
+export type ProTuneApplyState =
+  | "available"
+  | "unavailable"
+  | "applying"
+  | "applied"
+  | "failed"
+  | "expired"
+  | "stale";
+
+export interface ProTuneDoneStatus {
+  state: "done";
+  sweep_id: string;
+  completed_at: number;
+  expires_at: number;
+  apply_state: ProTuneApplyState;
+  applied_sweep_id?: string;
+  tuned_model?: string;
+  apply_decision: ProTuneApplyDecision;
+  layers: number | null;
+  results: ProTuneConfigResult[];
+  winner: ProTuneConfigResult;
+  baseline_tps: number | null;
+}
+
+export type ProTuneStatus =
+  | { state: "idle" }
+  | { state: "running"; started_at?: string }
+  | ProTuneDoneStatus
+  | { state: "failed"; message: string }
+  | { state: "not_licensed" };
+
+export type ProTuneApplyResult =
+  | { state: "applied"; tuned_model: string }
+  | { state: "failed"; message: string }
+  | { state: "not_licensed" };
+
+/** Return the one live, backend-authorized row that may be applied, else fail closed. */
+export function getProTuneApplyCandidate(
+  status: ProTuneDoneStatus,
+  nowSeconds = Date.now() / 1000
+): ProTuneConfigResult | undefined {
+  const decision = status.apply_decision;
+  if (
+    status.apply_state !== "available" ||
+    status.applied_sweep_id === status.sweep_id ||
+    !Number.isFinite(nowSeconds) ||
+    !Number.isFinite(status.expires_at) ||
+    nowSeconds >= status.expires_at ||
+    decision.allowed !== true ||
+    typeof decision.num_gpu !== "number" ||
+    !Number.isInteger(decision.num_gpu) ||
+    decision.num_gpu <= 0 ||
+    typeof decision.candidate_tps !== "number" ||
+    !Number.isFinite(decision.candidate_tps)
+  ) return undefined;
+
+  return status.results.find(
+    (result) =>
+      result.num_gpu === decision.num_gpu &&
+      result.median_tps === decision.candidate_tps
+  );
+}
+
+/** True only for the backend's duplicate-start response, which means polling should resume. */
+export function isProTuneRunningConflict(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 409) return false;
+  if (!error.body || typeof error.body !== "object" || Array.isArray(error.body)) return false;
+  return (error.body as { state?: unknown }).state === "running";
+}
+
 /**
  * Parse a Server-Sent-Events stream into an async generator of decoded JSON
  * payloads. Stops at the terminal `data: [DONE]` sentinel.
@@ -414,10 +501,11 @@ export const api = {
     }).then((r) => r.json()),
 
   proTune: (model: string) =>
-    fetch("/api/pro/tune", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) }).then((r) => r.json()),
-  proTuneStatus: (model: string) => fetch(`/api/pro/tune-status?model=${encodeURIComponent(model)}`).then((r) => r.json()),
-  proTuneApply: (model: string, num_gpu: number, num_ctx?: number) =>
-    fetch("/api/pro/tune-apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, num_gpu, num_ctx }) }).then((r) => r.json()),
+    postJSON<{ accepted?: boolean; state?: string; sweep_id?: string }>("/api/pro/tune", { model }),
+  proTuneStatus: (model: string) =>
+    getJSON<ProTuneStatus>(`/api/pro/tune-status?model=${encodeURIComponent(model)}`),
+  proTuneApply: (model: string, sweepId: string) =>
+    postJSON<ProTuneApplyResult>("/api/pro/tune-apply", { model, sweep_id: sweepId }),
   proInsights: (threshold?: number) => fetch(`/api/pro/insights${threshold != null ? `?threshold=${threshold}` : ""}`).then((r) => r.json()),
   proBenchmark: (model: string) =>
     fetch("/api/pro/benchmark", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) }).then((r) => r.json()),
