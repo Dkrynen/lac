@@ -270,9 +270,14 @@ def test_openapi_endpoint(flask_app):
     assert "/api/system/version" in spec["paths"]
 
 
-def test_recommend_serializes_speed_source(flask_app, isolated_home):
+def test_recommend_serializes_speed_source(
+    flask_app, isolated_home, monkeypatch
+):
     """Each recommendation must carry speed_source + speed_band_pct so the
     web UI can tag measured/calibrated/estimated values."""
+    import backend.api as api_mod
+
+    monkeypatch.setattr(api_mod, "detect", _fake_detect_factory())
     client = flask_app.test_client()
     r = client.get("/api/recommend?use_case=coding&top_k=3")
     assert r.status_code == 200
@@ -284,12 +289,19 @@ def test_recommend_serializes_speed_source(flask_app, isolated_home):
         assert rec["speed_band_pct"] > 0  # never a zero-width band
 
 
-def test_recommend_no_calibration_escape_hatch(flask_app, isolated_home):
+def test_recommend_no_calibration_escape_hatch(
+    flask_app, isolated_home, monkeypatch
+):
     """?no_calibration=1 must still return recs, all tagged 'estimated'."""
+    import backend.api as api_mod
+
+    monkeypatch.setattr(api_mod, "detect", _fake_detect_factory())
     client = flask_app.test_client()
     r = client.get("/api/recommend?use_case=coding&top_k=3&no_calibration=1")
     assert r.status_code == 200
-    for rec in r.get_json()["recommendations"]:
+    recommendations = r.get_json()["recommendations"]
+    assert recommendations
+    for rec in recommendations:
         assert rec["speed_source"] == "estimated"
 
 

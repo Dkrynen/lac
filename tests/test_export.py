@@ -112,7 +112,7 @@ def test_export_session_file_writes(tmp_path):
     assert json.loads(p.read_text())["session"]["id"] == "abc123def45678"
 
 
-def test_export_all_organizes_by_date(tmp_path):
+def test_export_all_organizes_by_date(tmp_path, isolated_home):
     s = _make_session()
     from backend.cookbook import persistence
 
