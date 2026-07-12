@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page";
 import { ContextPicker } from "@/components/workbench/context-picker";
+import { ProjectFilesPanel } from "@/components/workbench/project-files-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -214,6 +215,7 @@ export function Chat() {
 
   const [model, setModel] = useState(params.get("model") ?? "");
   const [mode, setMode] = useState<Mode>("plan");
+  const [navigatorView, setNavigatorView] = useState<"threads" | "files">("threads");
   const [messages, setMessages] = useState<Msg[]>([]);
   const [events, setEvents] = useState<WorkbenchEvent[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
@@ -1128,6 +1130,10 @@ export function Chat() {
     sessionLoading,
   });
 
+  useEffect(() => {
+    if (!selectedProjectId && navigatorView === "files") setNavigatorView("threads");
+  }, [navigatorView, selectedProjectId]);
+
   return (
     <>
       <PageHeader title="Workbench" className="mb-3">
@@ -1140,7 +1146,7 @@ export function Chat() {
       </PageHeader>
 
       <div className="grid min-h-[520px] grid-cols-1 gap-3 xl:h-[calc(100vh-150px)] xl:grid-cols-[270px_minmax(0,1fr)_320px]">
-        <aside className="flex min-h-[320px] flex-col overflow-hidden rounded-lg border border-line bg-panel xl:min-h-0">
+        <aside className="flex h-[520px] min-h-[320px] flex-col overflow-hidden rounded-lg border border-line bg-panel xl:h-auto xl:min-h-0">
           <ContextPicker
             workspaces={workspaces.data ?? []}
             workspacesLoading={workspaces.loading}
@@ -1172,16 +1178,61 @@ export function Chat() {
             </div>
           )}
 
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center justify-between border-b border-line px-3 py-2">
-              <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-faint">
-                Threads
-              </span>
-              <Button variant="ghost" size="sm" className="h-7 px-2" onClick={newSession}>
-                New
-              </Button>
+          <div role="group" aria-label="Workbench navigator" className="flex border-b border-line p-1.5">
+            <button
+              type="button"
+              id="workbench-threads-toggle"
+              aria-pressed={navigatorView === "threads"}
+              aria-controls="workbench-threads-panel"
+              className={cn(
+                "flex-1 rounded px-2 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-verdant",
+                navigatorView === "threads" ? "bg-panel-3 text-fg" : "text-fg-muted hover:text-fg"
+              )}
+              onClick={() => setNavigatorView("threads")}
+            >
+              Threads
+            </button>
+            <button
+              type="button"
+              id="workbench-files-toggle"
+              aria-pressed={navigatorView === "files"}
+              aria-controls="workbench-files-panel"
+              disabled={!selectedProjectId}
+              className={cn(
+                "flex-1 rounded px-2 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-verdant disabled:cursor-not-allowed disabled:opacity-40",
+                navigatorView === "files" ? "bg-panel-3 text-fg" : "text-fg-muted hover:text-fg"
+              )}
+              onClick={() => setNavigatorView("files")}
+            >
+              Files
+            </button>
+          </div>
+
+          {navigatorView === "files" ? (
+            <div
+              id="workbench-files-panel"
+              role="region"
+              aria-labelledby="workbench-files-toggle"
+              className="flex min-h-0 flex-1"
+            >
+              <ProjectFilesPanel key={selectedProjectId} projectId={selectedProjectId} />
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          ) : (
+            <div
+              id="workbench-threads-panel"
+              role="region"
+              aria-labelledby="workbench-threads-toggle"
+              className="flex min-h-0 flex-1 flex-col"
+            >
+              <div className="flex items-center justify-between border-b border-line px-3 py-2">
+                <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-faint">
+                  Threads
+                </span>
+                <Button variant="ghost" size="sm" className="h-7 px-2" onClick={newSession}>
+                  New
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-2">
               {!projectFilter || sessions.loading ? (
                 <div className="space-y-2">
                   <Skeleton className="h-12 w-full" />
@@ -1207,8 +1258,9 @@ export function Chat() {
                       : "Select or register a project"}
                 </div>
               )}
+              </div>
             </div>
-          </div>
+          )}
         </aside>
 
         <section className="flex min-h-[520px] flex-col overflow-hidden rounded-lg border border-line bg-panel xl:min-h-0">
