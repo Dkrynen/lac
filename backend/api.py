@@ -1735,6 +1735,11 @@ def agent_files():
         )
     except SensitiveProjectPathError as e:
         return _project_file_error(e)
+    if project_id:
+        try:
+            _assert_registered_project_root(project_id, root)
+        except _ProjectRootDriftError as e:
+            return jsonify({"error": str(e)}), 409
     entries = [
         {
             "name": entry.name,
@@ -1750,11 +1755,13 @@ def agent_files():
             key=lambda item: (not item.is_dir, item.name.casefold(), item.name),
         )
     ]
-    return jsonify({
+    response = jsonify({
         "path": "" if canonical_rel == "." else canonical_rel,
         "entries": entries,
         "truncated": truncated,
     })
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/api/agent/file")
@@ -1784,6 +1791,215 @@ def agent_file():
         )
     except SensitiveProjectPathError as e:
         return _project_file_error(e)
+    if project_id:
+        try:
+            _assert_registered_project_root(project_id, root)
+        except _ProjectRootDriftError as e:
+            return jsonify({"error": str(e)}), 409
+    data = content.encode("utf-8")
+    response = jsonify({
+        "path": canonical_rel,
+        "content": content,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data),
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+_PROJECT_BROWSER_FILE_ENDPOINTS = frozenset(
+    {"api_project_files", "api_project_file"}
+)
+_PROJECT_BROWSER_ID_PATTERN = re.compile(r"^[0-9a-f]{14}$")
+_PROJECT_BROWSER_FILE_PATH_PATTERN = re.compile(
+    r"^/api/projects/[^/]+/(?:files|file)$"
+)
+_PROJECT_BROWSER_SKIPPED_PARTS = frozenset(
+    name.casefold() for name in _AGENT_SKIP_ENTRIES
+)
+_PROJECT_BROWSER_DECEPTIVE_CODEPOINTS = (
+    frozenset({0x061C, 0x200B, 0x200E, 0x200F, 0x2060})
+    | frozenset(range(0x202A, 0x202F))
+    | frozenset(range(0x2066, 0x206A))
+)
+
+
+@app.after_request
+def _project_browser_files_no_store(response):
+    """Never allow browser-facing project file responses to be cached."""
+
+    if (
+        request.endpoint in _PROJECT_BROWSER_FILE_ENDPOINTS
+        or _PROJECT_BROWSER_FILE_PATH_PATTERN.fullmatch(request.path)
+    ):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _project_browser_path_query(*, required: bool) -> str:
+    """Accept at most one relative ``path`` query and no ambient root input."""
+
+    if any(key != "path" for key in request.args.keys()):
+        raise ValueError("only the path query parameter is allowed")
+    values = request.args.getlist("path")
+    if len(values) > 1:
+        raise ValueError("path query parameter must not be repeated")
+    if not values:
+        if required:
+            raise ValueError("path query parameter required")
+        return ""
+    value = str(values[0])
+    if required and not value:
+        raise ValueError("path query parameter required")
+    return value
+
+
+def _project_browser_path_is_skipped(value: str) -> bool:
+    """Deny direct navigation into generated dependency/cache directories."""
+
+    if not value:
+        return False
+    from .project_paths import validate_relative_project_path
+
+    try:
+        relative = validate_relative_project_path(value)
+    except ValueError:
+        return False
+    return any(
+        part.casefold() in _PROJECT_BROWSER_SKIPPED_PARTS
+        for part in relative.split("/")
+    )
+
+
+def _project_browser_text_is_previewable(
+    content: str,
+    *,
+    allow_leading_bom: bool = False,
+) -> bool:
+    """Keep browser previews to ordinary UTF-8 text, not control payloads."""
+
+    for index, character in enumerate(content):
+        codepoint = ord(character)
+        if codepoint == 0xFEFF and allow_leading_bom and index == 0:
+            continue
+        if character in "\t\n\r":
+            continue
+        if (
+            codepoint < 0x20
+            or 0x7F <= codepoint <= 0x9F
+            or codepoint in _PROJECT_BROWSER_DECEPTIVE_CODEPOINTS
+            or codepoint == 0xFEFF
+        ):
+            return False
+    return True
+
+
+@app.route("/api/projects/<project_id>/files")
+def api_project_files(project_id):
+    """List one safe directory level for one registered local project."""
+
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Project files are available only on this machine"}), 403
+    if not _PROJECT_BROWSER_ID_PATTERN.fullmatch(project_id):
+        return jsonify({"error": "invalid project identity", "code": "invalid_project_id"}), 400
+    try:
+        rel = _project_browser_path_query(required=False)
+    except ValueError as e:
+        return jsonify({"error": str(e), "code": "invalid_query"}), 400
+    if not _project_browser_text_is_previewable(rel):
+        return jsonify({"error": "path contains unsupported text controls", "code": "invalid_query"}), 400
+    if _project_browser_path_is_skipped(rel):
+        return jsonify({"error": "project path is not previewable", "code": "project_path_not_previewable"}), 403
+    try:
+        _project, root = _registered_project_root(project_id)
+    except KeyError as e:
+        return jsonify({"error": str(e.args[0])}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
+
+    from .project_security import SensitiveProjectPathError, list_project_directory
+
+    try:
+        canonical_rel, safe_entries, truncated = list_project_directory(
+            root,
+            rel or ".",
+        )
+    except SensitiveProjectPathError as e:
+        return _project_file_error(e)
+    try:
+        _assert_registered_project_root(project_id, root)
+    except _ProjectRootDriftError as e:
+        return jsonify({"error": str(e)}), 409
+
+    entries = [
+        {
+            "name": entry.name,
+            "type": "dir" if entry.is_dir else "file",
+            "size": entry.size,
+        }
+        for entry in sorted(
+            (
+                entry
+                for entry in safe_entries
+                if (
+                    entry.name.casefold() not in _PROJECT_BROWSER_SKIPPED_PARTS
+                    and _project_browser_text_is_previewable(entry.name)
+                )
+            ),
+            key=lambda item: (not item.is_dir, item.name.casefold(), item.name),
+        )
+    ]
+    return jsonify({
+        "path": "" if canonical_rel == "." else canonical_rel,
+        "entries": entries,
+        "truncated": truncated,
+    })
+
+
+@app.route("/api/projects/<project_id>/file")
+def api_project_file(project_id):
+    """Read one safe UTF-8 file for one registered local project."""
+
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Project files are available only on this machine"}), 403
+    if not _PROJECT_BROWSER_ID_PATTERN.fullmatch(project_id):
+        return jsonify({"error": "invalid project identity", "code": "invalid_project_id"}), 400
+    try:
+        rel = _project_browser_path_query(required=True)
+    except ValueError as e:
+        return jsonify({"error": str(e), "code": "invalid_query"}), 400
+    if not _project_browser_text_is_previewable(rel):
+        return jsonify({"error": "path contains unsupported text controls", "code": "invalid_query"}), 400
+    if _project_browser_path_is_skipped(rel):
+        return jsonify({"error": "project path is not previewable", "code": "project_path_not_previewable"}), 403
+    try:
+        _project, root = _registered_project_root(project_id)
+    except KeyError as e:
+        return jsonify({"error": str(e.args[0])}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
+
+    from .project_security import SensitiveProjectPathError, read_project_text
+
+    try:
+        canonical_rel, content = read_project_text(
+            root,
+            rel,
+            max_bytes=AGENT_FILE_MAX_BYTES,
+        )
+    except SensitiveProjectPathError as e:
+        return _project_file_error(e)
+    try:
+        _assert_registered_project_root(project_id, root)
+    except _ProjectRootDriftError as e:
+        return jsonify({"error": str(e)}), 409
+
+    if not _project_browser_text_is_previewable(content, allow_leading_bom=True):
+        return jsonify({
+            "error": "project file is not supported as a text preview",
+            "code": "project_file_not_previewable",
+        }), 415
+
     data = content.encode("utf-8")
     return jsonify({
         "path": canonical_rel,

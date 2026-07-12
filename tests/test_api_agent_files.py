@@ -23,12 +23,14 @@ def test_registered_project_file_routes_derive_root_and_are_loopback_only(
         "/api/agent/files", query_string={"project_id": project["id"]}
     )
     assert listed.status_code == 200
+    assert listed.headers["Cache-Control"] == "no-store"
     assert [row["name"] for row in listed.get_json()["entries"]] == ["hello.txt"]
     read = client.get(
         "/api/agent/file",
         query_string={"project_id": project["id"], "path": "hello.txt"},
     )
     assert read.status_code == 200
+    assert read.headers["Cache-Control"] == "no-store"
     assert read.get_json()["content"] == "hello"
 
     mixed = client.get(
@@ -62,6 +64,59 @@ def test_registered_project_file_routes_fail_closed_on_identity_drift(
 
     assert response.status_code == 409
     assert "drift" in response.get_json()["error"].lower()
+
+
+def test_registered_project_listing_revalidates_identity_after_filesystem_access(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.project_security as project_security
+
+    root, project = _project(isolated_home, tmp_path)
+    (root / "visible.txt").write_text("visible", encoding="utf-8")
+    original = project_security.list_project_directory
+
+    def drift_after_list(*args, **kwargs):
+        result = original(*args, **kwargs)
+        root.rename(tmp_path / "listed-old-root")
+        root.mkdir()
+        return result
+
+    monkeypatch.setattr(project_security, "list_project_directory", drift_after_list)
+
+    response = flask_app.test_client().get(
+        "/api/agent/files", query_string={"project_id": project["id"]}
+    )
+
+    assert response.status_code == 409
+    assert "identity changed" in response.get_json()["error"].lower()
+    assert b"visible.txt" not in response.data
+
+
+def test_registered_project_read_revalidates_identity_after_filesystem_access(
+    flask_app, isolated_home, monkeypatch, tmp_path
+):
+    import backend.project_security as project_security
+
+    root, project = _project(isolated_home, tmp_path)
+    (root / "visible.txt").write_text("never disclose after drift", encoding="utf-8")
+    original = project_security.read_project_text
+
+    def drift_after_read(*args, **kwargs):
+        result = original(*args, **kwargs)
+        root.rename(tmp_path / "read-old-root")
+        root.mkdir()
+        return result
+
+    monkeypatch.setattr(project_security, "read_project_text", drift_after_read)
+
+    response = flask_app.test_client().get(
+        "/api/agent/file",
+        query_string={"project_id": project["id"], "path": "visible.txt"},
+    )
+
+    assert response.status_code == 409
+    assert "identity changed" in response.get_json()["error"].lower()
+    assert b"never disclose after drift" not in response.data
 
 
 def test_legacy_raw_cwd_file_routes_are_loopback_only(

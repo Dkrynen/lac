@@ -1,6 +1,8 @@
 // Thin client for the LAC Flask API. In dev Vite proxies /api -> :5050;
 // in prod Flask serves the built bundle on the same origin.
 
+import { decodeProjectFileDetail, decodeProjectFilesResponse, normalizeProjectFilePath } from "./project-files.ts";
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -103,8 +105,10 @@ export function decodeAgentSandboxStatus(
   };
 }
 
-export async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+export async function getJSON<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Accept")) headers.set("Accept", "application/json");
+  const res = await fetch(url, { ...init, headers });
   if (!res.ok) throw new ApiError(res.status, res.statusText, await readErrorBody(res));
   return res.json() as Promise<T>;
 }
@@ -334,6 +338,32 @@ export const api = {
     ),
   project: (projectId: string) =>
     getJSON<import("./types").ProjectInfo>(`/api/projects/${encodeURIComponent(projectId)}`),
+  projectFiles: async (projectId: string, path = "", signal?: AbortSignal) => {
+    if (!/^[0-9a-f]{14}$/.test(projectId)) {
+      throw new Error("Invalid project identity");
+    }
+    const relativePath = normalizeProjectFilePath(path);
+    const query = new URLSearchParams();
+    if (relativePath) query.set("path", relativePath);
+    const suffix = query.toString();
+    const value = await getJSON<unknown>(
+      `/api/projects/${encodeURIComponent(projectId)}/files${suffix ? `?${suffix}` : ""}`,
+      { cache: "no-store", signal }
+    );
+    return decodeProjectFilesResponse(value, relativePath);
+  },
+  projectFile: async (projectId: string, path: string, signal?: AbortSignal) => {
+    if (!/^[0-9a-f]{14}$/.test(projectId)) {
+      throw new Error("Invalid project identity");
+    }
+    const relativePath = normalizeProjectFilePath(path, false);
+    const query = new URLSearchParams({ path: relativePath });
+    const value = await getJSON<unknown>(
+      `/api/projects/${encodeURIComponent(projectId)}/file?${query}`,
+      { cache: "no-store", signal }
+    );
+    return decodeProjectFileDetail(value, relativePath);
+  },
   sessions: (params: { workspace?: string; projectId?: string; limit?: number } = {}) => {
     const query = new URLSearchParams();
     if (params.workspace) query.set("workspace", params.workspace);

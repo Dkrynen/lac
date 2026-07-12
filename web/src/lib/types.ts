@@ -338,6 +338,25 @@ export interface ProjectRegistrationInput {
   root: string;
 }
 
+export interface ProjectFileEntry {
+  name: string;
+  type: "dir" | "file";
+  size: number;
+}
+
+export interface ProjectFilesResponse {
+  path: string;
+  entries: ProjectFileEntry[];
+  truncated: boolean;
+}
+
+export interface ProjectFileDetail {
+  path: string;
+  content: string;
+  sha256: string;
+  size: number;
+}
+
 export interface SessionMessage {
   role: "system" | "user" | "assistant";
   content: string;
