@@ -16,12 +16,12 @@ def _load_release_readiness():
     return mod
 
 
-def test_build_workflow_stamps_inno_version_and_uploads_checksum():
+def test_build_workflow_verifies_source_version_and_uploads_checksum():
     text = (ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
-    assert "-replace '1\\.0\\.0'" not in text
-    assert "#define MyAppVersion" in text
+    assert "-replace '#define MyAppVersion" not in text
+    assert "scripts/verify_release_version.py --expected $tag" in text
     assert "SHA256SUMS.txt" in text
-    assert "windows-build/SHA256SUMS.txt" in text
+    assert "release/SHA256SUMS.txt" in text
 
 
 def test_sha256_file_reports_uppercase_digest(tmp_path):
