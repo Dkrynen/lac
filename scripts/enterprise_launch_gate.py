@@ -80,10 +80,7 @@ _EVIDENCE_RELEASE_BINDING_FIELDS = {
     "installer_sha256", "release_provenance_sha256",
 }
 _EVIDENCE_RECORD_FIELDS = _EVIDENCE_BASE_FIELDS | _EVIDENCE_RELEASE_BINDING_FIELDS
-_LOCAL_RELEASE_BINDING_FIELDS = {
-    "model_hub_commit", "lac_pro_commit",
-    "installer_sha256", "release_provenance_sha256",
-}
+_LOCAL_RELEASE_BINDING_FIELDS = _EVIDENCE_RELEASE_BINDING_FIELDS - {"lac_cloud_commit"}
 _LOCAL_EVIDENCE_RECORD_FIELDS = _EVIDENCE_BASE_FIELDS | _LOCAL_RELEASE_BINDING_FIELDS
 _WORKER_BINDING_FIELDS = {
     "api_version_id", "agent_version_id", "runner_version_id",
