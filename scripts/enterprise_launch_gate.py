@@ -45,6 +45,19 @@ REQUIRED_EVIDENCE_GATES = (
     "artifact_roundtrip",
     "clean_machine_signed_install",
 )
+RELEASE_SCOPES = ("local", "cloud")
+EVIDENCE_SCHEMA_VERSION = 3
+LOCAL_EVIDENCE_GATES = (
+    "patent_clearance",
+    "github_enterprise_controls",
+    "cryptographic_review",
+    "artifact_roundtrip",
+    "clean_machine_signed_install",
+)
+EVIDENCE_GATES_BY_SCOPE = {
+    "local": LOCAL_EVIDENCE_GATES,
+    "cloud": REQUIRED_EVIDENCE_GATES,
+}
 _PLACEHOLDER = re.compile(r"(?:\btbd\b|\btodo\b|\bpending\b|replace|example)", re.IGNORECASE)
 _SHA256 = re.compile(r"[A-Fa-f0-9]{64}")
 _LOWER_SHA256 = re.compile(r"[a-f0-9]{64}")
@@ -67,6 +80,11 @@ _EVIDENCE_RELEASE_BINDING_FIELDS = {
     "installer_sha256", "release_provenance_sha256",
 }
 _EVIDENCE_RECORD_FIELDS = _EVIDENCE_BASE_FIELDS | _EVIDENCE_RELEASE_BINDING_FIELDS
+_LOCAL_RELEASE_BINDING_FIELDS = {
+    "model_hub_commit", "lac_pro_commit",
+    "installer_sha256", "release_provenance_sha256",
+}
+_LOCAL_EVIDENCE_RECORD_FIELDS = _EVIDENCE_BASE_FIELDS | _LOCAL_RELEASE_BINDING_FIELDS
 _WORKER_BINDING_FIELDS = {
     "api_version_id", "agent_version_id", "runner_version_id",
 }
