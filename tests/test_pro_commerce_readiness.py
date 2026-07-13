@@ -51,10 +51,12 @@ bucket_name = "replace-from-private-operator-notes"
         "worker_env": "",
         "allow_worker_placeholders": False,
         "require_rate_limiter": False,
+        "require_receipt_signing": False,
         "gate_url": "",
         "require_baked_gate": False,
         "live_gate": False,
         "valid_key_env": "LAC_PRO_TEST_KEY",
+        "expected_deployment_commit": "",
         "skip_valid_key": False,
         "allow_missing_lac_pro": True,
         "min_artifact_bytes": 100_000,
@@ -131,6 +133,31 @@ def test_commerce_gate_reports_placeholder_gate_and_worker_config(tmp_path):
     failed = {row["name"] for row in report["failed"]}
     assert "pro_gate_url" in failed
     assert "worker_config" in failed
+
+
+def test_worker_config_can_require_receipt_signing_key_id(tmp_path):
+    gate = _load_gate()
+    args = _args(tmp_path, require_receipt_signing=True)
+    _write_concrete_worker_config(args)
+    row = gate.check_worker_config(args)
+    assert row["ok"] is False
+    assert "ENTITLEMENT_SIGNING_KID" in row["data"]["missing"]
+
+    args.worker_config.write_text(
+        args.worker_config.read_text(encoding="utf-8").replace(
+            'PRO_CLOUD_BENEFIT_ID = "benefit_cloud"',
+            'PRO_CLOUD_BENEFIT_ID = "benefit_cloud"\n'
+            'ENTITLEMENT_SIGNING_KID = "2026-primary"\n'
+            'ENTITLEMENT_SIGNING_PUBLIC_KEY = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"',  # pragma: allowlist secret -- test public key
+        ),
+        encoding="utf-8",
+    )
+    args.worker_config.write_text(
+        args.worker_config.read_text(encoding="utf-8")
+        + '\n[version_metadata]\nbinding = "CF_VERSION_METADATA"\n',
+        encoding="utf-8",
+    )
+    assert gate.check_worker_config(args)["ok"] is True
 
 
 def test_commerce_gate_accepts_env_gate_and_concrete_worker_config(tmp_path, monkeypatch):
@@ -454,6 +481,24 @@ def test_require_baked_gate_rejects_env_only_gate(tmp_path, monkeypatch):
     assert "bake" in row["detail"]
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://gate.example/pro/download",
+        "https:///pro/download",
+        "https://user:pass@gate.example/pro/download",  # pragma: allowlist secret -- deliberately invalid fixture
+        "https://gate.example/other",
+        "https://gate.example/pro/download?key=leak",
+        "https://gate.example/pro/download#fragment",
+    ],
+)
+def test_gate_url_rejects_noncanonical_or_unsafe_endpoints(tmp_path, url):
+    gate = _load_gate()
+    row = gate.check_gate_url(_args(tmp_path, gate_url=url))
+    assert row["ok"] is False
+    assert url not in repr(row)
+
+
 def test_valid_key_name_is_reported_without_secret_value(tmp_path, monkeypatch):
     gate = _load_gate()
     args = _args(tmp_path, skip_valid_key=True)
@@ -498,6 +543,70 @@ def test_valid_key_artifact_requires_matching_integrity_header(tmp_path, monkeyp
     assert row["data"]["content_disposition"] == "verified"
     assert digest not in repr(row)
     assert "private-test-key" not in repr(row)
+
+
+def test_live_invalid_and_valid_smokes_bind_to_exact_deployment_commit(tmp_path, monkeypatch):
+    gate = _load_gate()
+    commit = "a" * 40
+    args = _args(
+        tmp_path,
+        gate_url="https://gate.example.com/pro/download",
+        min_artifact_bytes=1,
+        expected_deployment_commit=commit,
+    )
+    _write_concrete_worker_config(args)
+
+    monkeypatch.setattr(
+        gate,
+        "_post_license",
+        lambda *unused: (
+            403,
+            b'{}',
+            {"X-LAC-Deployment-Commit": commit},
+        ),
+    )
+    invalid = gate.check_invalid_key(args)
+    assert invalid["ok"] is True
+    assert invalid["data"]["deployment_commit"] == "verified"
+    assert commit not in repr(invalid)
+
+    body = b"compiled-private-artifact"
+    digest = hashlib.sha256(body).hexdigest()
+    monkeypatch.setenv("LAC_PRO_TEST_KEY", "private-test-key")
+    monkeypatch.setattr(
+        gate,
+        "_post_license",
+        lambda *unused: (
+            200,
+            body,
+            {
+                "X-LAC-Deployment-Commit": commit,
+                "X-LAC-Artifact-SHA256": digest,
+                "Content-Disposition": 'attachment; filename="lac-pro.zip"',
+            },
+        ),
+    )
+    valid = gate.check_valid_key_artifact(args)
+    assert valid["ok"] is True
+    assert valid["data"]["deployment_commit"] == "verified"
+    assert commit not in repr(valid)
+
+
+@pytest.mark.parametrize("header", [None, "b" * 40, "v2.7.0"])
+def test_live_smoke_rejects_missing_wrong_or_malformed_deployment_commit(
+    tmp_path, monkeypatch, header
+):
+    gate = _load_gate()
+    args = _args(
+        tmp_path,
+        gate_url="https://gate.example.com/pro/download",
+        expected_deployment_commit="a" * 40,
+    )
+    headers = {} if header is None else {"X-LAC-Deployment-Commit": header}
+    monkeypatch.setattr(gate, "_post_license", lambda *unused: (403, b'{}', headers))
+    row = gate.check_invalid_key(args)
+    assert row["ok"] is False
+    assert row["data"]["deployment_commit"] != "verified"
 
 
 def test_valid_key_artifact_accepts_real_list_shaped_transport_headers(

@@ -17,9 +17,11 @@ def test_release_workflow_requires_exact_source_version_and_protected_controls()
     assert "scripts/verify_release_version.py --expected $tag" in text
     assert "scripts/pro_commerce_readiness.py --require-baked-gate --allow-missing-lac-pro" in text
     assert "--worker-env production --allow-worker-placeholders" in text
-    assert "--live-gate --valid-key-env LAC_PRO_TEST_LOCAL_KEY" in text
-    assert "--live-gate --valid-key-env LAC_PRO_TEST_CLOUD_KEY" in text
+    assert text.count('--expected-deployment-commit "${{ github.sha }}"') >= 2
+    assert "--valid-key-env LAC_PRO_TEST_LOCAL_KEY" in text
+    assert "--valid-key-env LAC_PRO_TEST_CLOUD_KEY" in text
     assert "PRO_GATE_TESTED_VERSION" in text
+    assert "$env:PRO_GATE_TESTED_VERSION -ne $env:GITHUB_SHA" in text
     assert "PRO_GATE_WAF_EVIDENCE" in text
     assert "REQUESTED_RELEASE_TAG:" in text
     assert "$tag = $env:REQUESTED_RELEASE_TAG" in text
@@ -50,6 +52,10 @@ def test_release_workflow_signs_payload_then_installer_and_verifies_both():
     assert "--require-hashes" in text
     assert "dependency_lock_sha256" in text
     assert "actions/attest-build-provenance@" in text
+    assert "Get-Rfc3161SignatureEvidence" in text
+    assert 'protocol = "RFC3161"' in text
+    assert "TimeStamperCertificate" in text
+    assert "timestamped_at_utc" in text
     assert 'python -m pytest -m "not live"' in text
     assert "detect-secrets-hook --baseline .secrets.baseline" in text
     assert "npx wrangler deploy --dry-run --env production" in text

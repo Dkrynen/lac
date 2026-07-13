@@ -1,8 +1,9 @@
 # LAC Pro artifact-delivery gate
 
-A small, stateless Cloudflare Worker that validates a Polar license key and
-streams the compiled LAC Pro artifact from a private R2 bucket. Both the Local
-Pro and Pro Cloud benefits are eligible for the same artifact.
+A small, stateless Cloudflare Worker that validates a Polar license key,
+issues Ed25519-signed offline entitlement receipts, and streams the compiled
+LAC Pro artifact from a private R2 bucket. Both the Local Pro and Pro Cloud
+benefits are eligible for the same artifact.
 
 - **No application state.** No KV, D1, Durable Objects, or license-key logs.
 - **No secrets in this repository.** Public configuration contains deliberate
@@ -10,6 +11,15 @@ Pro and Pro Cloud benefits are eligible for the same artifact.
 - **Explicit entitlement boundary.** Polar must return `status: "granted"`
   and a `benefit_id` matching `LOCAL_PRO_BENEFIT_ID` or
   `PRO_CLOUD_BENEFIT_ID`.
+- **Offline authority.** Activation and revalidation return a 14-day receipt
+  bound to the LAC product, approved benefit/plan, activation, license-key
+  fingerprint, anonymous installation binding, expiry, and an identified
+  rotating signing key. The Ed25519
+  private key is a Wrangler secret and never enters source or logs.
+- **Exact deployment identity.** Cloudflare Version Metadata is bound as
+  `CF_VERSION_METADATA`. Every routed response carries
+  `X-LAC-Deployment-Commit`, and the Worker refuses to serve when the deployed
+  version tag is not an exact lowercase 40-character source commit.
 - **Bounded input.** Request bodies are capped at 16 KiB and license keys at
   512 characters before Polar is called.
 - **Streaming delivery.** The R2 body is passed directly to `Response`; the
@@ -33,7 +43,7 @@ a trailing slash or any other pathname returns `404`.
 
 | Condition | Response |
 |---|---|
-| Granted Local Pro or Pro Cloud benefit | `200`, streamed artifact with `Cache-Control: no-store` and `X-LAC-Artifact-SHA256` |
+| Granted Local Pro or Pro Cloud benefit | `200`, streamed artifact with `Cache-Control: no-store`, `X-LAC-Artifact-SHA256`, and `X-LAC-Deployment-Commit` |
 | Explicit invalid, expired, revoked, unrelated, or missing benefit | `403 {"error":"invalid_or_expired"}` |
 | Polar timeout, network failure, malformed response, rate limit, or 5xx | `503 {"error":"validation_unavailable"}` |
 | Public placeholder or malformed runtime configuration | `503 {"error":"configuration_unavailable"}`; the key is not sent to Polar |
@@ -42,6 +52,23 @@ a trailing slash or any other pathname returns `404`.
 | Missing, malformed, oversized body, or invalid key shape | `400 {"error":"invalid_request"}` |
 | Non-POST method on the exact endpoint | `405 {"error":"method_not_allowed"}` with `Allow: POST` |
 | Granted key but missing/unavailable R2 artifact | `503 {"error":"artifact_unavailable"}` |
+
+Receipt endpoints use the same input bounds, abuse protection, Polar authority,
+and no-store response policy:
+
+```http
+POST /pro/entitlements/activate
+{ "license_key": "<key>", "label": "<device label>", "device_id": "<43-char installation binding>" }
+
+POST /pro/entitlements/validate
+{ "license_key": "<key>", "activation_id": "<Polar activation>", "device_id": "<same installation binding>" }
+```
+
+A successful response is `{ "receipt": "<compact Ed25519 token>" }`. Invalid,
+expired, revoked, unrelated-product, missing-activation, provider-outage, and
+signing-failure paths fail closed.
+The device value is derived locally from a random installation seed and a
+one-way machine binding; it contains no hostname or raw hardware identifier.
 
 Polar validation has an eight-second upstream timeout. Every response is marked
 `Cache-Control: no-store`. The provider call requires a real `User-Agent`;
@@ -56,8 +83,13 @@ while those placeholders remain.
 | Key | Meaning |
 |---|---|
 | `POLAR_ORG_ID` | Polar organization identifier |
+| `POLAR_API_BASE_URL` | Exact provider origin: Sandbox for staging, production API for production |
 | `LOCAL_PRO_BENEFIT_ID` | Polar benefit eligible through Local Pro |
 | `PRO_CLOUD_BENEFIT_ID` | Polar benefit eligible through Pro Cloud |
+| `ENTITLEMENT_SIGNING_KID` | Public identifier of the active signing key |
+| `ENTITLEMENT_SIGNING_PRIVATE_KEY` | Base64url Ed25519 PKCS#8 key, supplied only as a protected Wrangler secret |
+| `ENTITLEMENT_SIGNING_PUBLIC_KEY` | Matching base64url raw 32-byte Ed25519 public key; signing fails closed on mismatch |
+| `CF_VERSION_METADATA` | Cloudflare version metadata binding used to prove the exact deployed commit |
 | `ARTIFACT_KEY` | Immutable private R2 key containing version, exact SHA-256 segment, and response filename |
 | `ARTIFACT_FILENAME` | Safe ASCII `.zip` filename for `Content-Disposition`; no paths, header characters, or Windows device names |
 | `ARTIFACT_SHA256` | 64-character SHA-256 digest recorded at build/upload time |

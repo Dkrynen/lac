@@ -24,12 +24,20 @@ head_sampling_rate = 1
 enabled = true
 head_sampling_rate = 0.1
 
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 [vars]
 # Provider organization identifier. Replace from private operator notes before deploy.
 POLAR_ORG_ID = "replace-from-private-operator-notes"
+POLAR_API_BASE_URL = "replace-from-private-operator-notes"
 # Polar benefit IDs allowed to download the shared compiled Pro artifact.
 LOCAL_PRO_BENEFIT_ID = "replace-from-private-operator-notes"
 PRO_CLOUD_BENEFIT_ID = "replace-from-private-operator-notes"
+# Public identifier for the active Ed25519 receipt key. The PKCS#8 private key
+# is an interactive Wrangler secret named ENTITLEMENT_SIGNING_PRIVATE_KEY.
+ENTITLEMENT_SIGNING_KID = "replace-from-private-operator-notes"
+ENTITLEMENT_SIGNING_PUBLIC_KEY = "replace-from-private-operator-notes"
 # R2 object key of the artifact to stream. Replace from private operator notes before deploy.
 ARTIFACT_KEY = "replace-from-private-operator-notes"
 # Filename offered to the client in the Content-Disposition header.
@@ -58,10 +66,16 @@ namespace_id = "270001"
 [env.staging]
 name = "lac-pro-gate-staging"
 
+  [env.staging.version_metadata]
+  binding = "CF_VERSION_METADATA"
+
   [env.staging.vars]
   POLAR_ORG_ID = "replace-from-private-operator-notes"
+  POLAR_API_BASE_URL = "https://sandbox-api.polar.sh/v1"
   LOCAL_PRO_BENEFIT_ID = "replace-from-private-operator-notes"
   PRO_CLOUD_BENEFIT_ID = "replace-from-private-operator-notes"
+  ENTITLEMENT_SIGNING_KID = "replace-from-private-operator-notes"
+  ENTITLEMENT_SIGNING_PUBLIC_KEY = "replace-from-private-operator-notes"
   ARTIFACT_KEY = "replace-from-private-operator-notes"
   ARTIFACT_FILENAME = "lac-pro.zip"
   ARTIFACT_SHA256 = "replace-from-private-operator-notes"
@@ -81,10 +95,16 @@ name = "lac-pro-gate-staging"
 [env.production]
 name = "lac-pro-gate"
 
+  [env.production.version_metadata]
+  binding = "CF_VERSION_METADATA"
+
   [env.production.vars]
   POLAR_ORG_ID = "replace-from-private-operator-notes"
+  POLAR_API_BASE_URL = "https://api.polar.sh/v1"
   LOCAL_PRO_BENEFIT_ID = "replace-from-private-operator-notes"
   PRO_CLOUD_BENEFIT_ID = "replace-from-private-operator-notes"
+  ENTITLEMENT_SIGNING_KID = "replace-from-private-operator-notes"
+  ENTITLEMENT_SIGNING_PUBLIC_KEY = "replace-from-private-operator-notes"
   ARTIFACT_KEY = "replace-from-private-operator-notes"
   ARTIFACT_FILENAME = "lac-pro.zip"
   ARTIFACT_SHA256 = "replace-from-private-operator-notes"

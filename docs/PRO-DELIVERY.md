@@ -22,10 +22,12 @@ that's a deliberate, documented trade-off:
 - **Artifact bytes are pinned.** The operator records the exact build digest as
   `ARTIFACT_SHA256`; the Worker returns it as `X-LAC-Artifact-SHA256`, and the
   client verifies it before any plugin file is written.
-- **Licensing is enforced server-side.** The `.pyd` protects code *structure*,
-  not string constants (a determined attacker can still read embedded strings) —
-  so entitlement is decided by Polar at the gate, not by anything shipped in the
-  client.
+- **Licensing authority is server-signed.** The `.pyd` protects code
+  *structure*, not string constants. Polar decides entitlement at the gate;
+  the gate returns a 14-day Ed25519 receipt bound to the LAC product, approved
+   benefit/plan, activation, license fingerprint, anonymous installation
+   binding, and expiry. The client trusts
+  only a baked rotating public-key ring, never locally chosen cache claims.
 - **Free users get no Pro code at all.** Delivery *is* the gate: without a valid
   key the artifact never reaches disk, so there is nothing on a free machine to
   crack in the first place.
@@ -67,16 +69,23 @@ From the private `lac-pro` repo, the operator builds with the ABI-correct
 interpreter and records the artifact path, byte size, and SHA256 in private
 release notes.
 
-For a two-tier release, load `LAC_PRO_CLOUD_BENEFIT_ID` into the current private
-operator shell. The builder now requires the Cloud benefit by default:
+For a two-tier release, load `LAC_PRO_CLOUD_BENEFIT_ID`,
+`LAC_PRO_RECEIPT_PUBLIC_KEYS_JSON`, `LAC_PRO_ENTITLEMENT_SIGNING_KID`, and
+`LAC_PRO_ENTITLEMENT_GATE_URL` into the
+current protected operator environment. The public-key JSON must contain at
+least the current active and an overlapping successor Ed25519 public key with
+issue/expiry windows; it contains no private key. The builder requires all four
+values by default:
 
 ```powershell
 C:\Users\User\repos\model-hub\.venv\Scripts\python.exe build\build_artifact.py
 ```
 
-Do not put the benefit ID in this repo or the command line. The command must
-print `cloud   : baked`; it stops before compilation if the operator shell did
-not provide it or if the Cloud and Local benefit IDs collide. The source tree
+Do not put private deployment values in this repo or command arguments. The
+command must print `cloud   : baked`; it stops before compilation if the
+operator environment is incomplete, the Cloud and Local benefit IDs collide,
+the receipt ring lacks two valid rotation keys, or the issuer is not an HTTPS
+origin. The Ed25519 signing key is never a build input. The source tree
 must be clean and committed; only Git-tracked package inputs enter the hermetic
 copy. The resulting compiled artifact then
 recognizes a Pro Cloud key on a clean customer machine without requiring that
@@ -94,9 +103,10 @@ machine to set an environment variable.
   identifies that one build's exact bytes. Record it privately as the
   `ARTIFACT_SHA256` Worker configuration value, then use it to confirm the upload
   landed intact.
-- **Provenance.** The builder writes a value-free `.provenance.json` sidecar
+- **Provenance.** The builder writes a non-secret `.provenance.json` sidecar
   containing the exact source commit, UTC build time, ABI, filename, byte size,
-  and SHA-256. Keep it with private release evidence; do not upload it as the
+  SHA-256, benefit IDs, gate origin, canonical public-ring digest, key IDs and
+  windows, and active signing key ID. Keep it with private release evidence; do not upload it as the
   customer artifact.
 
 ## Step 2 — Upload the artifact to private storage
@@ -116,7 +126,8 @@ private operator checklist.
 
 Before an approved deployment, the Worker configuration must contain concrete,
 private values for `POLAR_ORG_ID`, `LOCAL_PRO_BENEFIT_ID`,
-`PRO_CLOUD_BENEFIT_ID`, `ARTIFACT_KEY`, and the raw 64-hex
+`PRO_CLOUD_BENEFIT_ID`, `ENTITLEMENT_SIGNING_KID`,
+`ENTITLEMENT_SIGNING_PUBLIC_KEY`, `ARTIFACT_KEY`, and the raw 64-hex
 `ARTIFACT_SHA256`, plus the private `R2_BUCKET` binding. The two benefit IDs are
 an allowlist, not descriptive labels: a key is accepted only when Polar reports
 `granted` and its benefit matches one of those exact configured IDs. The artifact
@@ -124,6 +135,26 @@ digest must describe the exact R2 object bytes served by that deployment.
 `ARTIFACT_FILENAME` must be the same safe ASCII `.zip` name returned in the
 successful response's exact `Content-Disposition` header; paths, control/header
 characters, and Windows-reserved device names are rejected.
+
+Generate the active Ed25519 key in an approved secret-management context. Put
+only its base64url PKCS#8 representation into the protected Wrangler secret
+`ENTITLEMENT_SIGNING_PRIVATE_KEY`; never place it in TOML, source, shell
+arguments, logs, or chat. Bake its raw public key and a pre-generated next
+public key into the private plugin. Rotate by shipping the overlapping public
+ring first, switching the Worker `kid` and private secret second, and retaining
+the retired public key until every receipt it issued has expired.
+
+Deploy only through `.github/workflows/pro-gate-deploy.yml`. It is manual,
+targets protected `pro-gate-staging` or `pro-gate-production` environments,
+checks the signed annotated release tag and every reachable commit through the
+GitHub verification API, renders protected config outside the repository,
+requires an exact remote secret inventory, and deploys with Wrangler strict
+mode. Production requires `PRO_GATE_STAGING_TESTED_COMMIT` to equal the exact
+approved commit. The deployed Worker version tag is that commit—not merely the
+release label—so every smoke can require `X-LAC-Deployment-Commit` equality.
+Any post-deploy failure triggers an immediate Wrangler rollback; Cloudflare
+notes that rollback restores the Worker version but does not recreate or revert
+external resources, so R2/WAF changes remain separately operator-controlled.
 
 Before the public endpoint is deployed, protect it with **both** the configured
 [Workers Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
@@ -197,10 +228,18 @@ names the env var but never prints the key value.
 5. **Integrity path.** Confirm the successful response's
    `X-LAC-Artifact-SHA256` is raw 64-hex and equals the downloaded bytes. A
    malformed or mismatched value must fail before `~/.model-hub/plugins/` changes.
-6. **Free user.** With no key at all, confirm there is no `lac_pro` artifact in
+   The invalid-key response and both Local/Cloud success responses must also
+   contain one `X-LAC-Deployment-Commit` equal to the approved 40-character
+   source commit; a missing, duplicate, malformed, stale, or mismatched value
+   fails the smoke and triggers rollback.
+6. **Receipt path.** Confirm activation returns a valid Ed25519 receipt. A
+   modified claim/signature, wrong product, wrong benefit/plan, wrong license
+   fingerprint, wrong installation binding, unknown/retired key, or expired receipt must fail closed, and
+   revalidation must renew the same Polar activation.
+7. **Free user.** With no key at all, confirm there is no `lac_pro` artifact in
    `~/.model-hub/plugins/` — a free install ships zero Pro code.
 
-If all six hold, the approved delivery chain is live and honest. Until an operator
+If all seven hold, the approved delivery chain is live and honest. Until an operator
 runs them against an explicitly approved deployment, they are a checklist, not a
 live-state claim.
 

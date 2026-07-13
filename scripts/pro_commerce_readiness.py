@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import hashlib
 import hmac
 import json
@@ -13,6 +14,7 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +94,21 @@ def _configured_gate_url(args: argparse.Namespace) -> tuple[str | None, str]:
 def check_gate_url(args: argparse.Namespace) -> dict[str, Any]:
     url, source = _configured_gate_url(args)
     source_constant = _gate_constant(Path(args.repo_root))
-    ok = not _is_placeholder(url)
+    try:
+        parsed = urlsplit(str(url or ""))
+        valid_url = (
+            parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port in {None, 443}
+            and parsed.path == "/pro/download"
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        valid_url = False
+    ok = not _is_placeholder(url) and valid_url
     if args.require_baked_gate:
         ok = ok and source == "source" and not _is_placeholder(source_constant)
     detail = "gate URL is configured" if ok else "gate URL is still a placeholder or missing"
@@ -152,6 +168,9 @@ def check_worker_config(args: argparse.Namespace) -> dict[str, Any]:
         {},
     )
     limiter_simple = limiter.get("simple") if isinstance(limiter, dict) else {}
+    version_metadata = (
+        config_scope.get("version_metadata") if isinstance(config_scope, dict) else {}
+    )
 
     values: dict[str, object] = {
         "POLAR_ORG_ID": vars_table.get("POLAR_ORG_ID"),
@@ -169,6 +188,25 @@ def check_worker_config(args: argparse.Namespace) -> dict[str, Any]:
             None,
         ),
     }
+    if bool(getattr(args, "require_receipt_signing", False)) or (
+        "ENTITLEMENT_SIGNING_KID" in vars_table
+    ):
+        values["ENTITLEMENT_SIGNING_KID"] = vars_table.get(
+            "ENTITLEMENT_SIGNING_KID"
+        )
+        values["ENTITLEMENT_SIGNING_PUBLIC_KEY"] = vars_table.get(
+            "ENTITLEMENT_SIGNING_PUBLIC_KEY"
+        )
+    if bool(getattr(args, "require_receipt_signing", False)) or isinstance(
+        version_metadata, dict
+    ) and bool(version_metadata):
+        values["CF_VERSION_METADATA.binding"] = (
+            version_metadata.get("binding")
+            if isinstance(version_metadata, dict)
+            else None
+        )
+    if "POLAR_API_BASE_URL" in vars_table:
+        values["POLAR_API_BASE_URL"] = vars_table.get("POLAR_API_BASE_URL")
     if worker_env or bool(getattr(args, "require_rate_limiter", False)):
         values.update({
             "PRO_GATE_RATE_LIMITER.namespace_id": limiter.get("namespace_id") if isinstance(limiter, dict) else None,
@@ -241,6 +279,63 @@ def check_worker_config(args: argparse.Namespace) -> dict[str, Any]:
         )
     ):
         invalid.append("ARTIFACT_KEY")
+    signing_kid = values.get("ENTITLEMENT_SIGNING_KID")
+    if (
+        isinstance(signing_kid, str)
+        and signing_kid.strip()
+        and not _is_placeholder(signing_kid)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", signing_kid) is None
+    ):
+        invalid.append("ENTITLEMENT_SIGNING_KID")
+    signing_public_key = values.get("ENTITLEMENT_SIGNING_PUBLIC_KEY")
+    if (
+        isinstance(signing_public_key, str)
+        and signing_public_key.strip()
+        and not _is_placeholder(signing_public_key)
+    ):
+        try:
+            public_key_bytes = base64.urlsafe_b64decode(
+                signing_public_key + "=" * (-len(signing_public_key) % 4)
+            )
+            valid_public_key = (
+                len(public_key_bytes) == 32
+                and base64.urlsafe_b64encode(public_key_bytes)
+                .rstrip(b"=")
+                .decode("ascii")
+                == signing_public_key
+            )
+        except Exception:  # noqa: BLE001 - protected config validation
+            valid_public_key = False
+        if not valid_public_key:
+            invalid.append("ENTITLEMENT_SIGNING_PUBLIC_KEY")
+    version_binding = values.get("CF_VERSION_METADATA.binding")
+    if (
+        isinstance(version_binding, str)
+        and version_binding.strip()
+        and version_binding != "CF_VERSION_METADATA"
+    ):
+        invalid.append("CF_VERSION_METADATA.binding")
+    polar_api_base = values.get("POLAR_API_BASE_URL")
+    expected_polar_base = {
+        "staging": "https://sandbox-api.polar.sh/v1",
+        "production": "https://api.polar.sh/v1",
+    }.get(worker_env)
+    if (
+        isinstance(polar_api_base, str)
+        and polar_api_base.strip()
+        and not _is_placeholder(polar_api_base)
+        and (
+            polar_api_base not in {
+                "https://sandbox-api.polar.sh/v1",
+                "https://api.polar.sh/v1",
+            }
+            or (
+                expected_polar_base is not None
+                and polar_api_base != expected_polar_base
+            )
+        )
+    ):
+        invalid.append("POLAR_API_BASE_URL")
     if bool(getattr(args, "allow_worker_placeholders", False)):
         placeholders = []
     ok = not placeholders and not missing and not invalid
@@ -361,6 +456,17 @@ def _single_header_value(headers: object, target_name: str) -> str | None:
     return values[0]
 
 
+def _deployment_commit_state(headers: object, expected_commit: str) -> str:
+    if not expected_commit:
+        return "not_required"
+    if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
+        return "expected_invalid"
+    values = _header_values(headers, "x-lac-deployment-commit")
+    if values is None or len(values) != 1 or not isinstance(values[0], str):
+        return "missing_or_malformed"
+    return "verified" if hmac.compare_digest(values[0], expected_commit) else "mismatch"
+
+
 def check_invalid_key(args: argparse.Namespace) -> dict[str, Any]:
     url, source = _configured_gate_url(args)
     if _is_placeholder(url):
@@ -370,7 +476,10 @@ def check_invalid_key(args: argparse.Namespace) -> dict[str, Any]:
         status, body, headers = _post_license(str(url), DEFAULT_INVALID_KEY, args.timeout)
     except Exception as exc:  # noqa: BLE001
         return _result("invalid_key_gate", False, detail=f"gate request failed: {exc.__class__.__name__}")
-    ok = status in {401, 403}
+    deployment = _deployment_commit_state(
+        headers, str(getattr(args, "expected_deployment_commit", "") or "")
+    )
+    ok = status in {401, 403} and deployment in {"not_required", "verified"}
     return _result(
         "invalid_key_gate",
         ok,
@@ -386,6 +495,7 @@ def check_invalid_key(args: argparse.Namespace) -> dict[str, Any]:
                 and isinstance(content_types[0], str)
                 else None
             ),
+            "deployment_commit": deployment,
             "duration_ms": round((time.perf_counter() - start) * 1000, 1),
         },
     )
@@ -465,11 +575,15 @@ def check_valid_key_artifact(args: argparse.Namespace) -> dict[str, Any]:
         headers,
         _configured_artifact_filename(args),
     )
+    deployment = _deployment_commit_state(
+        headers, str(getattr(args, "expected_deployment_commit", "") or "")
+    )
     ok = (
         status == 200
         and len(body) >= args.min_artifact_bytes
         and integrity == "verified"
         and content_disposition == "verified"
+        and deployment in {"not_required", "verified"}
     )
     return _result(
         "valid_key_artifact",
@@ -487,6 +601,7 @@ def check_valid_key_artifact(args: argparse.Namespace) -> dict[str, Any]:
             "content_type": _single_header_value(headers, "content-type"),
             "integrity": integrity,
             "content_disposition": content_disposition,
+            "deployment_commit": deployment,
             "duration_ms": round((time.perf_counter() - start) * 1000, 1),
         },
     )
@@ -519,10 +634,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--worker-env", default="", help="Validate one named Wrangler environment instead of the top-level table.")
     parser.add_argument("--allow-worker-placeholders", action="store_true", help="Validate public config shape while allowing private deployment placeholders.")
     parser.add_argument("--require-rate-limiter", action="store_true", help="Require the in-code abuse rate-limiter binding in top-level config too.")
+    parser.add_argument("--require-receipt-signing", action="store_true", help="Require the public Ed25519 receipt signing-key identifier.")
     parser.add_argument("--gate-url", default="", help="Override the Pro gate URL for this check.")
     parser.add_argument("--require-baked-gate", action="store_true", help="Require backend/pro_install.py to contain the approved production gate URL.")
     parser.add_argument("--live-gate", action="store_true", help="Perform read-only HTTP smokes against the configured gate.")
     parser.add_argument("--valid-key-env", default="LAC_PRO_TEST_KEY", help="Environment variable holding a valid test license key; value is never printed.")
+    parser.add_argument("--expected-deployment-commit", default="", help="Require the gate response to identify this exact public commit.")
     parser.add_argument("--skip-valid-key", action="store_true", help="Allow live-gate mode to skip valid-key artifact proof when no test key is present.")
     parser.add_argument("--allow-missing-lac-pro", action="store_true")
     parser.add_argument("--min-artifact-bytes", type=int, default=100_000)
