@@ -12,6 +12,17 @@ const LOCAL_PRO_BENEFIT_ID = "benefit_local_pro";
 const PRO_CLOUD_BENEFIT_ID = "benefit_pro_cloud";
 const VALIDATE_URL =
   "https://api.polar.sh/v1/customer-portal/license-keys/validate";
+const ACTIVATE_URL =
+  "https://api.polar.sh/v1/customer-portal/license-keys/activate";
+const SIGNING_KID = "2026-07-test";
+const SIGNING_PRIVATE_KEY =
+  "MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v_VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g"; // pragma: allowlist secret -- RFC 8032 test vector
+const SIGNING_PUBLIC_KEY =
+  "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"; // pragma: allowlist secret -- RFC 8032 public key
+const SIGNING_PUBLIC_KEY_B64URL =
+  "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"; // pragma: allowlist secret -- RFC 8032 public key
+const DEVICE_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const DEPLOYMENT_COMMIT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 const ARTIFACT_BYTES = new Uint8Array([
   0x50, 0x4b, 0x03, 0x04,
@@ -25,11 +36,20 @@ function testEnv(): Env {
       limit: vi.fn().mockResolvedValue({ success: true }),
     } as unknown as RateLimit,
     POLAR_ORG_ID: ORG_ID,
+    POLAR_API_BASE_URL: "https://api.polar.sh/v1",
     ARTIFACT_KEY,
     ARTIFACT_FILENAME: FILENAME,
     ARTIFACT_SHA256,
     LOCAL_PRO_BENEFIT_ID,
     PRO_CLOUD_BENEFIT_ID,
+    ENTITLEMENT_SIGNING_KID: SIGNING_KID,
+    ENTITLEMENT_SIGNING_PUBLIC_KEY: SIGNING_PUBLIC_KEY_B64URL,
+    ENTITLEMENT_SIGNING_PRIVATE_KEY: SIGNING_PRIVATE_KEY,
+    CF_VERSION_METADATA: {
+      id: "11111111-1111-4111-8111-111111111111",
+      tag: DEPLOYMENT_COMMIT,
+      timestamp: "2026-07-13T00:00:00.000Z",
+    },
   };
 }
 
@@ -68,7 +88,192 @@ function granted(benefitId = LOCAL_PRO_BENEFIT_ID) {
   polarReplies(JSON.stringify({ status: "granted", benefit_id: benefitId }));
 }
 
+function decodeSegment(segment: string): Record<string, unknown> {
+  const normalized = segment.replaceAll("-", "+").replaceAll("_", "/");
+  return JSON.parse(atob(normalized + "=".repeat((-normalized.length) & 3)));
+}
+
+async function verifyReceipt(token: string) {
+  const [header, payload, signature] = token.split(".");
+  const publicKey = Uint8Array.from(
+    SIGNING_PUBLIC_KEY.match(/../g) ?? [],
+    (byte) => Number.parseInt(byte, 16),
+  );
+  const key = await crypto.subtle.importKey(
+    "raw", publicKey, { name: "Ed25519" }, false, ["verify"],
+  );
+  const normalized = signature!.replaceAll("-", "+").replaceAll("_", "/");
+  const signatureBytes = Uint8Array.from(
+    atob(normalized + "=".repeat((-normalized.length) & 3)),
+    (char) => char.charCodeAt(0),
+  );
+  const verified = await crypto.subtle.verify(
+    { name: "Ed25519" }, key, signatureBytes,
+    new TextEncoder().encode(`${header}.${payload}`),
+  );
+  return {
+    verified,
+    header: decodeSegment(header!),
+    claims: decodeSegment(payload!),
+  };
+}
+
+describe("LAC Pro gate - signed entitlement receipts", () => {
+  it("activates at Polar and returns a product-bound Ed25519 receipt", async () => {
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({
+      id: "activation-42",
+      license_key: {
+        status: "granted",
+        benefit_id: LOCAL_PRO_BENEFIT_ID,
+        expires_at: null,
+      },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    const res = await invoke(post(
+      { license_key: "private-local-key", label: "duan-pc", device_id: DEVICE_ID },
+      false,
+      "/pro/entitlements/activate",
+    ));
+
+    expect(res.status).toBe(200);
+    const { receipt } = await res.json() as { receipt: string };
+    const decoded = await verifyReceipt(receipt);
+    expect(decoded.verified).toBe(true);
+    expect(decoded.header).toEqual({ alg: "EdDSA", kid: SIGNING_KID, typ: "LAC-ENTITLEMENT" });
+    expect(decoded.claims).toMatchObject({
+      v: 2,
+      iss: "lac-pro-gate",
+      aud: "lac-pro-desktop",
+      product: "lac-pro",
+      plan: "pro_local",
+      benefit_id: LOCAL_PRO_BENEFIT_ID,
+      activation_id: "activation-42",
+      device_id: DEVICE_ID,
+    });
+    expect(String(decoded.claims.sub)).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(receipt).not.toContain("private-local-key");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      ACTIVATE_URL,
+      expect.objectContaining({
+        body: JSON.stringify({
+          key: "private-local-key",
+          organization_id: ORG_ID,
+          label: "duan-pc",
+        }),
+      }),
+    );
+  });
+
+  it("revalidates the exact activation into a renewed Cloud receipt", async () => {
+    polarReplies(JSON.stringify({
+      status: "granted",
+      benefit_id: PRO_CLOUD_BENEFIT_ID,
+      expires_at: null,
+    }));
+    const res = await invoke(post(
+      {
+        license_key: "private-cloud-key",
+        activation_id: "activation-cloud",
+        device_id: DEVICE_ID,
+      },
+      false,
+      "/pro/entitlements/validate",
+    ));
+    expect(res.status).toBe(200);
+    const { receipt } = await res.json() as { receipt: string };
+    const decoded = await verifyReceipt(receipt);
+    expect(decoded.verified).toBe(true);
+    expect(decoded.claims.plan).toBe("pro_cloud");
+    expect(decoded.claims.activation_id).toBe("activation-cloud");
+    expect(decoded.claims.device_id).toBe(DEVICE_ID);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      VALIDATE_URL,
+      expect.objectContaining({
+        body: JSON.stringify({
+          key: "private-cloud-key",
+          organization_id: ORG_ID,
+          activation_id: "activation-cloud",
+        }),
+      }),
+    );
+  });
+
+  it("rejects missing activation binding before Polar validation", async () => {
+    const res = await invoke(post(
+      { license_key: "private-key" }, false, "/pro/entitlements/validate",
+    ));
+    expect(res.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing device binding before Polar validation", async () => {
+    const res = await invoke(post(
+      { license_key: "private-key", label: "pc" }, false, "/pro/entitlements/activate",
+    ));
+    expect(res.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the signing secret is absent", async () => {
+    const configured = { ...testEnv(), ENTITLEMENT_SIGNING_PRIVATE_KEY: "" };
+    const res = await invoke(post(
+      { license_key: "must-not-forward", label: "pc", device_id: DEVICE_ID },
+      false,
+      "/pro/entitlements/activate",
+    ), configured);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "configuration_unavailable" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the configured public key does not match the signing secret", async () => {
+    const configured = {
+      ...testEnv(),
+      ENTITLEMENT_SIGNING_PUBLIC_KEY: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI",
+    };
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({
+      id: "activation-42",
+      license_key: {
+        status: "granted",
+        benefit_id: LOCAL_PRO_BENEFIT_ID,
+        expires_at: null,
+      },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    const res = await invoke(post(
+      { license_key: "private-local-key", label: "pc", device_id: DEVICE_ID },
+      false,
+      "/pro/entitlements/activate",
+    ), configured);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "receipt_signing_unavailable" });
+  });
+});
+
 describe("LAC Pro gate - POST /pro/download", () => {
+  it("returns the exact version tag on both success and rejection", async () => {
+    granted();
+    const ok = await invoke(post({ license_key: "valid-key" }));
+    expect(ok.headers.get("X-LAC-Deployment-Commit")).toBe(DEPLOYMENT_COMMIT);
+
+    granted("unrelated-benefit");
+    const rejected = await invoke(post({ license_key: "wrong-key" }));
+    expect(rejected.status).toBe(403);
+    expect(rejected.headers.get("X-LAC-Deployment-Commit")).toBe(DEPLOYMENT_COMMIT);
+  });
+
+  it("fails closed when version metadata is not an exact commit", async () => {
+    const configured = {
+      ...testEnv(),
+      CF_VERSION_METADATA: { id: "version", tag: "v2.7.0", timestamp: "now" },
+    } as Env;
+    const res = await invoke(post({ license_key: "must-not-forward" }), configured);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "deployment_identity_unavailable" });
+    expect(res.headers.get("X-LAC-Deployment-Commit")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
   it("rate limits on an opaque license fingerprint before calling Polar", async () => {
     const limit = vi.fn().mockResolvedValue({ success: false });
     const configuredEnv: Env = {
