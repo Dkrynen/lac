@@ -16,17 +16,49 @@ Exit code `0` means every local and externally evidenced gate passed. Exit code
 every failing gate without including remote URLs, credential values, evidence
 references, or approver names.
 
+## Release scopes
+
+The gate authorizes two different releases, selected with `--release-scope`
+(default `cloud`, the strictest scope):
+
+```powershell
+# Full cloud launch gate (default) - all 19 evidence gates
+python scripts/enterprise_launch_gate.py `
+  --evidence C:\private\LAC-Launch-Evidence\2.7.0.json
+
+# Local installer release gate - passes with zero cloud evidence
+python scripts/enterprise_launch_gate.py --release-scope local `
+  --evidence C:\private\LAC-Launch-Evidence\2.7.0-local.json
+```
+
+| Scope | Evidence gates | Extra lanes |
+|---|---|---|
+| `local` | `patent_clearance`, `github_enterprise_controls`, `cryptographic_review`, `artifact_roundtrip`, `clean_machine_signed_install` | model-hub + lac-pro repository checks, full installer/provenance/SBOM/attestation lane |
+| `cloud` | all 19 required gates | everything in `local` plus lac-cloud repository checks and the strict hosted product-readiness probe |
+
+The evidence manifest is schema v3 and scope-bound: it must carry
+`"release_scope"` matching the invoked scope, its gate set must exactly equal
+that scope's required set, and every Ed25519 record signature covers the
+scope. Local records bind `model_hub_commit`, `lac_pro_commit`,
+`installer_sha256`, and `release_provenance_sha256` and must not contain
+`lac_cloud_commit`. A local manifest cannot authorize the cloud launch, and a
+cloud manifest cannot authorize the local release. Schema-v2 manifests fail
+closed in both scopes. No evidence requirement was weakened by the split:
+every gate keeps its exact validation logic and maximum age, and the cloud
+launch still requires all nineteen.
+
 ## Evidence manifest
 
 The evidence file is operator supplied, limited to 1 MiB, and must stay outside
 the repository. It contains references to authoritative records, not reports or
-secrets themselves. Schema v2 requires an exact top-level field set and an exact
+secrets themselves. Schema v3 requires an exact top-level field set (`schema_version`, `release_scope`, `release_version`, `gates`) and an exact
 set of required gates. Every record is signed independently with an allowlisted,
 gate-scoped Ed25519 review key:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
+  "release_scope": "cloud",
   "release_version": "2.7.0",
   "gates": {
     "patent_clearance": {
