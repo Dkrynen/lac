@@ -1,4 +1,4 @@
-name: Signed Windows Release
+name: Signed Windows Release Candidate
 
 on:
   push:
@@ -52,6 +52,9 @@ jobs:
           $tag = $env:REQUESTED_RELEASE_TAG
           if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
             throw "Version must be an exact vX.Y.Z tag; got '$tag'"
+          }
+          if ($env:GITHUB_REF -ne "refs/tags/$tag") {
+            throw "Release builds must execute from the exact immutable tag ref refs/tags/$tag."
           }
           $tagCommit = git rev-parse --verify "refs/tags/$tag^{commit}" 2>$null
           if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:GITHUB_SHA) {
@@ -114,6 +117,7 @@ jobs:
 
       - name: Audit and install Python dependencies
         run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
           python -m pip install --disable-pip-version-check "uv==0.11.28"
           uv pip install --system --require-hashes -r requirements-release.lock
           python -m pip_audit -r requirements-release.lock
@@ -272,12 +276,17 @@ jobs:
           }
           $installerItem = Get-Item $installer
           $applicationItem = Get-Item "dist\lac\lac.exe"
+          $pythonSbomItem = Get-Item "dist\python-sbom.json"
+          $webSbomItem = Get-Item "web\dist\web-sbom.json"
           $installerHash = (Get-FileHash -Algorithm SHA256 $installerItem.FullName).Hash.ToLowerInvariant()
           $applicationHash = (Get-FileHash -Algorithm SHA256 $applicationItem.FullName).Hash.ToLowerInvariant()
+          $pythonSbomHash = (Get-FileHash -Algorithm SHA256 $pythonSbomItem.FullName).Hash.ToLowerInvariant()
+          $webSbomHash = (Get-FileHash -Algorithm SHA256 $webSbomItem.FullName).Hash.ToLowerInvariant()
           $dependencyLockHash = (Get-FileHash -Algorithm SHA256 requirements-release.lock).Hash.ToLowerInvariant()
           "$installerHash  $($installerItem.Name)" | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+          Copy-Item -LiteralPath "web\dist\web-sbom.json" -Destination "dist\web-sbom.json"
           $provenance = [ordered]@{
-            schema_version = 1
+            schema_version = 2
             version = $version
             tag = "${{ steps.release_version.outputs.tag }}"
             source_commit = "${{ github.sha }}"
@@ -299,13 +308,29 @@ jobs:
               authenticode = $applicationSignature.status
               rfc3161_timestamp = $applicationSignature.timestamp
             }
+            python_sbom = [ordered]@{
+              filename = $pythonSbomItem.Name
+              bytes = $pythonSbomItem.Length
+              sha256 = $pythonSbomHash
+            }
+            web_sbom = [ordered]@{
+              filename = $webSbomItem.Name
+              bytes = $webSbomItem.Length
+              sha256 = $webSbomHash
+            }
           }
           $provenance | ConvertTo-Json -Depth 4 | Set-Content dist\release-provenance.json -Encoding utf8
 
-      - name: Attest the signed installer provenance
+      - name: Attest the signed release provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: dist/LAC-Setup-${{ steps.release_version.outputs.version }}.exe
+          subject-path: |
+            dist/LAC-Setup-${{ steps.release_version.outputs.version }}.exe
+            dist/lac/lac.exe
+            dist/SHA256SUMS.txt
+            dist/release-provenance.json
+            dist/python-sbom.json
+            dist/web-sbom.json
 
       - name: Upload signed release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -315,36 +340,8 @@ jobs:
           retention-days: 14
           path: |
             dist/LAC-Setup-${{ steps.release_version.outputs.version }}.exe
+            dist/lac/lac.exe
             dist/SHA256SUMS.txt
             dist/release-provenance.json
             dist/python-sbom.json
-            web/dist/web-sbom.json
-
-  draft-release:
-    needs: build-windows
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: signed-windows-*
-          path: release
-          merge-multiple: true
-
-      - name: Create draft release for human approval
-        uses: softprops/action-gh-release@62c96d50ce8a7e0efc7740db9f321e330ea2c0b9 # v2.3.4
-        with:
-          draft: true
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            release/LAC-Setup-*.exe
-            release/SHA256SUMS.txt
-            release/release-provenance.json
-            release/python-sbom.json
-            release/web-sbom.json
+            dist/web-sbom.json

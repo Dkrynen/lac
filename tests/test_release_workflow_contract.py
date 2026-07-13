@@ -28,6 +28,7 @@ def test_release_workflow_requires_exact_source_version_and_protected_controls()
     assert '$tag = "${{' not in text
     assert 'git rev-parse --verify "refs/tags/$tag^{commit}"' in text
     assert "$tagCommit -ne $env:GITHUB_SHA" in text
+    assert '$env:GITHUB_REF -ne "refs/tags/$tag"' in text
     assert "production-release" in text
     assert "INNO_SETUP_LICENSE_CONFIRMED" in text
     assert "SIGNING_CERTIFICATE_PFX_BASE64" in text
@@ -51,6 +52,14 @@ def test_release_workflow_signs_payload_then_installer_and_verifies_both():
     assert "requirements-release.lock" in text
     assert "--require-hashes" in text
     assert "dependency_lock_sha256" in text
+    assert "schema_version = 2" in text
+    assert '$pythonSbomItem = Get-Item "dist\\python-sbom.json"' in text
+    assert '$webSbomItem = Get-Item "web\\dist\\web-sbom.json"' in text
+    assert "python_sbom = [ordered]@{" in text
+    assert "web_sbom = [ordered]@{" in text
+    assert 'Copy-Item -LiteralPath "web\\dist\\web-sbom.json" -Destination "dist\\web-sbom.json"' in text
+    assert "            dist/web-sbom.json" in text
+    assert "            web/dist/web-sbom.json" not in text
     assert "actions/attest-build-provenance@" in text
     assert "Get-Rfc3161SignatureEvidence" in text
     assert 'protocol = "RFC3161"' in text
@@ -59,6 +68,36 @@ def test_release_workflow_signs_payload_then_installer_and_verifies_both():
     assert 'python -m pytest -m "not live"' in text
     assert "detect-secrets-hook --baseline .secrets.baseline" in text
     assert "npx wrangler deploy --dry-run --env production" in text
+
+
+def test_release_workflow_attests_every_exact_release_subject():
+    text = _workflow()
+    attest_start = text.index("      - name: Attest the signed release provenance")
+    attest_end = text.index("      - name: Upload signed release candidate", attest_start)
+    attestation_step = text[attest_start:attest_end]
+
+    assert "          subject-path: |" in attestation_step
+    assert [
+        line.strip()
+        for line in attestation_step.splitlines()
+        if line.startswith("            dist/")
+    ] == [
+        "dist/LAC-Setup-${{ steps.release_version.outputs.version }}.exe",
+        "dist/lac/lac.exe",
+        "dist/SHA256SUMS.txt",
+        "dist/release-provenance.json",
+        "dist/python-sbom.json",
+        "dist/web-sbom.json",
+    ]
+
+
+def test_signed_candidate_retains_packaged_application_without_publishing_it_directly():
+    text = _workflow()
+    upload_start = text.index("      - name: Upload signed release candidate")
+    candidate_step = text[upload_start:]
+
+    assert "            dist/lac/lac.exe" in candidate_step
+    assert "            release/lac/lac.exe" not in text
 
 
 def test_release_workflow_pins_every_third_party_action_to_a_commit():
@@ -76,13 +115,28 @@ def test_release_workflow_pins_every_third_party_action_to_a_commit():
         assert all(character in "0123456789abcdef" for character in reference)
 
 
-def test_release_workflow_only_creates_a_draft_release():
+def test_release_workflow_is_candidate_only_until_the_enterprise_gate_can_run():
     text = _workflow()
 
-    assert "draft: true" in text
+    assert text.startswith("name: Signed Windows Release Candidate\n")
+    assert "draft-release" not in text
+    assert "softprops/action-gh-release" not in text
+    assert "contents: write" not in text
+    assert "draft: true" not in text
     assert "draft: false" not in text
-    assert "target_commitish: ${{ github.sha }}" in text
-    assert "contents: write" in text
+
+
+def test_python_sbom_step_creates_root_dist_before_writing_into_it():
+    text = _workflow()
+    step_start = text.index("      - name: Audit and install Python dependencies")
+    step_end = text.index("      - name: Run the complete source and secret gates", step_start)
+    step = text[step_start:step_end]
+
+    create_dist = "New-Item -ItemType Directory -Force -Path dist | Out-Null"
+    write_sbom = "python -m cyclonedx_py environment --output-file dist/python-sbom.json"
+    assert create_dist in step
+    assert write_sbom in step
+    assert step.index(create_dist) < step.index(write_sbom)
 
 
 def test_release_secrets_are_scoped_to_the_steps_that_need_them():

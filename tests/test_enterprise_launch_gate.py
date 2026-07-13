@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import base64
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -12,12 +13,21 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "enterprise_launch_gate.py"
+MODEL_HUB_COMMIT = "a" * 40
+LAC_PRO_COMMIT = "b" * 40
 CLOUD_COMMIT = "c" * 40
+INSTALLER_SHA256 = "d" * 64
+PROVENANCE_SHA256 = "e" * 64
 NOW = 1_783_944_000.0
-DEPLOYMENT_VERSIONS = {
+PRODUCTION_VERSIONS = {
     "api_version_id": "11111111-1111-1111-1111-111111111111",
     "agent_version_id": "22222222-2222-2222-2222-222222222222",
     "runner_version_id": "33333333-3333-3333-3333-333333333333",
+}
+STAGING_VERSIONS = {
+    "api_version_id": "44444444-4444-4444-4444-444444444444",
+    "agent_version_id": "55555555-5555-5555-5555-555555555555",
+    "runner_version_id": "66666666-6666-6666-6666-666666666666",
 }
 
 
@@ -50,17 +60,172 @@ def _repo(tmp_path: Path, name: str) -> Path:
     return repo
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_content_object(objects: Path, value: object) -> str:
+    objects.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    (objects / f"{digest}.json").write_bytes(payload)
+    return digest
+
+
+def _write_hosted_evidence_objects(evidence_path: Path) -> dict[str, str]:
+    objects = evidence_path.parent / "objects"
+    return {
+        "journey_manifest_sha256": _write_content_object(
+            objects, {"kind": "journey_manifest", "schema_version": 1},
+        ),
+        "price_card_payload_sha256": _write_content_object(
+            objects, {"kind": "signed_price_card", "schema_version": 2},
+        ),
+        "provider_meter_sha256": _write_content_object(
+            objects, {"kind": "provider_meter", "schema_version": 1},
+        ),
+        "infrastructure_meter_sha256": _write_content_object(
+            objects, {"kind": "infrastructure_meter", "schema_version": 1},
+        ),
+    }
+
+
+def _trust_evidence_signer(gate, private_key, monkeypatch) -> None:
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setattr(gate, "TRUSTED_EVIDENCE_SIGNERS", {
+        "test-reviewer-2026": {
+            "public_key": base64.urlsafe_b64encode(public_key).rstrip(b"=").decode("ascii"),
+            "approvers": ["independent-reviewer"],
+            "gates": list(gate.REQUIRED_EVIDENCE_GATES),
+            "not_before": 1_700_000_000,
+            "not_after": 1_900_000_000,
+        },
+    })
+
+
+def _check_evidence(gate, path: Path, *, expected_version: str = "2.7.0", **overrides):
+    expected = {
+        "expected_model_hub_commit": MODEL_HUB_COMMIT,
+        "expected_lac_pro_commit": LAC_PRO_COMMIT,
+        "expected_lac_cloud_commit": CLOUD_COMMIT,
+        "expected_installer_sha256": INSTALLER_SHA256,
+        "expected_provenance_sha256": PROVENANCE_SHA256,
+        "now": NOW,
+    }
+    expected.update(overrides)
+    return gate.check_evidence(path, expected_version, **expected)
+
+
+def _release_fixture(tmp_path: Path, gate) -> dict[str, object]:
+    installer = tmp_path / "LAC-Setup-2.7.0.exe"
+    application = tmp_path / "lac.exe"
+    dependency_lock = tmp_path / "requirements-release.lock"
+    python_sbom = tmp_path / "python-sbom.json"
+    web_sbom = tmp_path / "web-sbom.json"
+    checksums = tmp_path / "SHA256SUMS.txt"
+    provenance = tmp_path / "release-provenance.json"
+    installer.write_bytes(b"signed installer")
+    application.write_bytes(b"signed application")
+    dependency_lock.write_text("locked-dependency==1.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+    python_sbom.write_text('{"bomFormat":"CycloneDX","component":"python"}\n', encoding="utf-8")
+    web_sbom.write_text('{"bomFormat":"CycloneDX","component":"web"}\n', encoding="utf-8")
+    checksums.write_text(f"{_sha256(installer)}  {installer.name}\n", encoding="ascii")
+    signature = {
+        "status": "Valid",
+        "subject": "CN=LAC",
+        "thumbprint": "A" * 40,
+        "timestamp_subject": "CN=Trusted TSA",
+        "timestamp_thumbprint": "B" * 40,
+        "timestamp_not_before": "2026-01-01T00:00:00.0000000Z",
+        "timestamp_not_after": "2027-01-01T00:00:00.0000000Z",
+        "timestamped_at_utc": "2026-07-13T00:00:00.0000000Z",
+        "timestamp_eku": True,
+    }
+    record = {
+        "schema_version": 2,
+        "version": "2.7.0",
+        "tag": "v2.7.0",
+        "source_commit": "a" * 40,
+        "built_at_utc": "2026-07-13T00:00:01.0000000Z",
+        "dependency_lock_sha256": _sha256(dependency_lock),
+        "python_version": "Python 3.13.5",
+        "pyinstaller_version": "6.14.2",
+        "installer": {
+            "filename": installer.name,
+            "bytes": installer.stat().st_size,
+            "sha256": _sha256(installer),
+            "authenticode": "Valid",
+            "rfc3161_timestamp": gate._timestamp_provenance(signature),
+        },
+        "application": {
+            "filename": application.name,
+            "bytes": application.stat().st_size,
+            "sha256": _sha256(application),
+            "authenticode": "Valid",
+            "rfc3161_timestamp": gate._timestamp_provenance(signature),
+        },
+        "python_sbom": {
+            "filename": python_sbom.name,
+            "bytes": python_sbom.stat().st_size,
+            "sha256": _sha256(python_sbom),
+        },
+        "web_sbom": {
+            "filename": web_sbom.name,
+            "bytes": web_sbom.stat().st_size,
+            "sha256": _sha256(web_sbom),
+        },
+    }
+    provenance.write_text(json.dumps(record), encoding="utf-8")
+    return {
+        "installer": installer,
+        "checksums": checksums,
+        "application": application,
+        "provenance": provenance,
+        "dependency_lock": dependency_lock,
+        "python_sbom": python_sbom,
+        "web_sbom": web_sbom,
+        "signature": signature,
+        "record": record,
+    }
+
+
+def _check_release_fixture(gate, fixture: dict[str, object], monkeypatch):
+    monkeypatch.setattr(gate, "_authenticode", lambda path: fixture["signature"])
+    monkeypatch.setattr(gate, "_verified_build_attestations", lambda subjects, source_commit: True)
+    return gate.check_installer(
+        fixture["installer"],
+        fixture["checksums"],
+        fixture["application"],
+        fixture["provenance"],
+        "a" * 40,
+        fixture["dependency_lock"],
+        fixture["python_sbom"],
+        fixture["web_sbom"],
+        now=NOW,
+    )
+
+
 def _valid_evidence(
     gate,
     private_key: Ed25519PrivateKey,
     *,
-    cloud_commit: str = CLOUD_COMMIT,
+    hosted_digests: dict[str, str],
+    model_hub_commit: str = MODEL_HUB_COMMIT,
+    lac_pro_commit: str = LAC_PRO_COMMIT,
+    lac_cloud_commit: str = CLOUD_COMMIT,
+    installer_sha256: str = INSTALLER_SHA256,
+    provenance_sha256: str = PROVENANCE_SHA256,
     measured_at: str = "2026-07-13T00:00:00Z",
-    deployment_versions: dict[str, str] = DEPLOYMENT_VERSIONS,
-    latency_versions: dict[str, str] | None = None,
+    staging_versions: dict[str, str] = STAGING_VERSIONS,
+    production_versions: dict[str, str] = PRODUCTION_VERSIONS,
+    regional_versions: dict[str, str] | None = None,
+    hosted_versions: dict[str, str] | None = None,
 ) -> dict:
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
         "release_version": "2.7.0",
         "gates": {},
     }
@@ -72,16 +237,25 @@ def _valid_evidence(
             "recorded_at": "2026-07-13T00:00:00Z",
             "record_sha256": f"{index:064x}",
             "signer_kid": "test-reviewer-2026",
+            "model_hub_commit": model_hub_commit,
+            "lac_pro_commit": lac_pro_commit,
+            "lac_cloud_commit": lac_cloud_commit,
+            "installer_sha256": installer_sha256,
+            "release_provenance_sha256": provenance_sha256,
         }
-        if name in {"cloud_production_dark_smoke", "regional_latency_slo"}:
-            record["deployment_commit"] = cloud_commit
-            record.update(
-                latency_versions
-                if name == "regional_latency_slo" and latency_versions is not None
-                else deployment_versions
-            )
-        if name == "regional_latency_slo":
+        if name == "cloud_staging_smoke":
+            record.update(staging_versions)
+        elif name in gate._PRODUCTION_DEPLOYMENT_EVIDENCE_GATES:
+            if name == "regional_latency_slo" and regional_versions is not None:
+                record.update(regional_versions)
+            elif name == "hosted_agent_end_to_end" and hosted_versions is not None:
+                record.update(hosted_versions)
+            else:
+                record.update(production_versions)
+        if name in {"regional_latency_slo", "hosted_agent_end_to_end"}:
             record["measured_at"] = measured_at
+        if name == "hosted_agent_end_to_end":
+            record.update(hosted_digests)
         signature = private_key.sign(gate.evidence_signature_payload(name, "2.7.0", record))
         record["signature"] = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
         document["gates"][name] = record
@@ -103,103 +277,238 @@ def test_valid_evidence_requires_scoped_signature_exact_release_and_fresh_record
     gate = _load_gate()
     path = tmp_path / "evidence.json"
     private_key = Ed25519PrivateKey.generate()
-    public_key = private_key.public_key().public_bytes(
-        serialization.Encoding.Raw,
-        serialization.PublicFormat.Raw,
-    )
-    monkeypatch.setattr(gate, "TRUSTED_EVIDENCE_SIGNERS", {
-        "test-reviewer-2026": {
-            "public_key": base64.urlsafe_b64encode(public_key).rstrip(b"=").decode("ascii"),
-            "approvers": ["independent-reviewer"],
-            "gates": list(gate.REQUIRED_EVIDENCE_GATES),
-            "not_before": 1_700_000_000,
-            "not_after": 1_900_000_000,
-        },
-    })
-    evidence = _valid_evidence(gate, private_key)
+    _trust_evidence_signer(gate, private_key, monkeypatch)
+    digests = _write_hosted_evidence_objects(path)
+    evidence = _valid_evidence(gate, private_key, hosted_digests=digests)
     path.write_text(json.dumps(evidence), encoding="utf-8")
 
-    rows = gate.check_evidence(path, "2.7.0", expected_cloud_commit=CLOUD_COMMIT, now=NOW)
-
-    assert all(row["ok"] for row in gate.check_evidence(
-        path, "2.7.0", expected_cloud_commit=CLOUD_COMMIT, now=NOW,
+    assert all(row["ok"] for row in _check_evidence(gate, path))
+    assert not all(row["ok"] for row in _check_evidence(
+        gate, path, expected_version="2.7.1",
     ))
-    assert not all(row["ok"] for row in gate.check_evidence(
-        path, "2.7.1", expected_cloud_commit=CLOUD_COMMIT, now=NOW,
-    ))
+    evidence["schema_version"] = 1
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    assert all(not row["ok"] for row in _check_evidence(gate, path))
+    evidence["schema_version"] = 2
     evidence["gates"]["patent_clearance"]["reference"] = "tampered-reference"
     path.write_text(json.dumps(evidence), encoding="utf-8")
     assert next(
-        row for row in gate.check_evidence(
-            path, "2.7.0", expected_cloud_commit=CLOUD_COMMIT, now=NOW,
-        )
+        row for row in _check_evidence(gate, path)
         if row["name"] == "evidence_patent_clearance"
     )["ok"] is False
 
 
-def test_regional_latency_evidence_binds_deployment_commit_and_measurement_time(tmp_path, monkeypatch):
+def test_every_evidence_record_binds_exact_repositories_and_release_artifacts(
+    tmp_path, monkeypatch,
+):
     gate = _load_gate()
     path = tmp_path / "evidence.json"
     private_key = Ed25519PrivateKey.generate()
-    public_key = private_key.public_key().public_bytes(
-        serialization.Encoding.Raw,
-        serialization.PublicFormat.Raw,
-    )
-    monkeypatch.setattr(gate, "TRUSTED_EVIDENCE_SIGNERS", {
-        "test-reviewer-2026": {
-            "public_key": base64.urlsafe_b64encode(public_key).rstrip(b"=").decode("ascii"),
-            "approvers": ["independent-reviewer"],
-            "gates": list(gate.REQUIRED_EVIDENCE_GATES),
-            "not_before": 1_700_000_000,
-            "not_after": 1_900_000_000,
-        },
-    })
+    _trust_evidence_signer(gate, private_key, monkeypatch)
+    digests = _write_hosted_evidence_objects(path)
 
-    wrong_commit = _valid_evidence(gate, private_key, cloud_commit="d" * 40)
-    path.write_text(json.dumps(wrong_commit), encoding="utf-8")
-    rows = gate.check_evidence(
-        path, "2.7.0", expected_cloud_commit=CLOUD_COMMIT, now=NOW,
+    invalid_bindings = (
+        {"model_hub_commit": "f" * 40},
+        {"lac_pro_commit": "f" * 40},
+        {"lac_cloud_commit": "f" * 40},
+        {"installer_sha256": "f" * 64},
+        {"provenance_sha256": "f" * 64},
     )
-    assert next(row for row in rows if row["name"] == "evidence_regional_latency_slo")["ok"] is False
+    for override in invalid_bindings:
+        evidence = _valid_evidence(
+            gate, private_key, hosted_digests=digests, **override,
+        )
+        path.write_text(json.dumps(evidence), encoding="utf-8")
+        assert all(not row["ok"] for row in _check_evidence(gate, path))
+
+
+def test_staging_worker_versions_are_required_but_not_cross_matched_to_production(
+    tmp_path, monkeypatch,
+):
+    gate = _load_gate()
+    path = tmp_path / "evidence.json"
+    private_key = Ed25519PrivateKey.generate()
+    _trust_evidence_signer(gate, private_key, monkeypatch)
+    digests = _write_hosted_evidence_objects(path)
+
+    evidence = _valid_evidence(gate, private_key, hosted_digests=digests)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    rows = _check_evidence(gate, path)
+    assert next(row for row in rows if row["name"] == "evidence_cloud_staging_smoke")["ok"] is True
+    assert all(
+        next(row for row in rows if row["name"] == f"evidence_{name}")["ok"]
+        for name in gate._PRODUCTION_DEPLOYMENT_EVIDENCE_GATES
+    )
+
+    invalid_staging = _valid_evidence(
+        gate,
+        private_key,
+        hosted_digests=digests,
+        staging_versions={**STAGING_VERSIONS, "api_version_id": "replace"},
+    )
+    path.write_text(json.dumps(invalid_staging), encoding="utf-8")
+    rows = _check_evidence(gate, path)
+    assert next(row for row in rows if row["name"] == "evidence_cloud_staging_smoke")["ok"] is False
+    assert next(row for row in rows if row["name"] == "evidence_cloud_production_dark_smoke")["ok"] is True
+
+
+def test_only_production_worker_versions_cross_match_and_measurements_stay_fresh(
+    tmp_path, monkeypatch,
+):
+    gate = _load_gate()
+    path = tmp_path / "evidence.json"
+    private_key = Ed25519PrivateKey.generate()
+    _trust_evidence_signer(gate, private_key, monkeypatch)
+    digests = _write_hosted_evidence_objects(path)
 
     mismatched_runtime = _valid_evidence(
         gate,
         private_key,
-        latency_versions={
-            **DEPLOYMENT_VERSIONS,
-            "runner_version_id": "44444444-4444-4444-4444-444444444444",
+        hosted_digests=digests,
+        regional_versions={
+            **PRODUCTION_VERSIONS,
+            "runner_version_id": "77777777-7777-7777-7777-777777777777",
         },
     )
     path.write_text(json.dumps(mismatched_runtime), encoding="utf-8")
-    rows = gate.check_evidence(
-        path, "2.7.0", expected_cloud_commit=CLOUD_COMMIT, now=NOW,
+    rows = _check_evidence(gate, path)
+    assert next(row for row in rows if row["name"] == "evidence_cloud_staging_smoke")["ok"] is True
+    assert all(
+        next(row for row in rows if row["name"] == f"evidence_{name}")["ok"] is False
+        for name in gate._PRODUCTION_DEPLOYMENT_EVIDENCE_GATES
     )
-    assert next(row for row in rows if row["name"] == "evidence_cloud_production_dark_smoke")["ok"] is False
-    assert next(row for row in rows if row["name"] == "evidence_regional_latency_slo")["ok"] is False
-
-    placeholder_runtime = _valid_evidence(
-        gate,
-        private_key,
-        deployment_versions={**DEPLOYMENT_VERSIONS, "api_version_id": "replace"},
-        latency_versions={**DEPLOYMENT_VERSIONS, "api_version_id": "replace"},
-    )
-    path.write_text(json.dumps(placeholder_runtime), encoding="utf-8")
-    rows = gate.check_evidence(
-        path, "2.7.0", expected_cloud_commit=CLOUD_COMMIT, now=NOW,
-    )
-    assert next(row for row in rows if row["name"] == "evidence_cloud_production_dark_smoke")["ok"] is False
-    assert next(row for row in rows if row["name"] == "evidence_regional_latency_slo")["ok"] is False
 
     old_measurement = _valid_evidence(
         gate,
         private_key,
+        hosted_digests=digests,
         measured_at="2026-06-01T00:00:00Z",
     )
     path.write_text(json.dumps(old_measurement), encoding="utf-8")
-    rows = gate.check_evidence(
-        path, "2.7.0", expected_cloud_commit=CLOUD_COMMIT, now=NOW,
-    )
+    rows = _check_evidence(gate, path)
     assert next(row for row in rows if row["name"] == "evidence_regional_latency_slo")["ok"] is False
+    assert next(row for row in rows if row["name"] == "evidence_hosted_agent_end_to_end")["ok"] is False
+
+
+def test_hosted_agent_journey_requires_a_valid_content_addressed_object_bundle(
+    tmp_path, monkeypatch,
+):
+    gate = _load_gate()
+    path = tmp_path / "evidence.json"
+    private_key = Ed25519PrivateKey.generate()
+    _trust_evidence_signer(gate, private_key, monkeypatch)
+    digests = _write_hosted_evidence_objects(path)
+    evidence = _valid_evidence(gate, private_key, hosted_digests=digests)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    rows = _check_evidence(gate, path)
+    assert next(
+        row for row in rows if row["name"] == "evidence_hosted_agent_end_to_end"
+    )["ok"] is True
+
+    provider_object = path.parent / "objects" / f"{digests['provider_meter_sha256']}.json"
+    provider_object.unlink()
+    rows = _check_evidence(gate, path)
+    assert next(
+        row for row in rows if row["name"] == "evidence_hosted_agent_end_to_end"
+    )["ok"] is False
+
+
+def test_hosted_agent_journey_rejects_tampered_content_object(tmp_path, monkeypatch):
+    gate = _load_gate()
+    path = tmp_path / "evidence.json"
+    private_key = Ed25519PrivateKey.generate()
+    _trust_evidence_signer(gate, private_key, monkeypatch)
+    digests = _write_hosted_evidence_objects(path)
+    evidence = _valid_evidence(gate, private_key, hosted_digests=digests)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    object_path = path.parent / "objects" / f"{digests['journey_manifest_sha256']}.json"
+    object_path.write_text('{"kind":"tampered"}\n', encoding="utf-8")
+
+    rows = _check_evidence(gate, path)
+    assert next(
+        row for row in rows if row["name"] == "evidence_hosted_agent_end_to_end"
+    )["ok"] is False
+
+
+def test_hosted_agent_journey_rejects_oversized_content_object(tmp_path, monkeypatch):
+    gate = _load_gate()
+    path = tmp_path / "evidence.json"
+    private_key = Ed25519PrivateKey.generate()
+    _trust_evidence_signer(gate, private_key, monkeypatch)
+    digests = _write_hosted_evidence_objects(path)
+    oversized = {"kind": "provider_meter", "padding": "x" * gate.EVIDENCE_OBJECT_MAX_BYTES}
+    digests["provider_meter_sha256"] = _write_content_object(path.parent / "objects", oversized)
+    evidence = _valid_evidence(gate, private_key, hosted_digests=digests)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    rows = _check_evidence(gate, path)
+    assert next(
+        row for row in rows if row["name"] == "evidence_hosted_agent_end_to_end"
+    )["ok"] is False
+
+
+def test_cloud_product_readiness_requires_exact_strict_cli_success(tmp_path, monkeypatch):
+    gate = _load_gate()
+    cloud = tmp_path / "lac-cloud"
+    script = cloud / "scripts" / "product-readiness.mjs"
+    script.parent.mkdir(parents=True)
+    script.write_text("// fixture\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(args, *, cwd=None):
+        calls.append((args, cwd))
+        report = {
+            "schemaVersion": 1,
+            "valid": True,
+            "localEngineeringReady": True,
+            "status": "hosted_agent_local_complete",
+            "missingCapabilities": [],
+        }
+        return subprocess.CompletedProcess(args, 0, json.dumps(report), "")
+
+    monkeypatch.setattr(gate, "_run", fake_run)
+    row = gate.check_cloud_product_readiness(cloud)
+
+    assert row["ok"] is True
+    assert calls == [([
+        "node",
+        str(script),
+        "--require-hosted-agent-local-complete",
+    ], cloud)]
+
+
+def test_cloud_product_readiness_fails_closed_on_incomplete_or_ambiguous_output(
+    tmp_path, monkeypatch,
+):
+    gate = _load_gate()
+    cloud = tmp_path / "lac-cloud"
+    script = cloud / "scripts" / "product-readiness.mjs"
+    script.parent.mkdir(parents=True)
+    script.write_text("// fixture\n", encoding="utf-8")
+    reports = [
+        subprocess.CompletedProcess(["node"], 1, json.dumps({
+            "schemaVersion": 1,
+            "valid": True,
+            "localEngineeringReady": False,
+            "status": "platform_foundation_complete",
+            "missingCapabilities": ["provider_broker"],
+        }), ""),
+        subprocess.CompletedProcess(["node"], 0, json.dumps({
+            "schemaVersion": 1,
+            "valid": True,
+            "localEngineeringReady": True,
+            "status": "hosted_agent_local_complete",
+            "missingCapabilities": [],
+            "unexpected": True,
+        }), ""),
+        subprocess.CompletedProcess(["node"], 0, "not-json", ""),
+    ]
+
+    for result in reports:
+        monkeypatch.setattr(gate, "_run", lambda args, cwd=None, result=result: result)
+        assert gate.check_cloud_product_readiness(cloud)["ok"] is False
 
 
 def test_repository_checks_report_dirty_unsigned_and_remote_policy(tmp_path):
@@ -254,10 +563,80 @@ def test_main_returns_nonzero_and_emits_json_for_currently_blocked_fixture(tmp_p
     assert all("secret" not in json.dumps(row).lower() for row in report["checks"])
 
 
-def test_build_attestation_is_bound_to_repository_workflow_commit_and_tag(tmp_path, monkeypatch):
+def test_build_report_derives_and_passes_exact_evidence_subject_bindings(
+    tmp_path, monkeypatch,
+):
     gate = _load_gate()
+    model = tmp_path / "model-hub"
+    pro = tmp_path / "lac-pro"
+    cloud = tmp_path / "lac-cloud"
+    for repo in (model, pro, cloud):
+        repo.mkdir()
     installer = tmp_path / "LAC-Setup-2.7.0.exe"
-    installer.write_bytes(b"signed release candidate")
+    provenance = tmp_path / "release-provenance.json"
+    installer.write_bytes(b"exact signed installer")
+    provenance.write_bytes(b'{"schema_version":2}\n')
+    args = gate.parse_args([
+        "--repo-root", str(model),
+        "--lac-pro-root", str(pro),
+        "--lac-cloud-root", str(cloud),
+        "--installer", str(installer),
+        "--provenance", str(provenance),
+        "--evidence", str(tmp_path / "evidence.json"),
+    ])
+    commits = {
+        model: MODEL_HUB_COMMIT,
+        pro: LAC_PRO_COMMIT,
+        cloud: CLOUD_COMMIT,
+    }
+    captured = {}
+
+    def fake_git(repo, *git_args):
+        assert git_args == ("rev-parse", "HEAD")
+        return subprocess.CompletedProcess(git_args, 0, commits[repo] + "\n", "")
+
+    def fake_evidence(path, version, **expected):
+        captured.update(expected)
+        return []
+
+    monkeypatch.setattr(gate, "_git", fake_git)
+    monkeypatch.setattr(gate, "check_repository", lambda *args, **kwargs: [])
+    monkeypatch.setattr(gate, "check_cloud_product_readiness", lambda *args: {
+        "lane": "cloud_product", "name": "cloud_product_local_complete",
+        "ok": True, "detail": "fixture", "data": {},
+    })
+    monkeypatch.setattr(gate, "check_installer", lambda *args, **kwargs: [])
+    monkeypatch.setattr(gate, "check_evidence", fake_evidence)
+
+    report = gate.build_report(args)
+
+    assert report["ready"] is True
+    assert captured == {
+        "expected_model_hub_commit": MODEL_HUB_COMMIT,
+        "expected_lac_pro_commit": LAC_PRO_COMMIT,
+        "expected_lac_cloud_commit": CLOUD_COMMIT,
+        "expected_installer_sha256": _sha256(installer),
+        "expected_provenance_sha256": _sha256(provenance),
+    }
+
+
+def test_build_attestations_bind_every_subject_to_repository_workflow_commit_and_tag(
+    tmp_path, monkeypatch,
+):
+    gate = _load_gate()
+    subjects = tuple(
+        tmp_path / name
+        for name in (
+            "LAC-Setup-2.7.0.exe",
+            "lac.exe",
+            "SHA256SUMS.txt",
+            "release-provenance.json",
+            "python-sbom.json",
+            "web-sbom.json",
+        )
+    )
+    for subject in subjects:
+        subject.write_bytes(f"signed release subject: {subject.name}".encode())
     calls = []
 
     def fake_run(args, *, cwd=None):
@@ -267,14 +646,70 @@ def test_build_attestation_is_bound_to_repository_workflow_commit_and_tag(tmp_pa
     monkeypatch.setattr(gate, "_run", fake_run)
     source_commit = "a" * 40
 
-    assert gate._verified_build_attestation(installer, source_commit) is True
-    command = calls[0][0]
-    assert command[:3] == ["gh", "attestation", "verify"]
-    assert command[command.index("--repo") + 1] == "Dkrynen/lac"
-    assert command[command.index("--signer-workflow") + 1].endswith("/.github/workflows/build.yml")
-    assert command[command.index("--source-digest") + 1] == source_commit
-    assert command[command.index("--source-ref") + 1] == "refs/tags/v2.7.0"
-    assert "--deny-self-hosted-runners" in command
+    assert gate._verified_build_attestations(subjects, source_commit) is True
+    assert [Path(command[0][3]) for command in calls] == list(subjects)
+    for command, cwd in calls:
+        assert cwd is None
+        assert command[:3] == ["gh", "attestation", "verify"]
+        assert command[command.index("--repo") + 1] == "Dkrynen/lac"
+        assert command[command.index("--signer-workflow") + 1].endswith("/.github/workflows/build.yml")
+        assert command[command.index("--source-digest") + 1] == source_commit
+        assert command[command.index("--source-ref") + 1] == "refs/tags/v2.7.0"
+        assert "--deny-self-hosted-runners" in command
+
+
+def test_build_attestations_fail_closed_when_any_subject_is_unverified(tmp_path, monkeypatch):
+    gate = _load_gate()
+    subjects = tuple(tmp_path / f"subject-{index}" for index in range(3))
+    for subject in subjects:
+        subject.write_bytes(b"release subject")
+    calls = []
+
+    def fake_run(args, *, cwd=None):
+        calls.append(args)
+        output = "[]" if args[3] == str(subjects[1]) else '[{"verificationResult": {}}]'
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    monkeypatch.setattr(gate, "_run", fake_run)
+
+    assert gate._verified_build_attestations(subjects, "a" * 40) is False
+    assert [Path(command[3]) for command in calls] == list(subjects[:2])
+
+
+def test_release_gate_requests_attestation_for_all_exact_subjects(tmp_path, monkeypatch):
+    gate = _load_gate()
+    fixture = _release_fixture(tmp_path, gate)
+    captured = []
+    monkeypatch.setattr(gate, "_authenticode", lambda path: fixture["signature"])
+
+    def verify(subjects, source_commit):
+        captured.extend(subjects)
+        assert source_commit == "a" * 40
+        return True
+
+    monkeypatch.setattr(gate, "_verified_build_attestations", verify)
+
+    rows = gate.check_installer(
+        fixture["installer"],
+        fixture["checksums"],
+        fixture["application"],
+        fixture["provenance"],
+        "a" * 40,
+        fixture["dependency_lock"],
+        fixture["python_sbom"],
+        fixture["web_sbom"],
+        now=NOW,
+    )
+
+    assert next(row for row in rows if row["name"] == "build_provenance_attestation")["ok"] is True
+    assert captured == [
+        fixture["installer"],
+        fixture["application"],
+        fixture["checksums"],
+        fixture["provenance"],
+        fixture["python_sbom"],
+        fixture["web_sbom"],
+    ]
 
 
 def test_release_range_starts_at_the_public_upstream_commit():
@@ -283,6 +718,12 @@ def test_release_range_starts_at_the_public_upstream_commit():
         "c84d0fffae638664c6887b5786645cd4055d5c45"  # pragma: allowlist secret -- public Git commit
     )
     assert gate.MODEL_HUB_RELEASE_BASE == expected
+
+
+def test_gate_defaults_to_canonical_dist_web_sbom():
+    gate = _load_gate()
+
+    assert gate.parse_args([]).web_sbom == gate.ROOT / "dist" / "web-sbom.json"
 
 
 def test_regional_latency_is_a_fresh_signed_launch_gate():
@@ -315,3 +756,175 @@ def test_authenticode_trust_requires_rfc3161_timestamp_identity_and_time(monkeyp
         **valid,
         "timestamped_at_utc": "2028-01-01T00:00:00.0000000Z",
     }) is False
+
+
+def test_checksum_manifest_rejects_duplicate_installer_entries(tmp_path, monkeypatch):
+    gate = _load_gate()
+    fixture = _release_fixture(tmp_path, gate)
+    digest = _sha256(fixture["installer"])
+    fixture["checksums"].write_text(
+        f"{digest}  LAC-Setup-2.7.0.exe\n{digest} *LAC-Setup-2.7.0.exe\n",
+        encoding="ascii",
+    )
+
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+
+    assert next(row for row in rows if row["name"] == "installer_checksum")["ok"] is False
+
+
+def test_release_provenance_v2_binds_lock_and_both_sboms(tmp_path, monkeypatch):
+    gate = _load_gate()
+    fixture = _release_fixture(tmp_path, gate)
+
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is True
+
+    fixture["dependency_lock"].write_text("tampered lock\n", encoding="utf-8")
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is False
+
+    fixture["dependency_lock"].write_text(
+        "locked-dependency==1.0 --hash=sha256:" + "a" * 64 + "\n",
+        encoding="utf-8",
+    )
+    fixture["python_sbom"].write_text("tampered SBOM\n", encoding="utf-8")
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is False
+
+    fixture["python_sbom"].write_text(
+        '{"bomFormat":"CycloneDX","component":"python"}\n', encoding="utf-8",
+    )
+    fixture["web_sbom"].write_text("tampered SBOM\n", encoding="utf-8")
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is False
+
+
+def test_release_provenance_requires_exact_schema_and_bounded_utc_build_time(tmp_path, monkeypatch):
+    gate = _load_gate()
+    fixture = _release_fixture(tmp_path, gate)
+    record = fixture["record"]
+
+    record["unexpected"] = "accepted by loose schemas"
+    fixture["provenance"].write_text(json.dumps(record), encoding="utf-8")
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is False
+
+    del record["unexpected"]
+    record["built_at_utc"] = "2026-07-13T02:00:01+02:00"
+    fixture["provenance"].write_text(json.dumps(record), encoding="utf-8")
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is False
+
+    record["built_at_utc"] = "2025-01-01T00:00:00Z"
+    fixture["provenance"].write_text(json.dumps(record), encoding="utf-8")
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is False
+
+    record["built_at_utc"] = "2026-07-14T00:00:00Z"
+    fixture["provenance"].write_text(json.dumps(record), encoding="utf-8")
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is False
+
+    record["built_at_utc"] = "2026-07-13T00:00:01.0000000Z"
+    record["installer"]["unexpected"] = True
+    fixture["provenance"].write_text(json.dumps(record), encoding="utf-8")
+    rows = _check_release_fixture(gate, fixture, monkeypatch)
+    assert next(row for row in rows if row["name"] == "release_provenance")["ok"] is False
+
+
+def test_release_tag_must_be_annotated_signed_target_head_and_use_trusted_signer(tmp_path, monkeypatch):
+    gate = _load_gate()
+    repo = _repo(tmp_path, "tagged")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "tag", "-a", "v2.7.0", "-m", "release 2.7.0")
+    real_git = gate._git
+    signer = "A" * 40
+
+    def signed_tag(repo_path, *args):
+        if args == ("verify-tag", "--raw", "refs/tags/v2.7.0"):
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                "",
+                f"[GNUPG:] NEWSIG\n[GNUPG:] VALIDSIG {signer} 2026-07-13 0 4 0 1 10 00 {signer}\n",
+            )
+        return real_git(repo_path, *args)
+
+    monkeypatch.setattr(gate, "_git", signed_tag)
+    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS", frozenset({signer}))
+    rows = gate.check_repository(
+        "model_hub",
+        repo,
+        release_tag="v2.7.0",
+        expected_tag_target=head,
+    )
+    assert next(row for row in rows if row["name"] == "model_hub_signed_release_tag")["ok"] is True
+
+    for adverse_status in ("EXPKEYSIG", "REVKEYSIG", "KEYEXPIRED", "SIGEXPIRED"):
+        def adverse_tag(repo_path, *args, adverse_status=adverse_status):
+            if args == ("verify-tag", "--raw", "refs/tags/v2.7.0"):
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    "",
+                    (
+                        f"[GNUPG:] VALIDSIG {signer} 2026-07-13 0 4 0 1 10 00 {signer}\n"
+                        f"[GNUPG:] {adverse_status} {signer} release signer\n"
+                    ),
+                )
+            return real_git(repo_path, *args)
+
+        monkeypatch.setattr(gate, "_git", adverse_tag)
+        rows = gate.check_repository(
+            "model_hub",
+            repo,
+            release_tag="v2.7.0",
+            expected_tag_target=head,
+        )
+        assert next(
+            row for row in rows if row["name"] == "model_hub_signed_release_tag"
+        )["ok"] is False
+
+    monkeypatch.setattr(gate, "_git", signed_tag)
+
+    rows = gate.check_repository(
+        "model_hub",
+        repo,
+        release_tag="v2.7.0",
+        expected_tag_target="b" * 40,
+    )
+    assert next(row for row in rows if row["name"] == "model_hub_signed_release_tag")["ok"] is False
+
+    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS", frozenset())
+    rows = gate.check_repository(
+        "model_hub",
+        repo,
+        release_tag="v2.7.0",
+        expected_tag_target=head,
+    )
+    assert next(row for row in rows if row["name"] == "model_hub_signed_release_tag")["ok"] is False
+
+    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS", frozenset({signer}))
+    _git(repo, "tag", "-d", "v2.7.0")
+    _git(repo, "tag", "v2.7.0")
+    rows = gate.check_repository(
+        "model_hub",
+        repo,
+        release_tag="v2.7.0",
+        expected_tag_target=head,
+    )
+    assert next(row for row in rows if row["name"] == "model_hub_signed_release_tag")["ok"] is False
+
+
+def test_subprocess_timeout_returns_a_structured_failure(monkeypatch):
+    gate = _load_gate()
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["gh", "attestation", "verify"], timeout=30)
+
+    monkeypatch.setattr(gate.subprocess, "run", timeout)
+    result = gate._run(["gh", "attestation", "verify"])
+
+    assert result.returncode == 124
+    assert result.stdout == ""
+    assert result.stderr == "command unavailable or timed out"

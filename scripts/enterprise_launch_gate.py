@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,7 @@ REQUIRED_EVIDENCE_GATES = (
     "cloud_staging_smoke",
     "cloud_production_dark_smoke",
     "regional_latency_slo",
+    "hosted_agent_end_to_end",
     "private_paid_beta",
     "external_pentest",
     "cryptographic_review",
@@ -46,25 +47,58 @@ REQUIRED_EVIDENCE_GATES = (
 )
 _PLACEHOLDER = re.compile(r"(?:\btbd\b|\btodo\b|\bpending\b|replace|example)", re.IGNORECASE)
 _SHA256 = re.compile(r"[A-Fa-f0-9]{64}")
+_LOWER_SHA256 = re.compile(r"[a-f0-9]{64}")
 _GIT_COMMIT = re.compile(r"[a-f0-9]{40}")
 _WORKER_VERSION_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
 _B64URL = re.compile(r"[A-Za-z0-9_-]+")
+_RFC3339_UTC = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?Z"
+)
+_SSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}=?")
 _SIGNED_STATES = frozenset({"G"})
-_EVIDENCE_RECORD_FIELDS = {
+_EVIDENCE_BASE_FIELDS = {
     "status", "approver", "reference", "recorded_at", "record_sha256",
     "signer_kid", "signature",
 }
-_DEPLOYMENT_BINDING_FIELDS = {
-    "deployment_commit", "api_version_id", "agent_version_id", "runner_version_id",
+_EVIDENCE_RELEASE_BINDING_FIELDS = {
+    "model_hub_commit", "lac_pro_commit", "lac_cloud_commit",
+    "installer_sha256", "release_provenance_sha256",
 }
-_DEPLOYMENT_EVIDENCE_FIELDS = _EVIDENCE_RECORD_FIELDS | _DEPLOYMENT_BINDING_FIELDS
-_LATENCY_EVIDENCE_FIELDS = _DEPLOYMENT_EVIDENCE_FIELDS | {"measured_at"}
-_DEPLOYMENT_EVIDENCE_GATES = frozenset({
+_EVIDENCE_RECORD_FIELDS = _EVIDENCE_BASE_FIELDS | _EVIDENCE_RELEASE_BINDING_FIELDS
+_WORKER_BINDING_FIELDS = {
+    "api_version_id", "agent_version_id", "runner_version_id",
+}
+_WORKER_EVIDENCE_FIELDS = _EVIDENCE_RECORD_FIELDS | _WORKER_BINDING_FIELDS
+_MEASURED_WORKER_EVIDENCE_FIELDS = _WORKER_EVIDENCE_FIELDS | {"measured_at"}
+_HOSTED_JOURNEY_DIGEST_FIELDS = {
+    "journey_manifest_sha256", "price_card_payload_sha256",
+    "provider_meter_sha256", "infrastructure_meter_sha256",
+}
+_HOSTED_JOURNEY_EVIDENCE_FIELDS = (
+    _MEASURED_WORKER_EVIDENCE_FIELDS | _HOSTED_JOURNEY_DIGEST_FIELDS
+)
+_PRODUCTION_DEPLOYMENT_EVIDENCE_GATES = frozenset({
     "cloud_production_dark_smoke",
     "regional_latency_slo",
+    "hosted_agent_end_to_end",
 })
+_WORKER_BOUND_EVIDENCE_GATES = (
+    _PRODUCTION_DEPLOYMENT_EVIDENCE_GATES | {"cloud_staging_smoke"}
+)
+_PROVENANCE_FIELDS = {
+    "schema_version", "version", "tag", "source_commit", "built_at_utc",
+    "dependency_lock_sha256", "python_version", "pyinstaller_version",
+    "installer", "application", "python_sbom", "web_sbom",
+}
+_SIGNED_ARTIFACT_FIELDS = {
+    "filename", "bytes", "sha256", "authenticode", "rfc3161_timestamp",
+}
+_SBOM_FIELDS = {"filename", "bytes", "sha256"}
+PROVENANCE_MAX_AGE_DAYS = 14
+EVIDENCE_MANIFEST_MAX_BYTES = 1024 * 1024
+EVIDENCE_OBJECT_MAX_BYTES = 256 * 1024
 
 # Immutable disclosure-freeze bases. Only commits after these reviewed objects
 # belong to the 2.7.0 launch range. Changing a local upstream cannot narrow it.
@@ -94,6 +128,7 @@ EVIDENCE_MAX_AGE_DAYS = {
     "cloud_staging_smoke": 14,
     "cloud_production_dark_smoke": 7,
     "regional_latency_slo": 1,
+    "hosted_agent_end_to_end": 1,
     "private_paid_beta": 90,
     "external_pentest": 90,
     "cryptographic_review": 180,
@@ -124,14 +159,22 @@ def _result(
 
 
 def _run(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args,
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    try:
+        return subprocess.run(
+            args,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return subprocess.CompletedProcess(
+            args,
+            124,
+            "",
+            "command unavailable or timed out",
+        )
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -150,6 +193,30 @@ def _recorded_at(value: object) -> float | None:
     except ValueError:
         return None
     return parsed.timestamp() if parsed.tzinfo is not None else None
+
+
+def _rfc3339_utc_timestamp(value: object) -> float | None:
+    if (
+        not isinstance(value, str)
+        or len(value) > 32
+        or _RFC3339_UTC.fullmatch(value) is None
+    ):
+        return None
+    try:
+        return datetime.fromisoformat(value[:-1] + "+00:00").timestamp()
+    except ValueError:
+        return None
+
+
+def _normalise_signer(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip()
+    if re.fullmatch(r"[A-Fa-f0-9]{40,64}", candidate):
+        return candidate.upper()
+    if _SSH_FINGERPRINT.fullmatch(candidate):
+        return candidate
+    return ""
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -186,15 +253,36 @@ def _verify_evidence_record(
     release_version: str,
     record: object,
     *,
-    expected_cloud_commit: str,
+    expected_model_hub_commit: str,
+    expected_lac_pro_commit: str,
+    expected_lac_cloud_commit: str,
+    expected_installer_sha256: str,
+    expected_provenance_sha256: str,
     now: float,
 ) -> bool:
     expected_fields = (
-        _LATENCY_EVIDENCE_FIELDS if name == "regional_latency_slo"
-        else _DEPLOYMENT_EVIDENCE_FIELDS if name == "cloud_production_dark_smoke"
+        _HOSTED_JOURNEY_EVIDENCE_FIELDS if name == "hosted_agent_end_to_end"
+        else _MEASURED_WORKER_EVIDENCE_FIELDS if name == "regional_latency_slo"
+        else _WORKER_EVIDENCE_FIELDS if name in _WORKER_BOUND_EVIDENCE_GATES
         else _EVIDENCE_RECORD_FIELDS
     )
     if not isinstance(record, dict) or set(record) != expected_fields:
+        return False
+    expected_commits = {
+        "model_hub_commit": expected_model_hub_commit,
+        "lac_pro_commit": expected_lac_pro_commit,
+        "lac_cloud_commit": expected_lac_cloud_commit,
+    }
+    expected_artifacts = {
+        "installer_sha256": expected_installer_sha256,
+        "release_provenance_sha256": expected_provenance_sha256,
+    }
+    if (
+        any(_GIT_COMMIT.fullmatch(value) is None for value in expected_commits.values())
+        or any(_LOWER_SHA256.fullmatch(value) is None for value in expected_artifacts.values())
+        or any(record.get(field) != value for field, value in expected_commits.items())
+        or any(record.get(field) != value for field, value in expected_artifacts.items())
+    ):
         return False
     recorded_at = _recorded_at(record.get("recorded_at"))
     max_age = EVIDENCE_MAX_AGE_DAYS[name] * 86_400
@@ -209,24 +297,28 @@ def _verify_evidence_record(
         or now - recorded_at > max_age
     ):
         return False
-    if name in _DEPLOYMENT_EVIDENCE_GATES:
-        if (
-            _GIT_COMMIT.fullmatch(expected_cloud_commit) is None
-            or record.get("deployment_commit") != expected_cloud_commit
-            or any(
-                not isinstance(record.get(field), str)
-                or _WORKER_VERSION_ID.fullmatch(record[field]) is None
-                for field in ("api_version_id", "agent_version_id", "runner_version_id")
-            )
+    if name in _WORKER_BOUND_EVIDENCE_GATES:
+        if any(
+            not isinstance(record.get(field), str)
+            or _WORKER_VERSION_ID.fullmatch(record[field]) is None
+            for field in _WORKER_BINDING_FIELDS
         ):
             return False
-    if name == "regional_latency_slo":
+    if name in {"regional_latency_slo", "hosted_agent_end_to_end"}:
         measured_at = _recorded_at(record.get("measured_at"))
         if (
             measured_at is None
             or measured_at > now + 300
             or measured_at > recorded_at + 300
             or now - measured_at > max_age
+        ):
+            return False
+    if name == "hosted_agent_end_to_end":
+        digests = [record.get(field) for field in _HOSTED_JOURNEY_DIGEST_FIELDS]
+        if (
+            any(not isinstance(digest, str) or _LOWER_SHA256.fullmatch(digest) is None
+                for digest in digests)
+            or len(set(digests)) != len(digests)
         ):
             return False
     kid = record.get("signer_kid")
@@ -257,11 +349,49 @@ def _verify_evidence_record(
     return True
 
 
+def _content_addressed_evidence_object_valid(evidence_dir: Path, digest: str) -> bool:
+    if _LOWER_SHA256.fullmatch(digest) is None:
+        return False
+    objects_dir = evidence_dir / "objects"
+    object_path = objects_dir / f"{digest}.json"
+    try:
+        if (
+            objects_dir.is_symlink()
+            or object_path.is_symlink()
+            or not object_path.is_file()
+        ):
+            return False
+        size = object_path.stat().st_size
+        if size <= 0 or size > EVIDENCE_OBJECT_MAX_BYTES:
+            return False
+        payload = object_path.read_bytes()
+        if len(payload) != size or hashlib.sha256(payload).hexdigest() != digest:
+            return False
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_object)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(value, dict) and bool(value)
+
+
+def _hosted_journey_objects_valid(evidence_path: Path, record: object) -> bool:
+    if not isinstance(record, dict):
+        return False
+    return all(
+        isinstance(digest := record.get(field), str)
+        and _content_addressed_evidence_object_valid(evidence_path.parent, digest)
+        for field in _HOSTED_JOURNEY_DIGEST_FIELDS
+    )
+
+
 def check_evidence(
     path: Path,
     expected_version: str,
     *,
-    expected_cloud_commit: str = "",
+    expected_model_hub_commit: str = "",
+    expected_lac_pro_commit: str = "",
+    expected_lac_cloud_commit: str = "",
+    expected_installer_sha256: str = "",
+    expected_provenance_sha256: str = "",
     now: float | None = None,
 ) -> list[dict[str, Any]]:
     missing = [
@@ -273,9 +403,13 @@ def check_evidence(
         )
         for name in REQUIRED_EVIDENCE_GATES
     ]
-    if not path.is_file():
-        return missing
     try:
+        if (
+            not path.is_file()
+            or path.stat().st_size <= 0
+            or path.stat().st_size > EVIDENCE_MANIFEST_MAX_BYTES
+        ):
+            return missing
         document = json.loads(
             path.read_text(encoding="utf-8"),
             object_pairs_hook=_unique_object,
@@ -285,11 +419,16 @@ def check_evidence(
             {**row, "detail": "evidence manifest is invalid"}
             for row in missing
         ]
-    if not isinstance(document, dict):
+    if not isinstance(document, dict) or set(document) != {
+        "schema_version", "release_version", "gates",
+    }:
         return [{**row, "detail": "evidence manifest is invalid"} for row in missing]
-    version_ok = document.get("schema_version") == 1 and document.get("release_version") == expected_version
+    version_ok = (
+        document.get("schema_version") == 2
+        and document.get("release_version") == expected_version
+    )
     gates = document.get("gates")
-    if not isinstance(gates, dict):
+    if not isinstance(gates, dict) or set(gates) != set(REQUIRED_EVIDENCE_GATES):
         gates = {}
     current = time.time() if now is None else now
     verified: dict[str, bool] = {}
@@ -299,17 +438,31 @@ def check_evidence(
             name,
             expected_version,
             record,
-            expected_cloud_commit=expected_cloud_commit,
+            expected_model_hub_commit=expected_model_hub_commit,
+            expected_lac_pro_commit=expected_lac_pro_commit,
+            expected_lac_cloud_commit=expected_lac_cloud_commit,
+            expected_installer_sha256=expected_installer_sha256,
+            expected_provenance_sha256=expected_provenance_sha256,
             now=current,
         )
-    deployment_records = [gates.get(name) for name in _DEPLOYMENT_EVIDENCE_GATES]
-    if all(verified.get(name) for name in _DEPLOYMENT_EVIDENCE_GATES):
+    if verified.get("hosted_agent_end_to_end") and not _hosted_journey_objects_valid(
+        path, gates.get("hosted_agent_end_to_end"),
+    ):
+        verified["hosted_agent_end_to_end"] = False
+    deployment_records = [
+        gates.get(name) for name in _PRODUCTION_DEPLOYMENT_EVIDENCE_GATES
+    ]
+    if all(verified.get(name) for name in _PRODUCTION_DEPLOYMENT_EVIDENCE_GATES):
+        expected_binding = tuple(
+            deployment_records[0].get(field) for field in _WORKER_BINDING_FIELDS
+        )
         bindings_match = all(
-            deployment_records[0].get(field) == deployment_records[1].get(field)
-            for field in _DEPLOYMENT_BINDING_FIELDS
+            tuple(record.get(field) for field in _WORKER_BINDING_FIELDS)
+            == expected_binding
+            for record in deployment_records[1:]
         )
         if not bindings_match:
-            for name in _DEPLOYMENT_EVIDENCE_GATES:
+            for name in _PRODUCTION_DEPLOYMENT_EVIDENCE_GATES:
                 verified[name] = False
     rows: list[dict[str, Any]] = []
     for name in REQUIRED_EVIDENCE_GATES:
@@ -326,6 +479,55 @@ def check_evidence(
     return rows
 
 
+def check_cloud_product_readiness(lac_cloud_root: Path) -> dict[str, Any]:
+    """Require the private cloud repo's exact strict hosted-product truth gate."""
+    lane = "cloud_product"
+    script = lac_cloud_root / "scripts" / "product-readiness.mjs"
+    if not script.is_file():
+        return _result(
+            "cloud_product_local_complete",
+            False,
+            "hosted-product readiness gate is missing",
+            lane=lane,
+        )
+    try:
+        result = _run(
+            ["node", str(script), "--require-hosted-agent-local-complete"],
+            cwd=lac_cloud_root,
+        )
+        if len(result.stdout.encode("utf-8")) > 4_096:
+            raise ValueError("readiness report is oversized")
+        report = json.loads(result.stdout, object_pairs_hook=_unique_object)
+        ready = bool(
+            result.returncode == 0
+            and isinstance(report, dict)
+            and set(report) == {
+                "schemaVersion", "valid", "localEngineeringReady", "status",
+                "missingCapabilities",
+            }
+            and report.get("schemaVersion") == 1
+            and report.get("valid") is True
+            and report.get("localEngineeringReady") is True
+            and report.get("status") == "hosted_agent_local_complete"
+            and report.get("missingCapabilities") == []
+        )
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ):
+        ready = False
+    return _result(
+        "cloud_product_local_complete",
+        ready,
+        "all required hosted-agent capabilities are locally complete"
+        if ready else "hosted-agent product capabilities remain incomplete or unverified",
+        lane=lane,
+    )
+
+
 def check_repository(
     name: str,
     path: Path,
@@ -333,15 +535,25 @@ def check_repository(
     require_zero_remotes: bool = False,
     required_remote: str | None = None,
     base_commit: str | None = None,
+    release_tag: str | None = None,
+    expected_tag_target: str | None = None,
 ) -> list[dict[str, Any]]:
     lane = "repositories"
     if not (path / ".git").exists():
-        return [
+        rows = [
             _result(f"{name}_exists", False, "Git repository is missing", lane=lane),
             _result(f"{name}_clean", False, "Git repository is missing", lane=lane),
             _result(f"{name}_signed_commits", False, "Git repository is missing", lane=lane),
             _result(f"{name}_remote", False, "Git repository is missing", lane=lane),
         ]
+        if release_tag is not None:
+            rows.append(_result(
+                f"{name}_signed_release_tag",
+                False,
+                "Git repository is missing",
+                lane=lane,
+            ))
+        return rows
 
     status = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
     dirty_count = len([line for line in status.stdout.splitlines() if line]) if status.returncode == 0 else -1
@@ -360,10 +572,15 @@ def check_repository(
         for line in signatures.stdout.splitlines():
             state, _, fingerprint = line.partition("\0")
             if state:
-                signature_rows.append((state, fingerprint.strip().upper()))
+                signature_rows.append((state, _normalise_signer(fingerprint)))
+    trusted_signers = {
+        normalised
+        for signer in TRUSTED_COMMIT_SIGNERS
+        if (normalised := _normalise_signer(signer))
+    }
     unsigned_count = sum(state not in _SIGNED_STATES for state, _ in signature_rows)
     untrusted_count = sum(
-        state in _SIGNED_STATES and fingerprint not in TRUSTED_COMMIT_SIGNERS
+        state in _SIGNED_STATES and fingerprint not in trusted_signers
         for state, fingerprint in signature_rows
     )
     signed_ok = base_ok and bool(signature_rows) and unsigned_count == 0 and untrusted_count == 0
@@ -390,7 +607,7 @@ def check_repository(
         remote_ok = remote_count > 0
         remote_detail = "repository has a remote" if remote_ok else "repository remote is missing"
 
-    return [
+    rows = [
         _result(f"{name}_exists", True, "Git repository exists", lane=lane),
         _result(
             f"{name}_clean",
@@ -419,6 +636,58 @@ def check_repository(
             data={"remote_count": remote_count},
         ),
     ]
+    if release_tag is not None:
+        tag_ref = f"refs/tags/{release_tag}"
+        tag_type = _git(path, "cat-file", "-t", tag_ref)
+        tag_target = _git(path, "rev-parse", f"{tag_ref}^{{commit}}")
+        verification = _git(path, "verify-tag", "--raw", tag_ref)
+        verification_output = f"{verification.stdout}\n{verification.stderr}"
+        gpg_signers = re.findall(
+            r"(?m)^\[GNUPG:\] VALIDSIG ([A-Fa-f0-9]{40,64})\b",
+            verification_output,
+        )
+        adverse_gpg_status = re.search(
+            r"(?m)^\[GNUPG:\] (?:BADSIG|ERRSIG|EXPKEYSIG|KEYEXPIRED|"
+            r"NO_PUBKEY|REVKEYSIG|SIGEXPIRED)\b",
+            verification_output,
+        ) is not None
+        ssh_signers = re.findall(
+            r'(?m)^Good "git" signature for .+ with \S+ key (SHA256:[A-Za-z0-9+/]{43}=?)\s*$',
+            verification_output,
+        )
+        tag_signers = {
+            normalised
+            for signer in [*gpg_signers, *ssh_signers]
+            if (normalised := _normalise_signer(signer))
+        }
+        tag_ok = bool(
+            re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", release_tag)
+            and _GIT_COMMIT.fullmatch(str(expected_tag_target or ""))
+            and tag_type.returncode == 0
+            and tag_type.stdout.strip() == "tag"
+            and tag_target.returncode == 0
+            and tag_target.stdout.strip() == expected_tag_target
+            and verification.returncode == 0
+            and not adverse_gpg_status
+            and len(tag_signers) == 1
+            and tag_signers <= trusted_signers
+        )
+        rows.append(_result(
+            f"{name}_signed_release_tag",
+            tag_ok,
+            "annotated release tag targets HEAD and has an approved signature" if tag_ok
+            else "release tag is missing, lightweight, mistargeted, unsigned, or untrusted",
+            lane=lane,
+            data={
+                "annotated": tag_type.returncode == 0 and tag_type.stdout.strip() == "tag",
+                "targets_expected_commit": (
+                    tag_target.returncode == 0
+                    and tag_target.stdout.strip() == expected_tag_target
+                ),
+                "trusted_signature_count": len(tag_signers & trusted_signers),
+            },
+        ))
+    return rows
 
 
 def _sha256_file(path: Path) -> str:
@@ -429,14 +698,39 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest().upper()
 
 
+def _evidence_subject_sha256(path: Path, *, max_bytes: int | None = None) -> str:
+    try:
+        if not path.is_file():
+            return ""
+        size = path.stat().st_size
+        if size <= 0 or (max_bytes is not None and size > max_bytes):
+            return ""
+        return _sha256_file(path).lower()
+    except OSError:
+        return ""
+
+
 def _checksum_entry(path: Path, filename: str) -> str | None:
-    if not path.is_file():
+    try:
+        if not path.is_file() or path.stat().st_size > 1024 * 1024:
+            return None
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeError):
         return None
-    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = raw_line.split()
-        if len(parts) >= 2 and parts[-1].lstrip("*") == filename and re.fullmatch(r"[A-Fa-f0-9]{64}", parts[0]):
-            return parts[0].upper()
-    return None
+    entries: dict[str, str] = {}
+    for raw_line in lines:
+        if not raw_line.strip():
+            continue
+        parts = raw_line.split(maxsplit=1)
+        if len(parts) != 2 or _SHA256.fullmatch(parts[0]) is None:
+            return None
+        entry_name = parts[1].strip()
+        if entry_name.startswith("*"):
+            entry_name = entry_name[1:]
+        if not entry_name or entry_name in entries:
+            return None
+        entries[entry_name] = parts[0].upper()
+    return entries.get(filename)
 
 
 def _authenticode(path: Path) -> dict[str, Any]:
@@ -541,24 +835,151 @@ def _timestamp_provenance(signature: dict[str, Any]) -> dict[str, object]:
     }
 
 
-def _verified_build_attestation(installer: Path, source_commit: str) -> bool:
-    """Require GitHub's signed SLSA attestation for this exact release input."""
-    result = _run([
-        "gh", "attestation", "verify", str(installer),
-        "--repo", EXPECTED_GITHUB_REPOSITORY,
-        "--signer-workflow", EXPECTED_SIGNER_WORKFLOW,
-        "--source-digest", source_commit,
-        "--source-ref", f"refs/tags/v{APP_VERSION}",
-        "--deny-self-hosted-runners",
-        "--format", "json",
-    ])
-    if result.returncode != 0:
+def _verified_build_attestations(
+    subjects: tuple[Path, ...], source_commit: str,
+) -> bool:
+    """Require GitHub's signed SLSA attestation for every exact release subject."""
+    if (
+        not subjects
+        or len(set(subjects)) != len(subjects)
+        or _GIT_COMMIT.fullmatch(source_commit) is None
+    ):
         return False
-    try:
-        attestations = json.loads(result.stdout)
-    except json.JSONDecodeError:
+    for subject in subjects:
+        if not subject.is_file() or subject.stat().st_size <= 0:
+            return False
+        result = _run([
+            "gh", "attestation", "verify", str(subject),
+            "--repo", EXPECTED_GITHUB_REPOSITORY,
+            "--signer-workflow", EXPECTED_SIGNER_WORKFLOW,
+            "--source-digest", source_commit,
+            "--source-ref", f"refs/tags/v{APP_VERSION}",
+            "--deny-self-hosted-runners",
+            "--format", "json",
+        ])
+        if result.returncode != 0:
+            return False
+        try:
+            attestations = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(attestations, list) or not attestations:
+            return False
+    return True
+
+
+def _positive_file_size(value: object, path: Path) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value > 0
+        and path.is_file()
+        and value == path.stat().st_size
+    )
+
+
+def _bounded_version(value: object) -> bool:
+    return bool(
+        _nonplaceholder(value)
+        and isinstance(value, str)
+        and len(value) <= 128
+        and re.fullmatch(r"[ -~]+", value)
+    )
+
+
+def _signed_artifact_binding(
+    record: object,
+    *,
+    path: Path,
+    filename: str,
+    signature: dict[str, Any],
+) -> bool:
+    return bool(
+        isinstance(record, dict)
+        and set(record) == _SIGNED_ARTIFACT_FIELDS
+        and record.get("filename") == filename
+        and _positive_file_size(record.get("bytes"), path)
+        and record.get("sha256") == _sha256_file(path).lower()
+        and record.get("authenticode") == "Valid"
+        and record.get("rfc3161_timestamp") == _timestamp_provenance(signature)
+    )
+
+
+def _sbom_binding(record: object, *, path: Path, filename: str) -> bool:
+    return bool(
+        isinstance(record, dict)
+        and set(record) == _SBOM_FIELDS
+        and record.get("filename") == filename
+        and _positive_file_size(record.get("bytes"), path)
+        and record.get("sha256") == _sha256_file(path).lower()
+    )
+
+
+def _release_provenance_valid(
+    record: object,
+    *,
+    installer: Path,
+    application: Path,
+    dependency_lock: Path,
+    python_sbom: Path,
+    web_sbom: Path,
+    source_commit: str,
+    installer_signature: dict[str, Any],
+    application_signature: dict[str, Any],
+    now: float,
+) -> bool:
+    if not isinstance(record, dict) or set(record) != _PROVENANCE_FIELDS:
         return False
-    return isinstance(attestations, list) and len(attestations) > 0
+    built_at = _rfc3339_utc_timestamp(record.get("built_at_utc"))
+    installer_signed_at = _rfc3339_utc_timestamp(
+        installer_signature.get("timestamped_at_utc")
+    )
+    application_signed_at = _rfc3339_utc_timestamp(
+        application_signature.get("timestamped_at_utc")
+    )
+    if (
+        built_at is None
+        or built_at > now + 300
+        or now - built_at > PROVENANCE_MAX_AGE_DAYS * 86_400
+        or installer_signed_at is None
+        or application_signed_at is None
+        or not 0 <= built_at - installer_signed_at <= 86_400
+        or not 0 <= built_at - application_signed_at <= 86_400
+        or dependency_lock.name != "requirements-release.lock"
+        or not dependency_lock.is_file()
+        or dependency_lock.stat().st_size <= 0
+        or python_sbom.name != "python-sbom.json"
+        or web_sbom.name != "web-sbom.json"
+    ):
+        return False
+    return bool(
+        record.get("schema_version") == 2
+        and record.get("version") == APP_VERSION
+        and record.get("tag") == f"v{APP_VERSION}"
+        and _GIT_COMMIT.fullmatch(source_commit) is not None
+        and record.get("source_commit") == source_commit
+        and record.get("dependency_lock_sha256") == _sha256_file(dependency_lock).lower()
+        and _bounded_version(record.get("python_version"))
+        and _bounded_version(record.get("pyinstaller_version"))
+        and _signed_artifact_binding(
+            record.get("installer"),
+            path=installer,
+            filename=f"LAC-Setup-{APP_VERSION}.exe",
+            signature=installer_signature,
+        )
+        and _signed_artifact_binding(
+            record.get("application"),
+            path=application,
+            filename="lac.exe",
+            signature=application_signature,
+        )
+        and _sbom_binding(
+            record.get("python_sbom"), path=python_sbom, filename="python-sbom.json"
+        )
+        and _sbom_binding(
+            record.get("web_sbom"), path=web_sbom, filename="web-sbom.json"
+        )
+    )
 
 
 def check_installer(
@@ -567,6 +988,11 @@ def check_installer(
     application: Path,
     provenance: Path,
     source_commit: str,
+    dependency_lock: Path | None = None,
+    python_sbom: Path | None = None,
+    web_sbom: Path | None = None,
+    *,
+    now: float | None = None,
 ) -> list[dict[str, Any]]:
     lane = "release_artifact"
     expected_filename = f"LAC-Setup-{APP_VERSION}.exe"
@@ -580,6 +1006,9 @@ def check_installer(
             _result("release_provenance", False, "release provenance cannot be verified", lane=lane),
             _result("build_provenance_attestation", False, "signed build attestation cannot be verified", lane=lane),
         ]
+    dependency_lock = dependency_lock or ROOT / "requirements-release.lock"
+    python_sbom = python_sbom or ROOT / "dist" / "python-sbom.json"
+    web_sbom = web_sbom or ROOT / "dist" / "web-sbom.json"
     actual = _sha256_file(installer)
     expected = _checksum_entry(checksums, installer.name)
     checksum_ok = expected is not None and expected == actual
@@ -588,37 +1017,32 @@ def check_installer(
     application_signature = _authenticode(application) if application_exists else {
         "status": "missing", "subject": "", "thumbprint": "",
     }
-    application_sha256 = _sha256_file(application) if application_exists else ""
     provenance_ok = False
     try:
-        record = json.loads(provenance.read_text(encoding="utf-8-sig"), object_pairs_hook=_unique_object)
-        installer_record = record.get("installer") if isinstance(record, dict) else None
-        application_record = record.get("application") if isinstance(record, dict) else None
-        provenance_ok = bool(
-            isinstance(record, dict)
-            and record.get("schema_version") == 1
-            and record.get("version") == APP_VERSION
-            and record.get("tag") == f"v{APP_VERSION}"
-            and record.get("source_commit") == source_commit
-            and isinstance(installer_record, dict)
-            and installer_record.get("filename") == expected_filename
-            and installer_record.get("bytes") == installer.stat().st_size
-            and str(installer_record.get("sha256") or "").upper() == actual
-            and installer_record.get("authenticode") == "Valid"
-            and installer_record.get("rfc3161_timestamp")
-            == _timestamp_provenance(installer_signature)
-            and isinstance(application_record, dict)
-            and application_record.get("filename") == "lac.exe"
-            and application_record.get("bytes") == application.stat().st_size
-            and str(application_record.get("sha256") or "").upper() == application_sha256
-            and application_record.get("authenticode") == "Valid"
-            and application_record.get("rfc3161_timestamp")
-            == _timestamp_provenance(application_signature)
-            and _SHA256.fullmatch(str(record.get("dependency_lock_sha256") or "")) is not None
+        if not provenance.is_file() or provenance.stat().st_size > 256 * 1024:
+            raise ValueError("release provenance is missing or oversized")
+        record = json.loads(
+            provenance.read_text(encoding="utf-8-sig"),
+            object_pairs_hook=_unique_object,
+        )
+        provenance_ok = _release_provenance_valid(
+            record,
+            installer=installer,
+            application=application,
+            dependency_lock=dependency_lock,
+            python_sbom=python_sbom,
+            web_sbom=web_sbom,
+            source_commit=source_commit,
+            installer_signature=installer_signature,
+            application_signature=application_signature,
+            now=time.time() if now is None else now,
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         provenance_ok = False
-    attestation_ok = _verified_build_attestation(installer, source_commit)
+    attestation_ok = _verified_build_attestations(
+        (installer, application, checksums, provenance, python_sbom, web_sbom),
+        source_commit,
+    )
     return [
         _result(
             "installer_exists",
@@ -659,9 +1083,9 @@ def check_installer(
         _result(
             "build_provenance_attestation",
             attestation_ok,
-            "GitHub SLSA attestation binds the installer, source commit, tag, and workflow"
+            "GitHub SLSA attestations bind every release subject, source commit, tag, and workflow"
             if attestation_ok
-            else "GitHub SLSA attestation is missing or does not match the approved build",
+            else "one or more GitHub SLSA attestations are missing or do not match the approved build",
             lane=lane,
         ),
     ]
@@ -682,20 +1106,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--checksums", type=Path, default=ROOT / "dist" / "SHA256SUMS.txt")
     parser.add_argument("--application", type=Path, default=ROOT / "dist" / "lac" / "lac.exe")
     parser.add_argument("--provenance", type=Path, default=ROOT / "dist" / "release-provenance.json")
+    parser.add_argument("--python-sbom", type=Path, default=ROOT / "dist" / "python-sbom.json")
+    parser.add_argument("--web-sbom", type=Path, default=ROOT / "dist" / "web-sbom.json")
     return parser.parse_args(argv)
 
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     source = _git(args.repo_root, "rev-parse", "HEAD")
     source_commit = source.stdout.strip() if source.returncode == 0 else ""
+    pro_source = _git(args.lac_pro_root, "rev-parse", "HEAD")
+    pro_source_commit = pro_source.stdout.strip() if pro_source.returncode == 0 else ""
     cloud_source = _git(args.lac_cloud_root, "rev-parse", "HEAD")
     cloud_source_commit = cloud_source.stdout.strip() if cloud_source.returncode == 0 else ""
+    installer_sha256 = _evidence_subject_sha256(args.installer)
+    provenance_sha256 = _evidence_subject_sha256(
+        args.provenance, max_bytes=256 * 1024,
+    )
     checks = [
         *check_repository(
             "model_hub",
             args.repo_root,
             required_remote="https://github.com/Dkrynen/lac.git",
             base_commit=MODEL_HUB_RELEASE_BASE,
+            release_tag=f"v{APP_VERSION}",
+            expected_tag_target=source_commit,
         ),
         *check_repository(
             "lac_pro",
@@ -708,17 +1142,25 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             args.lac_cloud_root,
             required_remote="https://github.com/Acend-co/lac-cloud.git",
         ),
+        check_cloud_product_readiness(args.lac_cloud_root),
         *check_installer(
             args.installer,
             args.checksums,
             args.application,
             args.provenance,
             source_commit,
+            args.repo_root / "requirements-release.lock",
+            args.python_sbom,
+            args.web_sbom,
         ),
         *check_evidence(
             args.evidence,
             APP_VERSION,
-            expected_cloud_commit=cloud_source_commit,
+            expected_model_hub_commit=source_commit,
+            expected_lac_pro_commit=pro_source_commit,
+            expected_lac_cloud_commit=cloud_source_commit,
+            expected_installer_sha256=installer_sha256,
+            expected_provenance_sha256=provenance_sha256,
         ),
     ]
     failed = [row for row in checks if not row["ok"]]
