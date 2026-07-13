@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -53,6 +55,25 @@ def _is_placeholder(value: str | None) -> bool:
     return any(marker in lowered for marker in PLACEHOLDER_MARKERS)
 
 
+def _is_windows_reserved_filename(filename: str) -> bool:
+    stem = filename.split(".", 1)[0]
+    return re.fullmatch(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", stem, re.IGNORECASE) is not None
+
+
+def _is_immutable_artifact_key(key: str, sha256: str, filename: str) -> bool:
+    parts = key.split("/")
+    return (
+        len(parts) >= 4
+        and all(part and part not in {".", ".."} for part in parts)
+        and any(
+            re.fullmatch(r"v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", part)
+            for part in parts
+        )
+        and sha256.lower() in parts
+        and parts[-1] == filename
+    )
+
+
 def _gate_constant(repo_root: Path) -> str | None:
     text = _read_text(repo_root / "backend" / "pro_install.py")
     match = re.search(r'PRO_GATE_URL\s*=\s*"([^"]+)"', text)
@@ -99,16 +120,46 @@ def check_worker_config(args: argparse.Namespace) -> dict[str, Any]:
     except tomllib.TOMLDecodeError as exc:
         return _result("worker_config", False, detail=f"worker config is invalid TOML: {exc}", data={"path": str(path)})
 
-    vars_table = data.get("vars") if isinstance(data, dict) else {}
-    buckets = data.get("r2_buckets") if isinstance(data, dict) else []
+    config_scope: object = data
+    worker_env = str(getattr(args, "worker_env", "") or "").strip()
+    if worker_env:
+        envs = data.get("env") if isinstance(data, dict) else None
+        config_scope = envs.get(worker_env) if isinstance(envs, dict) else None
+        if not isinstance(config_scope, dict):
+            return _result(
+                "worker_config",
+                False,
+                detail=f"worker environment {worker_env!r} is missing",
+                data={"path": str(path), "worker_env": worker_env},
+            )
+
+    vars_table = config_scope.get("vars") if isinstance(config_scope, dict) else {}
+    buckets = config_scope.get("r2_buckets") if isinstance(config_scope, dict) else []
+    rate_limits = config_scope.get("ratelimits") if isinstance(config_scope, dict) else []
     if not isinstance(vars_table, dict):
         vars_table = {}
     if not isinstance(buckets, list):
         buckets = []
+    if not isinstance(rate_limits, list):
+        rate_limits = []
 
-    values = {
+    limiter = next(
+        (
+            item
+            for item in rate_limits
+            if isinstance(item, dict) and item.get("name") == "PRO_GATE_RATE_LIMITER"
+        ),
+        {},
+    )
+    limiter_simple = limiter.get("simple") if isinstance(limiter, dict) else {}
+
+    values: dict[str, object] = {
         "POLAR_ORG_ID": vars_table.get("POLAR_ORG_ID"),
+        "LOCAL_PRO_BENEFIT_ID": vars_table.get("LOCAL_PRO_BENEFIT_ID"),
+        "PRO_CLOUD_BENEFIT_ID": vars_table.get("PRO_CLOUD_BENEFIT_ID"),
         "ARTIFACT_KEY": vars_table.get("ARTIFACT_KEY"),
+        "ARTIFACT_FILENAME": vars_table.get("ARTIFACT_FILENAME"),
+        "ARTIFACT_SHA256": vars_table.get("ARTIFACT_SHA256"),
         "R2_BUCKET.bucket_name": next(
             (
                 bucket.get("bucket_name")
@@ -118,9 +169,81 @@ def check_worker_config(args: argparse.Namespace) -> dict[str, Any]:
             None,
         ),
     }
-    missing = [name for name, value in values.items() if not isinstance(value, str) or not value.strip()]
+    if worker_env or bool(getattr(args, "require_rate_limiter", False)):
+        values.update({
+            "PRO_GATE_RATE_LIMITER.namespace_id": limiter.get("namespace_id") if isinstance(limiter, dict) else None,
+            "PRO_GATE_RATE_LIMITER.limit": limiter_simple.get("limit") if isinstance(limiter_simple, dict) else None,
+            "PRO_GATE_RATE_LIMITER.period": limiter_simple.get("period") if isinstance(limiter_simple, dict) else None,
+        })
+    missing = [
+        name
+        for name, value in values.items()
+        if (
+            (name.endswith(".limit") or name.endswith(".period"))
+            and (not isinstance(value, int) or isinstance(value, bool) or value <= 0)
+        )
+        or (
+            not (name.endswith(".limit") or name.endswith(".period"))
+            and (not isinstance(value, str) or not value.strip())
+        )
+    ]
     placeholders = sorted(name for name, value in values.items() if isinstance(value, str) and _is_placeholder(value))
-    ok = not placeholders and not missing
+    artifact_sha = values.get("ARTIFACT_SHA256")
+    invalid: list[str] = []
+    local_benefit = values.get("LOCAL_PRO_BENEFIT_ID")
+    cloud_benefit = values.get("PRO_CLOUD_BENEFIT_ID")
+    if (
+        isinstance(local_benefit, str)
+        and isinstance(cloud_benefit, str)
+        and local_benefit
+        and not _is_placeholder(local_benefit)
+        and not _is_placeholder(cloud_benefit)
+        and local_benefit == cloud_benefit
+    ):
+        invalid.extend(["LOCAL_PRO_BENEFIT_ID", "PRO_CLOUD_BENEFIT_ID"])
+
+    artifact_filename = values.get("ARTIFACT_FILENAME")
+    if (
+        isinstance(artifact_filename, str)
+        and artifact_filename.strip()
+        and not _is_placeholder(artifact_filename)
+        and (
+            len(artifact_filename) > 128
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", artifact_filename) is None
+            or not artifact_filename.lower().endswith(".zip")
+            or _is_windows_reserved_filename(artifact_filename)
+        )
+    ):
+        invalid.append("ARTIFACT_FILENAME")
+
+    if (
+        isinstance(artifact_sha, str)
+        and artifact_sha.strip()
+        and not _is_placeholder(artifact_sha)
+        and re.fullmatch(r"[0-9A-Fa-f]{64}", artifact_sha) is None
+    ):
+        invalid.append("ARTIFACT_SHA256")
+    artifact_key = values.get("ARTIFACT_KEY")
+    if (
+        isinstance(artifact_key, str)
+        and artifact_key.strip()
+        and not _is_placeholder(artifact_key)
+        and isinstance(artifact_sha, str)
+        and re.fullmatch(r"[0-9A-Fa-f]{64}", artifact_sha) is not None
+        and isinstance(artifact_filename, str)
+        and artifact_filename.strip()
+        and not _is_placeholder(artifact_filename)
+        and "ARTIFACT_FILENAME" not in invalid
+        and not _is_immutable_artifact_key(
+            artifact_key,
+            artifact_sha,
+            artifact_filename,
+        )
+    ):
+        invalid.append("ARTIFACT_KEY")
+    if bool(getattr(args, "allow_worker_placeholders", False)):
+        placeholders = []
+    ok = not placeholders and not missing and not invalid
     detail = "worker config has concrete Polar/R2 settings" if ok else "worker config is not deploy-ready"
     return _result(
         "worker_config",
@@ -128,8 +251,10 @@ def check_worker_config(args: argparse.Namespace) -> dict[str, Any]:
         detail=detail,
         data={
             "path": str(path),
+            "worker_env": worker_env or "top-level",
             "placeholders": placeholders,
             "missing": missing,
+            "invalid": invalid,
         },
     )
 
@@ -191,7 +316,7 @@ def check_lac_pro_remote(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
-def _post_license(url: str, key: str, timeout: int) -> tuple[int, bytes, dict[str, str]]:
+def _post_license(url: str, key: str, timeout: int) -> tuple[int, bytes, list[tuple[str, str]]]:
     body = json.dumps({"license_key": key}).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -201,13 +326,39 @@ def _post_license(url: str, key: str, timeout: int) -> tuple[int, bytes, dict[st
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.getcode(), response.read(), dict(response.headers.items())
+            return response.getcode(), response.read(), list(response.headers.items())
     except urllib.error.HTTPError as exc:
         try:
             data = exc.read()
         except Exception:  # noqa: BLE001
             data = b""
-        return exc.code, data, dict(exc.headers.items())
+        return exc.code, data, list(exc.headers.items()) if exc.headers else []
+
+
+def _header_values(headers: object, target_name: str) -> list[object] | None:
+    """Preserve repeated headers; return None for malformed metadata."""
+    if headers is None:
+        return []
+    try:
+        items = headers.items() if hasattr(headers, "items") else headers
+        pairs = list(items)
+    except Exception:  # noqa: BLE001 - untrusted transport metadata
+        return None
+    values: list[object] = []
+    for pair in pairs:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            return None
+        name, value = pair
+        if str(name).lower() == target_name.lower():
+            values.append(value)
+    return values
+
+
+def _single_header_value(headers: object, target_name: str) -> str | None:
+    values = _header_values(headers, target_name)
+    if values is None or len(values) != 1 or not isinstance(values[0], str):
+        return None
+    return values[0]
 
 
 def check_invalid_key(args: argparse.Namespace) -> dict[str, Any]:
@@ -228,10 +379,63 @@ def check_invalid_key(args: argparse.Namespace) -> dict[str, Any]:
             "gate_source": source,
             "status": status,
             "bytes": len(body),
-            "content_type": headers.get("content-type") or headers.get("Content-Type"),
+            "content_type": (
+                content_types[0]
+                if (content_types := _header_values(headers, "content-type"))
+                and len(content_types) == 1
+                and isinstance(content_types[0], str)
+                else None
+            ),
             "duration_ms": round((time.perf_counter() - start) * 1000, 1),
         },
     )
+
+
+def _artifact_integrity(body: bytes, headers: object) -> str:
+    """Return a value-free integrity state for the live artifact response."""
+    values = _header_values(headers, "x-lac-artifact-sha256")
+    if values is None:
+        return "malformed"
+    if not values:
+        return "missing"
+    if (
+        len(values) != 1
+        or not isinstance(values[0], str)
+        or re.fullmatch(r"[0-9A-Fa-f]{64}", values[0]) is None
+    ):
+        return "malformed"
+    actual = hashlib.sha256(body).hexdigest()
+    return "verified" if hmac.compare_digest(values[0].lower(), actual) else "mismatch"
+
+
+def _configured_artifact_filename(args: argparse.Namespace) -> str | None:
+    try:
+        data = tomllib.loads(_read_text(Path(args.worker_config)))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    vars_table = data.get("vars") if isinstance(data, dict) else None
+    if not isinstance(vars_table, dict):
+        return None
+    value = vars_table.get("ARTIFACT_FILENAME")
+    return value if isinstance(value, str) and value else None
+
+
+def _content_disposition_state(
+    headers: object, expected_filename: str | None
+) -> str:
+    values = _header_values(headers, "content-disposition")
+    if values is None:
+        return "malformed"
+    if not values:
+        return "missing"
+    if expected_filename is None:
+        return "config_unavailable"
+    if len(values) != 1 or not isinstance(values[0], str):
+        return "malformed"
+    expected = f'attachment; filename="{expected_filename}"'
+    # This is public filename metadata, not a secret; ordinary comparison also
+    # handles untrusted non-ASCII header values without compare_digest raising.
+    return "verified" if values[0] == expected else "mismatch"
 
 
 def check_valid_key_artifact(args: argparse.Namespace) -> dict[str, Any]:
@@ -256,17 +460,33 @@ def check_valid_key_artifact(args: argparse.Namespace) -> dict[str, Any]:
         status, body, headers = _post_license(str(url), key, args.timeout)
     except Exception as exc:  # noqa: BLE001
         return _result("valid_key_artifact", False, detail=f"gate request failed: {exc.__class__.__name__}")
-    ok = status == 200 and len(body) >= args.min_artifact_bytes
+    integrity = _artifact_integrity(body, headers)
+    content_disposition = _content_disposition_state(
+        headers,
+        _configured_artifact_filename(args),
+    )
+    ok = (
+        status == 200
+        and len(body) >= args.min_artifact_bytes
+        and integrity == "verified"
+        and content_disposition == "verified"
+    )
     return _result(
         "valid_key_artifact",
         ok,
-        detail="valid key returned an artifact" if ok else "valid key did not return a usable artifact",
+        detail=(
+            "valid key returned an integrity-verified artifact"
+            if ok
+            else "valid key did not return a usable integrity-verified artifact"
+        ),
         data={
             "gate_source": source,
             "status": status,
             "bytes": len(body),
             "min_artifact_bytes": args.min_artifact_bytes,
-            "content_type": headers.get("content-type") or headers.get("Content-Type"),
+            "content_type": _single_header_value(headers, "content-type"),
+            "integrity": integrity,
+            "content_disposition": content_disposition,
             "duration_ms": round((time.perf_counter() - start) * 1000, 1),
         },
     )
@@ -296,6 +516,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     parser.add_argument("--lac-pro-root", type=Path, default=ROOT.parent / "lac-pro")
     parser.add_argument("--worker-config", type=Path, default=ROOT / "worker" / "wrangler.toml")
+    parser.add_argument("--worker-env", default="", help="Validate one named Wrangler environment instead of the top-level table.")
+    parser.add_argument("--allow-worker-placeholders", action="store_true", help="Validate public config shape while allowing private deployment placeholders.")
+    parser.add_argument("--require-rate-limiter", action="store_true", help="Require the in-code abuse rate-limiter binding in top-level config too.")
     parser.add_argument("--gate-url", default="", help="Override the Pro gate URL for this check.")
     parser.add_argument("--require-baked-gate", action="store_true", help="Require backend/pro_install.py to contain the approved production gate URL.")
     parser.add_argument("--live-gate", action="store_true", help="Perform read-only HTTP smokes against the configured gate.")

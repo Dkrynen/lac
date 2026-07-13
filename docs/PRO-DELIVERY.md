@@ -1,4 +1,4 @@
-# LAC Pro delivery runbook (operator)
+# LAC Pro entitlement and artifact delivery runbook (operator)
 
 Public-safe summary of how the compiled **LAC Pro** plugin gets from source to a
 paying customer's machine. The account-backed upload/deploy commands live in
@@ -15,6 +15,13 @@ that's a deliberate, documented trade-off:
   get the bytes is a valid license key.
 - **The gate is stateless.** The Cloudflare Worker (`worker/`) validates the key
   against Polar and streams the artifact. It stores no keys, no PII, no state.
+- **Entitlements are explicit.** The only allowed Polar benefit identifiers are
+  supplied privately as `LOCAL_PRO_BENEFIT_ID` and `PRO_CLOUD_BENEFIT_ID`.
+  Their values never belong in this public runbook. A granted key for an
+  unrelated product must still be rejected.
+- **Artifact bytes are pinned.** The operator records the exact build digest as
+  `ARTIFACT_SHA256`; the Worker returns it as `X-LAC-Artifact-SHA256`, and the
+  client verifies it before any plugin file is written.
 - **Licensing is enforced server-side.** The `.pyd` protects code *structure*,
   not string constants (a determined attacker can still read embedded strings) —
   so entitlement is decided by Polar at the gate, not by anything shipped in the
@@ -23,7 +30,7 @@ that's a deliberate, documented trade-off:
   key the artifact never reaches disk, so there is nothing on a free machine to
   crack in the first place.
 
-If any of those four stops being true, stop and fix it before shipping.
+If any of those six stops being true, stop and fix it before shipping.
 
 ## The chain at a glance
 
@@ -37,7 +44,9 @@ If any of those four stops being true, stop and fix it before shipping.
 
 Steps 2-5 need the owner's Cloudflare + Polar accounts. This public document records
 the boundary and approval checklist only; it does not publish the infrastructure
-recipe or perform any account-backed action.
+recipe or perform any account-backed action. **Current boundary: this update does
+not deploy the Worker, upload an artifact, change Polar products, or open either
+checkout.** Every account-backed action still needs Duan's explicit approval.
 
 ## Prerequisites
 
@@ -47,7 +56,8 @@ recipe or perform any account-backed action.
   once Nuitka is added. MSVC Build Tools must be present; Nuitka finds them via
   `vswhere`, so you do **not** need to run `vcvarsall` or put `cl.exe` on PATH.
 - Cloudflare deploy access, used only from approved operator context.
-- A **Polar** organisation and, for the smoke test, a **test-mode license key**.
+- A **Polar** organisation, distinct Local Pro and Pro Cloud benefit IDs, and,
+  for the smoke test, test-mode license keys for both tiers.
 
 ---
 
@@ -56,6 +66,21 @@ recipe or perform any account-backed action.
 From the private `lac-pro` repo, the operator builds with the ABI-correct
 interpreter and records the artifact path, byte size, and SHA256 in private
 release notes.
+
+For a two-tier release, load `LAC_PRO_CLOUD_BENEFIT_ID` into the current private
+operator shell. The builder now requires the Cloud benefit by default:
+
+```powershell
+C:\Users\User\repos\model-hub\.venv\Scripts\python.exe build\build_artifact.py
+```
+
+Do not put the benefit ID in this repo or the command line. The command must
+print `cloud   : baked`; it stops before compilation if the operator shell did
+not provide it or if the Cloud and Local benefit IDs collide. The source tree
+must be clean and committed; only Git-tracked package inputs enter the hermetic
+copy. The resulting compiled artifact then
+recognizes a Pro Cloud key on a clean customer machine without requiring that
+machine to set an environment variable.
 
 - **ABI lock.** The script **refuses to run** on any Python other than
   CPython 3.11 — the compiled `.pyd` is `cp311-win_amd64` and must match the
@@ -66,15 +91,21 @@ release notes.
   comments leak into the bytes.
 - **Determinism.** Same source → identical *layout* and *filename*, but **not**
   byte-identical (Nuitka embeds a build timestamp). The printed **sha256**
-  identifies that one build's exact bytes — record it, you'll use it to confirm
-  the upload landed intact.
+  identifies that one build's exact bytes. Record it privately as the
+  `ARTIFACT_SHA256` Worker configuration value, then use it to confirm the upload
+  landed intact.
+- **Provenance.** The builder writes a value-free `.provenance.json` sidecar
+  containing the exact source commit, UTC build time, ABI, filename, byte size,
+  and SHA-256. Keep it with private release evidence; do not upload it as the
+  customer artifact.
 
 ## Step 2 — Upload the artifact to private storage
 
 Owner-approved. The operator uploads the built zip to private Cloudflare storage
-using the private deployment checklist. The object must stay private, the stored
-bytes must match the recorded SHA256, and the open-source release must never
-include the Pro artifact.
+using the private deployment checklist. The object key must be immutable and
+hash-bearing (`product/version/sha256/filename`), the object must stay private,
+the downloaded bytes must match the recorded SHA256, and the open-source release
+must never include the Pro artifact.
 
 ## Step 3 — Deploy the Worker
 
@@ -83,6 +114,26 @@ private artifact only for an accepted key, and stores no key material or custome
 state. Account-specific bindings, object names, and deploy commands stay in the
 private operator checklist.
 
+Before an approved deployment, the Worker configuration must contain concrete,
+private values for `POLAR_ORG_ID`, `LOCAL_PRO_BENEFIT_ID`,
+`PRO_CLOUD_BENEFIT_ID`, `ARTIFACT_KEY`, and the raw 64-hex
+`ARTIFACT_SHA256`, plus the private `R2_BUCKET` binding. The two benefit IDs are
+an allowlist, not descriptive labels: a key is accepted only when Polar reports
+`granted` and its benefit matches one of those exact configured IDs. The artifact
+digest must describe the exact R2 object bytes served by that deployment.
+`ARTIFACT_FILENAME` must be the same safe ASCII `.zip` name returned in the
+successful response's exact `Content-Disposition` header; paths, control/header
+characters, and Windows-reserved device names are rejected.
+
+Before the public endpoint is deployed, protect it with **both** the configured
+[Workers Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+and a Duan-approved custom-domain WAF rate-limit rule. The Worker hashes the
+license key before using it as a limiter key and fails closed when the binding
+is unavailable. The WAF handles broader anonymous/IP abuse before the Worker can
+amplify requests to Polar. Worker counters are eventually consistent abuse
+controls, never entitlement or quota accounting. The concrete WAF rule and
+deployment evidence belong in the private checklist.
+
 ## Step 4 — Wire the client to the approved gate
 
 The client has **exactly one** gate-URL source:
@@ -90,9 +141,10 @@ The client has **exactly one** gate-URL source:
 which is a non-deployable placeholder in public source. After approval for
 production Pro delivery, replace it from the private operator checklist before
 building a Pro-enabled release. Until that approval and account-backed smoke test
-are complete, treat Pro delivery as pending, not public-live. It is overridable
-at runtime by the `LAC_PRO_GATE_URL` env var (resolution order: explicit arg ->
-env -> constant).
+are complete, treat Pro delivery as pending, not public-live. Source/development
+runs can override it with `LAC_PRO_GATE_URL` (resolution order: explicit arg ->
+env -> constant). Frozen release builds ignore both override paths and use only
+the audited baked constant.
 
 Two ways to point the client at the approved gate:
 
@@ -123,7 +175,7 @@ Before checkout opens, run the commerce gate from `model-hub`:
 Set `LAC_PRO_TEST_KEY` only in the local shell that runs the check. The report
 names the env var but never prints the key value.
 
-1. **Happy path.** With a valid **test-mode** Polar license key:
+1. **Local Pro happy path.** With a valid **test-mode Local Pro** Polar license key:
    ```bash
    lac unlock <key>
    ```
@@ -131,14 +183,26 @@ names the env var but never prints the key value.
    Pro commands mount on the next start — e.g. `lac pro status` reports active and
    `lac pro tune` / `lac pro benchmark` appear in `lac --help`. Restarting LAC is
    what mounts the freshly installed plugin.
-2. **Sad path.** With an **invalid / expired** key: `lac unlock <bad-key>` must
+2. **Pro Cloud entitlement path.** With a separate test-mode key for the benefit
+   configured as `PRO_CLOUD_BENEFIT_ID`, confirm the gate recognizes that exact
+   entitlement and `lac unlock <key>` activates the clean machine as
+   `Pro Cloud`. This also proves the same ID was baked into the private artifact.
+   Pro Cloud checkout and hosted usage remain not yet available.
+3. **Unrelated-product path.** A granted Polar key from the same organization but
+   for an unrelated product/benefit must return `403` and write no plugin bytes.
+4. **Sad path.** With an **invalid / expired** key: `lac unlock <bad-key>` must
    fail **cleanly** — the gate returns `403`, the CLI prints an honest
    "not accepted (invalid or expired)" message and a non-zero exit code, and
    **no Pro code is written to disk.**
-3. **Free user.** With no key at all, confirm there is no `lac_pro` artifact in
+5. **Integrity path.** Confirm the successful response's
+   `X-LAC-Artifact-SHA256` is raw 64-hex and equals the downloaded bytes. A
+   malformed or mismatched value must fail before `~/.model-hub/plugins/` changes.
+6. **Free user.** With no key at all, confirm there is no `lac_pro` artifact in
    `~/.model-hub/plugins/` — a free install ships zero Pro code.
 
-If all three hold, the delivery chain is live and honest.
+If all six hold, the approved delivery chain is live and honest. Until an operator
+runs them against an explicitly approved deployment, they are a checklist, not a
+live-state claim.
 
 ## Rolling a new artifact
 
@@ -148,13 +212,23 @@ the valid-key plus invalid-key smoke tests before public checkout is enabled.
 
 ## What the customer does
 
-For reference: the intended buyer flow after approved public launch:
+For reference: the intended **Local Pro** buyer flow after approved public launch:
 
-1. Buy Pro via the Polar checkout (no account needed).
-2. Polar emails a **license key**.
-3. Activate it: `lac unlock <key>` (CLI) **or** **Settings → Activate Pro** in
-   the web UI.
-4. Restart LAC — the Pro autopilot mounts on the next start.
+1. Sign in to the LAC account with Google or GitHub.
+2. Start the Local Pro checkout from that authenticated account. The API creates
+   the Polar checkout with immutable account metadata; the redirect never grants
+   access by itself.
+3. After the signed Polar webhook grants the entitlement, Polar exposes the
+   **license key** to the buyer.
+4. Activate it: `lac unlock <key>` (CLI) or **Settings > Activate Pro** in the
+   web UI.
+5. Restart LAC so the Pro autopilot mounts on the next start. After activation,
+   Local Pro runtime remains key-based and local.
+
+Pro Cloud is the planned $20/month higher tier. It includes everything in Local
+Pro, plus encrypted sync and capped hosted agents. Both products require an
+account and both checkouts remain closed until they launch together. Nothing in
+this runbook claims checkout or hosted usage is live.
 
 ## Push
 
