@@ -7,6 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -1055,6 +1056,24 @@ def test_schema_v2_manifests_fail_closed_in_both_scopes(tmp_path, monkeypatch):
         gate, path, release_scope="local", expected_lac_cloud_commit="",
     ))
 
+    genuine_v2_cloud = _valid_evidence(gate, private_key, hosted_digests=digests)
+    genuine_v2_cloud["schema_version"] = 2
+    del genuine_v2_cloud["release_scope"]
+    path.write_text(json.dumps(genuine_v2_cloud), encoding="utf-8")
+    rows = _check_evidence(gate, path)
+    assert all(not row["ok"] for row in rows)
+    assert all(row["detail"] == "evidence manifest is invalid" for row in rows)
+
+    genuine_v2_local = _valid_evidence(gate, private_key, release_scope="local")
+    genuine_v2_local["schema_version"] = 2
+    del genuine_v2_local["release_scope"]
+    path.write_text(json.dumps(genuine_v2_local), encoding="utf-8")
+    rows = _check_evidence(
+        gate, path, release_scope="local", expected_lac_cloud_commit="",
+    )
+    assert all(not row["ok"] for row in rows)
+    assert all(row["detail"] == "evidence manifest is invalid" for row in rows)
+
 
 def test_release_scope_defaults_to_cloud():
     gate = _load_gate()
@@ -1062,6 +1081,9 @@ def test_release_scope_defaults_to_cloud():
     args = gate.parse_args([])
     assert args.release_scope == "cloud"
     assert gate.parse_args(["--release-scope", "local"]).release_scope == "local"
+
+    with pytest.raises(SystemExit):
+        gate.parse_args(["--release-scope", "bogus"])
 
 
 def test_local_scope_report_omits_cloud_lanes_and_binds_scope(tmp_path):
@@ -1131,3 +1153,35 @@ def test_cloud_scope_report_keeps_full_lane_set(tmp_path, capsys):
     assert {
         f"evidence_{name}" for name in gate.REQUIRED_EVIDENCE_GATES
     } == {name for name in names if name.startswith("evidence_")}
+
+
+def test_cloud_signed_records_stripped_of_lac_cloud_commit_fail_only_on_signature(
+    tmp_path, monkeypatch,
+):
+    gate = _load_gate()
+    path = tmp_path / "evidence.json"
+    private_key = Ed25519PrivateKey.generate()
+    _trust_evidence_signer(gate, private_key, monkeypatch)
+    digests = _write_hosted_evidence_objects(path)
+    cloud_manifest = _valid_evidence(gate, private_key, hosted_digests=digests)
+
+    forged_gates = {}
+    for name in gate.LOCAL_EVIDENCE_GATES:
+        record = dict(cloud_manifest["gates"][name])
+        del record["lac_cloud_commit"]
+        forged_gates[name] = record
+    forged = {
+        "schema_version": 3,
+        "release_scope": "local",
+        "release_version": "2.7.0",
+        "gates": forged_gates,
+    }
+    path.write_text(json.dumps(forged), encoding="utf-8")
+
+    rows = _check_evidence(
+        gate, path, release_scope="local", expected_lac_cloud_commit="",
+    )
+
+    assert all(not row["ok"] for row in rows)
+    stripped_patent_clearance = forged_gates["patent_clearance"]
+    assert set(stripped_patent_clearance) == gate._LOCAL_EVIDENCE_RECORD_FIELDS
