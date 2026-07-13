@@ -1,0 +1,7 @@
+# Enforcement depends on repository branch-protection configuration.
+* @Dkrynen
+/.github/ @Dkrynen
+/backend/pro_install.py @Dkrynen
+/docs/PRO-DELIVERY.md @Dkrynen
+/scripts/pro_commerce_readiness.py @Dkrynen
+/worker/ @Dkrynen

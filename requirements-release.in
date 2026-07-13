@@ -1,0 +1,10 @@
+-r requirements.txt
+
+# Reproducible Windows release and evidence tooling.
+PyInstaller==6.21.0
+pip-audit==2.10.1
+cyclonedx-bom==7.3.0
+detect-secrets==1.5.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+Pillow==12.3.0

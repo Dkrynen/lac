@@ -155,7 +155,7 @@ def check_api(args: argparse.Namespace) -> list[dict[str, Any]]:
         ("model_location", "GET", "/api/system/model-location", None, 200, "effective_after_restart"),
         ("model_store_doctor", "GET", "/api/system/model-store-doctor", None, 200, "model_store"),
         ("debug_bundle", "GET", "/api/system/debug-bundle", None, 200, "app"),
-        ("update_check", "GET", q("/api/system/check-update", current="2.6.4"), None, 200, "update_available"),
+        ("update_check", "GET", q("/api/system/check-update", current="2.7.0"), None, 200, "update_available"),
         ("performance", "GET", q("/api/diagnostics/performance", model="qwen2.5:0.5b"), None, 200, "diagnosis"),
         ("pro_status", "GET", "/api/pro/status", None, 200, "licensed"),
         ("pro_hf_token", "GET", "/api/pro/hf-token", None, 200, "configured"),

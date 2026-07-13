@@ -1,160 +1,279 @@
-name: Build and Release
+name: Signed Windows Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v1.0.0)'
+        description: "Exact release tag (for example v2.7.0)"
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    environment: production-release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          python-version: '3.11'
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Build web app (bundled into the exe)
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt pyinstaller
-
-      - name: Resolve release version
+      - name: Resolve and verify the immutable release version
         id: release_version
         shell: pwsh
+        env:
+          REQUESTED_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ inputs.version }}"
-          } else {
-            $tag = "${{ github.ref_name }}"
+          $tag = $env:REQUESTED_RELEASE_TAG
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Version must be an exact vX.Y.Z tag; got '$tag'"
           }
-          if ($tag -notmatch '^v\d+\.\d+\.\d+') {
-            throw "Version must look like vX.Y.Z; got '$tag'"
+          $tagCommit = git rev-parse --verify "refs/tags/$tag^{commit}" 2>$null
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:GITHUB_SHA) {
+            throw "The release tag must already exist and identify the exact workflow commit."
           }
+          python scripts/verify_release_version.py --expected $tag
+          python scripts/pro_commerce_readiness.py --require-baked-gate --allow-missing-lac-pro --worker-env production --allow-worker-placeholders
           "tag=$tag" >> $env:GITHUB_OUTPUT
-          "version=$($tag.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+          "version=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
 
-      - name: Build with PyInstaller
-        run: |
-          pyinstaller build.spec
-
-      - name: Build installer with InnoSetup
+      - name: Require protected release controls
         shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_PFX_BASE64: ${{ secrets.SIGNING_CERTIFICATE_PFX_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+          INNO_SETUP_LICENSE_CONFIRMED: ${{ vars.INNO_SETUP_LICENSE_CONFIRMED }}
         run: |
-          $version = "${{ steps.release_version.outputs.version }}"
-          (Get-Content installer.iss) -replace '#define MyAppVersion ".+"', "#define MyAppVersion `"$version`"" | Set-Content installer.iss
-          choco install innosetup -y --no-progress
+          if ($env:INNO_SETUP_LICENSE_CONFIRMED -ne "true") {
+            throw "The protected environment must confirm the commercial Inno Setup license."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD) -or
+              [string]::IsNullOrWhiteSpace($env:SIGNING_TIMESTAMP_URL)) {
+            throw "Authenticode certificate and timestamp settings are required."
+          }
+
+      - name: Smoke the exact protected production delivery gate
+        shell: pwsh
+        env:
+          LAC_PRO_TEST_LOCAL_KEY: ${{ secrets.LAC_PRO_TEST_LOCAL_KEY }}
+          LAC_PRO_TEST_CLOUD_KEY: ${{ secrets.LAC_PRO_TEST_CLOUD_KEY }}
+          PRO_GATE_TESTED_VERSION: ${{ vars.PRO_GATE_TESTED_VERSION }}
+          PRO_GATE_WAF_EVIDENCE: ${{ vars.PRO_GATE_WAF_EVIDENCE }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:LAC_PRO_TEST_LOCAL_KEY) -or
+              [string]::IsNullOrWhiteSpace($env:LAC_PRO_TEST_CLOUD_KEY) -or
+              [string]::IsNullOrWhiteSpace($env:PRO_GATE_TESTED_VERSION) -or
+              [string]::IsNullOrWhiteSpace($env:PRO_GATE_WAF_EVIDENCE)) {
+            throw "Local, Cloud, deployed-version, and WAF production evidence are required."
+          }
+          python scripts/pro_commerce_readiness.py --require-baked-gate --allow-missing-lac-pro --worker-env production --allow-worker-placeholders --live-gate --valid-key-env LAC_PRO_TEST_LOCAL_KEY
+          python scripts/pro_commerce_readiness.py --require-baked-gate --allow-missing-lac-pro --worker-env production --allow-worker-placeholders --live-gate --valid-key-env LAC_PRO_TEST_CLOUD_KEY
+
+      - name: Build web app
+        working-directory: web
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build
+          npm audit --audit-level=high
+          npm sbom --sbom-format cyclonedx > dist/web-sbom.json
+
+      - name: Audit and install Python dependencies
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.28"
+          uv pip install --system --require-hashes -r requirements-release.lock
+          python -m pip_audit -r requirements-release.lock
+          python -m cyclonedx_py environment --output-file dist/python-sbom.json
+
+      - name: Run the complete source and secret gates
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python -m pytest -m "not live" -p no:cacheprovider -q
+          $tracked = @(git ls-files)
+          & detect-secrets-hook --baseline .secrets.baseline @tracked
+          if ($LASTEXITCODE -ne 0) { throw "Tracked secret scan failed" }
+
+      - name: Run the complete delivery Worker gates
+        working-directory: worker
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run types:check
+          npm audit --audit-level=high
+          npx wrangler deploy --dry-run --env staging
+          npx wrangler deploy --dry-run --env production
+
+      - name: Build application
+        run: pyinstaller -y build.spec
+
+      - name: Import signing certificate and sign application
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_PFX_BASE64: ${{ secrets.SIGNING_CERTIFICATE_PFX_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "lac-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_PFX_BASE64))
+          try {
+            $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+              Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+            if (-not $signtool) { throw "signtool.exe was not found" }
+            & $signtool sign /sha1 $certificate.Thumbprint /s My /fd SHA256 /tr $env:SIGNING_TIMESTAMP_URL /td SHA256 dist\lac\lac.exe
+            if ($LASTEXITCODE -ne 0) { throw "Application signing failed" }
+            if ((Get-AuthenticodeSignature -FilePath dist\lac\lac.exe).Status -ne "Valid") {
+              throw "Application Authenticode verification failed"
+            }
+          } finally {
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            if ($null -ne $certificate) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Build installer with licensed Inno Setup
+        shell: pwsh
+        env:
+          INNO_SETUP_LICENSE_CONFIRMED: ${{ vars.INNO_SETUP_LICENSE_CONFIRMED }}
+        run: |
+          if ($env:INNO_SETUP_LICENSE_CONFIRMED -ne "true") { throw "Inno Setup license is not confirmed" }
+          choco install innosetup --version=6.7.3 -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
 
-      - name: Write installer checksum
+      - name: Sign and verify release artifacts
         shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_PFX_BASE64: ${{ secrets.SIGNING_CERTIFICATE_PFX_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
         run: |
           $version = "${{ steps.release_version.outputs.version }}"
-          $installer = Get-Item "dist\LAC-Setup-$version.exe"
-          $hash = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash
-          "$hash  $($installer.Name)" | Set-Content dist\SHA256SUMS.txt
+          $installer = "dist\LAC-Setup-$version.exe"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "lac-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_PFX_BASE64))
+          try {
+            $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+              Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+            if (-not $signtool) { throw "signtool.exe was not found" }
+            & $signtool sign /sha1 $certificate.Thumbprint /s My /fd SHA256 /tr $env:SIGNING_TIMESTAMP_URL /td SHA256 $installer
+            if ($LASTEXITCODE -ne 0) { throw "Installer signing failed" }
+            foreach ($path in @("dist\lac\lac.exe", $installer)) {
+              $signature = Get-AuthenticodeSignature -FilePath $path
+              if ($signature.Status -ne "Valid") {
+                throw "Invalid Authenticode signature for ${path}: $($signature.Status)"
+              }
+            }
+          } finally {
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            if ($null -ne $certificate) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+            }
+          }
+          $installerItem = Get-Item $installer
+          $installerHash = (Get-FileHash -Algorithm SHA256 $installerItem.FullName).Hash.ToLowerInvariant()
+          $dependencyLockHash = (Get-FileHash -Algorithm SHA256 requirements-release.lock).Hash.ToLowerInvariant()
+          "$installerHash  $($installerItem.Name)" | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+          $provenance = [ordered]@{
+            schema_version = 1
+            version = $version
+            tag = "${{ steps.release_version.outputs.tag }}"
+            source_commit = "${{ github.sha }}"
+            built_at_utc = [DateTime]::UtcNow.ToString("o")
+            dependency_lock_sha256 = $dependencyLockHash
+            python_version = (python --version 2>&1 | Out-String).Trim()
+            pyinstaller_version = (pyinstaller --version 2>&1 | Out-String).Trim()
+            installer = [ordered]@{
+              filename = $installerItem.Name
+              bytes = $installerItem.Length
+              sha256 = $installerHash
+              authenticode = "Valid"
+            }
+            application_authenticode = "Valid"
+          }
+          $provenance | ConvertTo-Json -Depth 4 | Set-Content dist\release-provenance.json -Encoding utf8
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Attest the signed installer provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          name: windows-build
+          subject-path: dist/LAC-Setup-${{ steps.release_version.outputs.version }}.exe
+
+      - name: Upload signed release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-windows-${{ steps.release_version.outputs.version }}
+          if-no-files-found: error
+          retention-days: 14
           path: |
-            dist/LAC-Setup-*.exe
+            dist/LAC-Setup-${{ steps.release_version.outputs.version }}.exe
             dist/SHA256SUMS.txt
-            dist/lac/lac.exe
+            dist/release-provenance.json
+            dist/python-sbom.json
+            web/dist/web-sbom.json
 
-  # Linux/macOS legs stay as COMPILE PROOF only — their binaries are NOT
-  # attached to releases (v1 launch is Windows-first; macOS/Linux are teased
-  # via the waitlist, each shipping as its own launch moment later).
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Build web app
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-      - name: Install dependencies
-        run: pip install -r requirements.txt pyinstaller
-      - name: Build with PyInstaller
-        run: pyinstaller build.spec
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-build
-          path: dist/lac
-
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Build web app
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-      - name: Install dependencies
-        run: pip install -r requirements.txt pyinstaller
-      - name: Build with PyInstaller
-        run: pyinstaller build.spec
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-build
-          path: dist/lac
-
-  release:
-    needs: [build-windows, build-linux, build-macos]
+  draft-release:
+    needs: build-windows
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: signed-windows-*
+          path: release
+          merge-multiple: true
 
-      - name: Create draft release (Windows installer only — review before publish)
-        uses: softprops/action-gh-release@v2
+      - name: Create draft release for human approval
+        uses: softprops/action-gh-release@62c96d50ce8a7e0efc7740db9f321e330ea2c0b9 # v2.3.4
         with:
           draft: true
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           name: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
-          files: |
-            windows-build/LAC-Setup-*.exe
-            windows-build/SHA256SUMS.txt
           generate_release_notes: true
           fail_on_unmatched_files: true
+          files: |
+            release/LAC-Setup-*.exe
+            release/SHA256SUMS.txt
+            release/release-provenance.json
+            release/python-sbom.json
+            release/web-sbom.json
