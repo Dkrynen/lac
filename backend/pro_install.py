@@ -25,9 +25,13 @@ error types (the CLI decides exit codes):
 from __future__ import annotations
 
 import io
+import hashlib
+import hmac
 import json
 import os
+import re
 import shutil
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -41,7 +45,8 @@ PLUGIN_DIR = Path.home() / ".model-hub" / "plugins"
 
 #: Public-source placeholder for the LAC Pro delivery gate.
 #: Duan-gated release builds must replace this with the approved production
-#: Worker URL, or operators can override at runtime with ``LAC_PRO_GATE_URL``.
+#: Worker URL. Source/development runs may use ``LAC_PRO_GATE_URL``; frozen
+#: releases ignore overrides and trust only this baked endpoint.
 PRO_GATE_URL = "https://replace-with-approved-pro-gate.example.invalid/pro/download"
 
 GATE_TIMEOUT_S = 60
@@ -55,8 +60,14 @@ class _UnsafeArchiveError(Exception):
     """The archive is empty, corrupt, or tries to escape the install dir."""
 
 
+class _ArtifactIntegrityError(Exception):
+    """The gate supplied integrity metadata that is malformed or mismatched."""
+
+
 def _gate_url(explicit: str | None) -> str:
-    """Explicit argument > ``LAC_PRO_GATE_URL`` env (read at call time) > constant."""
+    """Resolve source overrides, but pin frozen releases to the baked gate."""
+    if bool(getattr(sys, "frozen", False)):
+        return PRO_GATE_URL
     return explicit or os.environ.get("LAC_PRO_GATE_URL") or PRO_GATE_URL
 
 
@@ -67,8 +78,8 @@ def _gate_url(explicit: str | None) -> str:
 _USER_AGENT = "LAC-Pro-Client/1.0"
 
 
-def _http_post(url: str, payload: dict) -> tuple[int, bytes]:
-    """POST JSON to the gate, return ``(status, body)``.
+def _http_post(url: str, payload: dict) -> tuple[int, bytes, list[tuple[str, str]]]:
+    """POST JSON to the gate, return ``(status, body, headers)``.
 
     Failures to *reach* the gate (DNS, refused, timeout) propagate raw — the
     caller maps them to ``network``. A body read that fails AFTER the gate
@@ -88,12 +99,74 @@ def _http_post(url: str, payload: dict) -> tuple[int, bytes]:
             body = exc.read()
         except Exception:  # noqa: BLE001 — the status code is what matters here
             body = b""
-        return exc.code, body
+        return exc.code, body, list(exc.headers.items()) if exc.headers else []
     try:
         with resp:
-            return resp.getcode(), resp.read()
+            headers = getattr(resp, "headers", None)
+            return (
+                resp.getcode(),
+                resp.read(),
+                list(headers.items()) if headers is not None else [],
+            )
     except Exception as exc:  # noqa: BLE001 — connection dropped mid-body
         raise _GateReadError(str(exc)) from exc
+
+
+def _normalize_gate_response(response) -> tuple[int, bytes, object]:
+    """Accept legacy injected ``(status, body)`` and header-aware triples."""
+    if not isinstance(response, (tuple, list)) or len(response) not in {2, 3}:
+        raise _GateReadError("the gate returned an invalid response shape")
+    status, body = response[0], response[1]
+    headers = response[2] if len(response) == 3 else {}
+    if not isinstance(status, int) or not isinstance(body, (bytes, bytearray)):
+        raise _GateReadError("the gate returned an invalid status or body")
+    return status, bytes(body), headers
+
+
+def _integrity_header_values(headers: object) -> list[str]:
+    if headers is None:
+        return []
+    try:
+        items = headers.items() if hasattr(headers, "items") else headers
+        pairs = list(items)
+    except Exception as exc:  # noqa: BLE001 - untrusted injected/transport metadata
+        raise _ArtifactIntegrityError("artifact integrity metadata is unreadable") from exc
+    values: list[str] = []
+    for pair in pairs:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            raise _ArtifactIntegrityError("artifact integrity metadata is malformed")
+        name, value = pair
+        if str(name).lower() == "x-lac-artifact-sha256":
+            if not isinstance(value, str):
+                raise _ArtifactIntegrityError("artifact integrity metadata is malformed")
+            values.append(value)
+    return values
+
+
+def _verify_artifact_integrity(body: bytes, headers: object) -> None:
+    """Require and verify the gate's raw SHA-256 before any disk write."""
+    values = _integrity_header_values(headers)
+    if not values:
+        raise _ArtifactIntegrityError("artifact integrity metadata is missing")
+    if len(values) != 1 or re.fullmatch(r"[0-9A-Fa-f]{64}", values[0]) is None:
+        raise _ArtifactIntegrityError("artifact integrity metadata is malformed")
+    actual = hashlib.sha256(body).hexdigest()
+    if not hmac.compare_digest(values[0].lower(), actual):
+        raise _ArtifactIntegrityError("artifact integrity verification failed")
+
+
+_WINDOWS_RESERVED_COMPONENT = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$",
+    re.IGNORECASE,
+)
+
+
+def _has_windows_reserved_component(name: str) -> bool:
+    for component in name.replace("\\", "/").split("/"):
+        normalized = component.rstrip(" .")
+        if normalized and _WINDOWS_RESERVED_COMPONENT.fullmatch(normalized):
+            return True
+    return False
 
 
 def _validate_archive(zf: zipfile.ZipFile, dest_root: Path) -> None:
@@ -110,6 +183,10 @@ def _validate_archive(zf: zipfile.ZipFile, dest_root: Path) -> None:
         raise _UnsafeArchiveError("the artifact archive is empty")
     root = dest_root.resolve()
     for name in names:
+        if _has_windows_reserved_component(name):
+            raise _UnsafeArchiveError(
+                f"archive entry {name!r} uses a reserved Windows device name"
+            )
         try:
             target = (root / name).resolve()
         except (OSError, ValueError) as exc:
@@ -165,7 +242,9 @@ def install_pro_plugin(
 
     # 1) Fetch from the gate.
     try:
-        status, body = post(url, {"license_key": license_key})
+        status, body, headers = _normalize_gate_response(
+            post(url, {"license_key": license_key})
+        )
     except _GateReadError as exc:
         return _failed(
             "download",
@@ -190,6 +269,14 @@ def install_pro_plugin(
             "download",
             f"The gate returned HTTP {status} instead of the artifact. "
             "Try again later.",
+        )
+
+    try:
+        _verify_artifact_integrity(body, headers)
+    except _ArtifactIntegrityError as exc:
+        return _failed(
+            "download",
+            f"The downloaded artifact failed integrity checks: {exc}. Try again.",
         )
 
     # 3) Validate in memory, then install via staging.

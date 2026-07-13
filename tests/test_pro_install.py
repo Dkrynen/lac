@@ -12,6 +12,8 @@ patch module attributes, not env vars).
 from __future__ import annotations
 
 import io
+from email.message import Message
+import hashlib
 import sys
 import zipfile
 from pathlib import Path
@@ -51,11 +53,22 @@ def _artifact(pyd_content: bytes = b"MZ\x90\x00fake-native-module") -> bytes:
 
 
 def _fake_post(status: int, body: bytes, seen: list | None = None):
-    """A fake gate: records the URL it was called with, returns (status, body)."""
+    """A fake gate with mandatory integrity metadata on successful downloads."""
     def post(url, payload):
         if seen is not None:
             seen.append((url, payload))
+        if status == 200:
+            return status, body, {
+                "X-LAC-Artifact-SHA256": hashlib.sha256(body).hexdigest(),
+            }
         return status, body
+    return post
+
+
+def _fake_post_with_headers(status: int, body: bytes, headers: dict[str, str]):
+    """A new gate response shape carrying optional integrity metadata."""
+    def post(url, payload):
+        return status, body, headers
     return post
 
 
@@ -97,6 +110,76 @@ def test_success_sends_license_key_as_json_payload(plugin_dir):
         http_post=_fake_post(200, _artifact(), seen),
     )
     assert seen == [("https://gate.test/pro/download", {"license_key": "LAC-GOOD-KEY"})]
+
+
+def test_matching_artifact_sha256_header_installs(plugin_dir):
+    artifact = _artifact()
+    digest = hashlib.sha256(artifact).hexdigest().upper()
+
+    result = pro_install.install_pro_plugin(
+        "LAC-GOOD-KEY",
+        gate_url="https://gate.test/pro/download",
+        http_post=_fake_post_with_headers(
+            200,
+            artifact,
+            {"x-lac-artifact-sha256": digest},
+        ),
+    )
+
+    assert result["state"] == "installed"
+    assert (plugin_dir / "dummy_plugin.cp311-win_amd64.pyd").exists()
+
+
+def test_missing_artifact_sha256_header_rejects_before_write(plugin_dir):
+    result = pro_install.install_pro_plugin(
+        "LAC-GOOD-KEY",
+        gate_url="https://gate.test/pro/download",
+        http_post=lambda *unused: (200, _artifact()),
+    )
+
+    assert result["state"] == "failed"
+    assert result["error_type"] == "download"
+    assert "integrity" in result["message"].lower()
+    assert not plugin_dir.exists()
+
+
+def test_mismatched_artifact_sha256_header_rejects_before_write(plugin_dir):
+    plugin_dir.mkdir(parents=True)
+    existing = plugin_dir / "existing-plugin.pyd"
+    existing.write_bytes(b"existing-version")
+    result = pro_install.install_pro_plugin(
+        "LAC-GOOD-KEY",
+        gate_url="https://gate.test/pro/download",
+        http_post=_fake_post_with_headers(
+            200,
+            _artifact(),
+            {"X-LAC-Artifact-SHA256": "0" * 64},
+        ),
+    )
+
+    assert result["state"] == "failed"
+    assert result["error_type"] == "download"
+    assert "integrity" in result["message"].lower()
+    assert existing.read_bytes() == b"existing-version"
+    assert not (plugin_dir / "dummy_plugin.cp311-win_amd64.pyd").exists()
+
+
+@pytest.mark.parametrize("value", ["sha256:abc", "g" * 64, "a" * 63, "a" * 65])
+def test_malformed_artifact_sha256_header_rejects_before_write(plugin_dir, value):
+    result = pro_install.install_pro_plugin(
+        "LAC-GOOD-KEY",
+        gate_url="https://gate.test/pro/download",
+        http_post=_fake_post_with_headers(
+            200,
+            _artifact(),
+            {"X-LAC-Artifact-SHA256": value},
+        ),
+    )
+
+    assert result["state"] == "failed"
+    assert result["error_type"] == "download"
+    assert "integrity" in result["message"].lower()
+    assert not plugin_dir.exists()
 
 
 def test_rerun_overwrites_installed_files(plugin_dir):
@@ -194,6 +277,37 @@ def test_zip_slip_entry_rejected_installs_nothing(plugin_dir, tmp_path):
     assert not list(tmp_path.rglob("evil.txt"))          # ... anywhere under tmp
 
 
+@pytest.mark.parametrize(
+    "reserved_member",
+    [
+        "CON.zip",
+        "safe/NUL.txt.zip",
+        "safe/com1.zip",
+        "safe/lPt9.release.zip",
+        "AUX/plugin.pyd",
+    ],
+)
+def test_windows_reserved_archive_member_rejected_before_install(
+    plugin_dir, reserved_member
+):
+    artifact = _zip_bytes(
+        {
+            "good.txt": b"ok",
+            reserved_member: b"must never reach extraction",
+        }
+    )
+
+    result = pro_install.install_pro_plugin(
+        "K",
+        gate_url="https://g.test/d",
+        http_post=_fake_post(200, artifact),
+    )
+
+    assert result["state"] == "failed"
+    assert result["error_type"] == "download"
+    assert not plugin_dir.exists()
+
+
 def test_filesystem_failure_maps_to_install_and_cleans_staging(plugin_dir, monkeypatch):
     def locked(staging, dest):
         raise PermissionError("file is locked by a running LAC instance")
@@ -238,6 +352,13 @@ def test_default_gate_url_stays_public_placeholder_until_launch():
     assert pro_install.PRO_GATE_URL == (
         "https://replace-with-approved-pro-gate.example.invalid/pro/download"
     )
+
+
+def test_frozen_release_ignores_explicit_and_environment_gate_overrides(monkeypatch):
+    monkeypatch.setattr(pro_install.sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LAC_PRO_GATE_URL", "https://attacker.example/pro/download")
+
+    assert pro_install._gate_url("https://staging.example/pro/download") == pro_install.PRO_GATE_URL
 
 
 # ------------------------------------------------------------- core seam purity
@@ -345,6 +466,7 @@ def test_http_post_sends_a_real_user_agent(monkeypatch):
     captured = {}
 
     class _Resp:
+        headers = {"X-LAC-Artifact-SHA256": "a" * 64}
         def read(self): return b"ok"
         def getcode(self): return 200
         def __enter__(self): return self
@@ -355,7 +477,41 @@ def test_http_post_sends_a_real_user_agent(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr("urllib.request.urlopen", _capture)
-    code, body = pro_install._http_post("https://g.test/d", {"license_key": "K"})
+    code, body, headers = pro_install._http_post("https://g.test/d", {"license_key": "K"})
     assert code == 200
+    assert dict(headers)["X-LAC-Artifact-SHA256"] == "a" * 64
     assert captured["ua"], "no User-Agent set — urllib default would be 403'd by the gate WAF"
     assert "urllib" not in captured["ua"].lower(), f"default urllib UA leaked: {captured['ua']}"
+
+
+def test_http_transport_preserves_duplicate_integrity_headers_and_rejects_install(
+    plugin_dir, monkeypatch
+):
+    artifact = _artifact()
+    digest = hashlib.sha256(artifact).hexdigest()
+    headers = Message()
+    headers.add_header("X-LAC-Artifact-SHA256", digest)
+    headers.add_header("X-LAC-Artifact-SHA256", digest)
+
+    class _Resp:
+        def read(self):
+            return artifact
+
+        def getcode(self):
+            return 200
+
+        def __enter__(self):
+            self.headers = headers
+            return self
+
+        def __exit__(self, *unused):
+            return False
+
+    monkeypatch.setattr(pro_install.urllib.request, "urlopen", lambda *unused, **kwargs: _Resp())
+
+    result = pro_install.install_pro_plugin("LAC-GOOD-KEY", gate_url="https://g.test/d")
+
+    assert result["state"] == "failed"
+    assert result["error_type"] == "download"
+    assert "integrity" in result["message"].lower()
+    assert not plugin_dir.exists()
