@@ -928,3 +928,32 @@ def test_subprocess_timeout_returns_a_structured_failure(monkeypatch):
     assert result.returncode == 124
     assert result.stdout == ""
     assert result.stderr == "command unavailable or timed out"
+
+
+def test_local_scope_membership_is_an_exact_subset_with_max_ages():
+    gate = _load_gate()
+
+    assert gate.RELEASE_SCOPES == ("local", "cloud")
+    assert gate.EVIDENCE_SCHEMA_VERSION == 3
+    assert gate.LOCAL_EVIDENCE_GATES == (
+        "patent_clearance",
+        "github_enterprise_controls",
+        "cryptographic_review",
+        "artifact_roundtrip",
+        "clean_machine_signed_install",
+    )
+    assert gate.EVIDENCE_GATES_BY_SCOPE == {
+        "local": gate.LOCAL_EVIDENCE_GATES,
+        "cloud": gate.REQUIRED_EVIDENCE_GATES,
+    }
+    assert set(gate.LOCAL_EVIDENCE_GATES) < set(gate.REQUIRED_EVIDENCE_GATES)
+    assert len(gate.REQUIRED_EVIDENCE_GATES) == 19
+    for name in gate.REQUIRED_EVIDENCE_GATES:
+        assert gate.EVIDENCE_MAX_AGE_DAYS[name] >= 1
+    assert not (set(gate.LOCAL_EVIDENCE_GATES) & gate._WORKER_BOUND_EVIDENCE_GATES)
+    assert gate._LOCAL_EVIDENCE_RECORD_FIELDS == (
+        gate._EVIDENCE_BASE_FIELDS | {
+            "model_hub_commit", "lac_pro_commit",
+            "installer_sha256", "release_provenance_sha256",
+        }
+    )
