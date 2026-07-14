@@ -42,6 +42,7 @@ for (const file of files) {
 
 console.log(`check-bundle: editor-pane=${editorBytes}B index=${indexBytes}B`);
 if (editorBytes === 0) failures.push("editor-pane chunk missing (lazy split broken?)");
+if (indexBytes === 0) failures.push("index chunk missing (renamed entry chunk?)");
 if (editorBytes > CEILINGS.editorPane) failures.push(`editor-pane ${editorBytes}B > ceiling ${CEILINGS.editorPane}B`);
 if (indexBytes > CEILINGS.index) failures.push(`index ${indexBytes}B > ceiling ${CEILINGS.index}B (CM6 may have leaked into the initial chunk)`);
 

@@ -165,7 +165,10 @@ export function useEditorTabs(projectId: string) {
         if (!isCurrent(sequence, pid)) return;
         setBuffers((current) => {
           const existing = current.get(path);
-          if (!existing) return current;
+          // A buffer that went dirty during the fetch keeps the user's edits;
+          // the stale base then conflicts naturally at save. (openFile loads a
+          // fresh, never-dirty buffer, so this is a no-op there.)
+          if (!existing || dirtyRef.current.has(path)) return current;
           const next = new Map(current);
           next.set(path, {
             ...existing,

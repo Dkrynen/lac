@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { type TabsState, changeIdOfTabId, filePathOfTabId, findTab, tabId } from "@/lib/workbench-tabs";
+import { type TabsState, findTab, tabId } from "@/lib/workbench-tabs";
 import { CodeEditor } from "./code-editor";
 import { SaveConflictView, StagedDiffView } from "./diff-view";
 import type { DiffTabState, FileBuffer } from "./use-editor-tabs";
