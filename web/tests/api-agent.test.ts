@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 
 import { api, ApiError } from "../src/lib/api.ts";
 
@@ -32,7 +32,7 @@ test("agentSandbox requests status for the exact encoded project identity", asyn
   }
 });
 
-test("agentSandbox fails closed on malformed or contradictory readiness responses", async (t) => {
+test("agentSandbox fails closed on malformed or contradictory readiness responses", async () => {
   const originalFetch = globalThis.fetch;
   const validReady = {
     backend: "docker",
@@ -59,17 +59,15 @@ test("agentSandbox fails closed on malformed or contradictory readiness response
 
   try {
     for (const [name, body] of Object.entries(invalidResponses)) {
-      await t.test(name, async () => {
-        globalThis.fetch = (async () =>
-          new Response(JSON.stringify(body), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          })) as typeof fetch;
-        await assert.rejects(
-          () => api.agentSandbox("project-1"),
-          /Invalid agent sandbox status response/
-        );
-      });
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })) as typeof fetch;
+      await assert.rejects(
+        () => api.agentSandbox("project-1"),
+        /Invalid agent sandbox status response/
+      );
     }
   } finally {
     globalThis.fetch = originalFetch;
