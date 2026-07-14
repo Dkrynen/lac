@@ -2009,6 +2009,110 @@ def api_project_file(project_id):
     })
 
 
+_SAVE_RUN_ID = "editor-save"
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+@app.route("/api/projects/<project_id>/file/save", methods=["POST"])
+def api_project_file_save(project_id):
+    """Human edit-and-stage save: stage + auto-apply through the manual-edits session."""
+
+    if not _is_trusted_local_approval_request():
+        return jsonify({"error": "Project files are available only on this machine"}), 403
+    if not _PROJECT_BROWSER_ID_PATTERN.fullmatch(project_id):
+        return jsonify({"error": "invalid project identity", "code": "invalid_project_id"}), 400
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required", "code": "invalid_body"}), 400
+    rel = data.get("path")
+    content = data.get("content")
+    base_sha256 = data.get("base_sha256")
+    if not isinstance(rel, str) or not rel:
+        return jsonify({"error": "path must be a non-empty string", "code": "invalid_body"}), 400
+    if not isinstance(content, str):
+        return jsonify({"error": "content must be a string", "code": "invalid_body"}), 400
+    if base_sha256 is not None and (
+        not isinstance(base_sha256, str) or not _SHA256_HEX.fullmatch(base_sha256)
+    ):
+        return jsonify({"error": "base_sha256 must be null or 64 lowercase hex chars", "code": "invalid_body"}), 400
+    if not _project_browser_text_is_previewable(rel):
+        return jsonify({"error": "path contains unsupported text controls", "code": "invalid_query"}), 400
+    if _project_browser_path_is_skipped(rel):
+        return jsonify({"error": "project path is not previewable", "code": "project_path_not_previewable"}), 403
+    if not _project_browser_text_is_previewable(content, allow_leading_bom=True):
+        return jsonify({
+            "error": "content is not supported as previewable text",
+            "code": "project_file_not_previewable",
+        }), 415
+    from .agent.staging import MAX_STAGED_BYTES
+
+    if len(content.encode("utf-8")) > MAX_STAGED_BYTES:
+        return jsonify({
+            "error": "content exceeds the 2 MiB staged-change limit",
+            "code": "project_file_too_large",
+        }), 413
+    try:
+        _project, root = _registered_project_root(project_id)
+    except KeyError as e:
+        return jsonify({"error": str(e.args[0])}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
+
+    from .cookbook.persistence import (
+        apply_staged_change,
+        get_or_create_manual_session,
+        get_staged_change,
+        set_staged_status,
+        stage_change,
+    )
+    from .project_security import SensitiveProjectPathError
+
+    try:
+        session_id = get_or_create_manual_session(project_id)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    try:
+        row = stage_change(session_id, _SAVE_RUN_ID, str(root), rel, content)
+    except SensitiveProjectPathError as e:
+        return _project_file_error(e)
+    except ValueError as e:
+        message = str(e)
+        if "non-UTF-8" in message:
+            return jsonify({"error": message, "code": "project_file_not_previewable"}), 415
+        return jsonify({"error": message, "code": "invalid_path"}), 400
+
+    # The editor's base must match the snapshot stage_change just took from
+    # disk — this closes the load->save drift window. A leftover pending row
+    # (crashed earlier save) carries a stale snapshot and lands here too,
+    # self-healing on the user's retry.
+    if row["base_hash"] != base_sha256:
+        set_staged_status(row["id"], "rejected")
+        return jsonify({
+            "error": "conflict",
+            "code": "save_conflict",
+            "disk_sha256": row["base_hash"],
+        }), 409
+
+    result = apply_staged_change(row["id"])
+    if result["status"] == "applied":
+        applied = get_staged_change(row["id"])
+        payload = applied["new_content"].encode("utf-8")
+        return jsonify({
+            "status": "applied",
+            "change_id": row["id"],
+            "path": row["path"],
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        })
+    if result["status"] == "conflict":
+        return jsonify({
+            "error": "conflict",
+            "code": "save_conflict",
+            "disk_sha256": result.get("disk_hash"),
+        }), 409
+    return jsonify({"error": result.get("error") or result["status"], "code": "save_failed"}), 500
+
+
 def _staged_summary(row: dict) -> dict:
     out = {k: v for k, v in row.items() if k not in ("old_content", "new_content")}
     out["new_size"] = len((row.get("new_content") or "").encode("utf-8"))
