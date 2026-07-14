@@ -72,7 +72,7 @@ const CAPABILITIES: Capability[] = [
     icon: Code2,
     title: "Build workbench",
     free: "Chat plus read-only Plan and Explore agents.",
-    pro: "Coding cockpit for agent readiness now; approval-gated Build mode is the next paid lane.",
+    pro: "Build Mode is free on your local models; Pro makes them build-ready — per-model tuning and a readiness benchmark.",
     licensedState: "Safety gated",
     licensedVariant: "warning",
     lockedState: "Preview",

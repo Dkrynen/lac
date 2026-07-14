@@ -112,6 +112,7 @@ jobs:
           npm test
           npm run typecheck
           npm run build
+          npm run check:bundle
           npm audit --audit-level=high
           npm sbom --sbom-format cyclonedx > dist/web-sbom.json
 
