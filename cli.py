@@ -1154,7 +1154,7 @@ def build_parser():
     p_update.add_argument("--mode", choices=["enable", "disable", "check-only"], help="Override update mode")
 
     p_rec = sub.add_parser("recommend", aliases=["rec"], help="Get model recommendations")
-    p_rec.add_argument("--use-case", default="coding", choices=["coding", "general", "reasoning", "chat"], help="Use case")
+    p_rec.add_argument("--use-case", default="coding", choices=["coding", "general", "reasoning", "chat", "agent"], help="Use case")
     p_rec.add_argument("--top-k", type=int, default=10, help="Number of recommendations")
     p_rec.add_argument("--no-calibration", action="store_true", help="Ignore measured benchmarks in results.jsonl")
 
