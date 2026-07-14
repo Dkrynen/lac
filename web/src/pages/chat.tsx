@@ -620,8 +620,8 @@ export function Chat() {
   };
 
   const switchWorkspace = (next: string) => {
-    if (editor.hasDirty && !window.confirm("Discard unsaved editor changes?")) return;
     if (!next || next === activeWorkspaceRef.current) return;
+    if (editor.hasDirty && !window.confirm("Discard unsaved editor changes?")) return;
     resetWorkbenchContext();
     activeWorkspaceRef.current = next;
     projectSelectionRef.current = "";
@@ -632,8 +632,8 @@ export function Chat() {
   };
 
   const switchProject = (next: string) => {
-    if (editor.hasDirty && !window.confirm("Discard unsaved editor changes?")) return;
     if (!next || next === projectSelectionRef.current) return;
+    if (editor.hasDirty && !window.confirm("Discard unsaved editor changes?")) return;
     resetWorkbenchContext();
     projectSelectionRef.current = next;
     selectedProjectIdRef.current = selectedProjectFor(availableProjects, next)?.id ?? "";

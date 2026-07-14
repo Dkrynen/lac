@@ -239,6 +239,8 @@ export function useEditorTabs(projectId: string) {
         if (!isCurrent(sequence, pid)) return;
         patchBuffer(path, { baseSha: result.sha256, save: saveSucceeded(), conflict: null });
         setDirty((current) => {
+          // Keystrokes that landed during the round-trip keep the buffer dirty.
+          if (buffersRef.current.get(path)?.doc !== content) return current;
           const next = new Set(current);
           next.delete(path);
           return next;
