@@ -67,6 +67,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             context     TEXT DEFAULT '{}',
             workspace   TEXT NOT NULL DEFAULT 'default',
             project_id  TEXT REFERENCES projects(id) ON DELETE RESTRICT,
+            origin      TEXT NOT NULL DEFAULT 'chat',
             created_at  REAL NOT NULL,
             updated_at  REAL NOT NULL
         )
@@ -80,6 +81,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     if "project_id" not in session_columns:
         conn.execute(
             "ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE RESTRICT"
+        )
+    if "origin" not in session_columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'chat'"
         )
     conn.execute(
         """
@@ -139,6 +144,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP INDEX IF EXISTS idx_staged_pending_unique")
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_staged_pending_unique ON staged_changes(session_id, root, path) WHERE status = 'pending'"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_manual_unique ON sessions(project_id) WHERE origin = 'editor'"
     )
 
 
@@ -345,6 +353,7 @@ def create_session(
     system_prompt: str = "",
     workspace: str = "",
     project_id: str | None = None,
+    origin: str = "chat",
 ) -> str:
     conn = _ensure_db()
     session_id = uuid.uuid4().hex[:14]
@@ -352,7 +361,7 @@ def create_session(
     try:
         ws, bound_project_id = _resolve_new_session_identity(workspace, project_id)
         conn.execute(
-            "INSERT INTO sessions (id, name, model, system_prompt, context, workspace, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, name, model, system_prompt, context, workspace, project_id, origin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 name,
@@ -361,6 +370,7 @@ def create_session(
                 "{}",
                 ws,
                 bound_project_id,
+                origin,
                 now,
                 now,
             ),
@@ -399,8 +409,9 @@ def list_sessions(
         ws = workspace or current_workspace()
         where.insert(0, "workspace = ?")
         params.insert(0, ws)
+        where.append("origin != 'editor'")
         sql = (
-            "SELECT id, name, model, system_prompt, workspace, project_id, "
+            "SELECT id, name, model, system_prompt, workspace, project_id, origin, "
             "created_at, updated_at FROM sessions WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC"
@@ -417,8 +428,9 @@ def list_sessions(
                 "system_prompt": r[3],
                 "workspace": r[4],
                 "project_id": r[5],
-                "created_at": r[6],
-                "updated_at": r[7],
+                "origin": r[6],
+                "created_at": r[7],
+                "updated_at": r[8],
             }
             for r in rows
         ]
@@ -429,7 +441,7 @@ def list_sessions(
 def get_session(session_id: str) -> Optional[dict]:
     conn = _ensure_db()
     row = conn.execute(
-        "SELECT id, name, model, system_prompt, context, workspace, project_id, created_at, updated_at FROM sessions WHERE id = ?",
+        "SELECT id, name, model, system_prompt, context, workspace, project_id, origin, created_at, updated_at FROM sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
     if not row:
@@ -452,8 +464,9 @@ def get_session(session_id: str) -> Optional[dict]:
         "context": row[4],
         "workspace": row[5],
         "project_id": row[6],
-        "created_at": row[7],
-        "updated_at": row[8],
+        "origin": row[7],
+        "created_at": row[8],
+        "updated_at": row[9],
         "messages": [{"role": m[0], "content": m[1], "timestamp": m[2]} for m in messages],
         "events": [
             {
@@ -465,6 +478,47 @@ def get_session(session_id: str) -> Optional[dict]:
             for e in events
         ],
     }
+
+
+def get_or_create_manual_session(project_id: str) -> str:
+    """Return the per-project 'manual edits' session id, creating it lazily.
+
+    Human editor saves are audited here; origin='editor' rows are excluded
+    from every session listing.
+    """
+    project = get_project(project_id)
+    if project is None:
+        raise ValueError("project does not exist")
+    conn = _ensure_db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE project_id = ? AND origin = 'editor'",
+            (project_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row:
+        return row[0]
+    try:
+        return create_session(
+            name="Manual edits",
+            workspace=str(project["workspace"]),
+            project_id=project_id,
+            origin="editor",
+        )
+    except sqlite3.IntegrityError:
+        # Lost a create race; the winner's row exists now.
+        conn = _ensure_db()
+        try:
+            row = conn.execute(
+                "SELECT id FROM sessions WHERE project_id = ? AND origin = 'editor'",
+                (project_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise
+        return row[0]
 
 
 def save_session(
