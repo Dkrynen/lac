@@ -124,10 +124,23 @@ LAC_PRO_RELEASE_BASE = (
     "138898dac87a5b9ce0df4d4a4c0169f2d27a7fff"  # pragma: allowlist secret -- private local Git commit
 )
 
-# Trust roots are intentionally empty until approved signer identities are
-# onboarded in a reviewed commit. An empty trust root fails closed.
-TRUSTED_COMMIT_SIGNERS: frozenset[str] = frozenset()
-TRUSTED_EVIDENCE_SIGNERS: dict[str, dict[str, object]] = {}
+# Commit and evidence-review trust roots onboarded 2026-07-14 (reviewed
+# commit). Authenticode allowlists stay empty until the signing certificate
+# exists; an empty allowlist fails closed.
+TRUSTED_COMMIT_SIGNERS: frozenset[str] = frozenset({
+    # Duan Krynen - SSH Ed25519 release signing key (~/.ssh/lac_git_signing)
+    "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
+})
+TRUSTED_EVIDENCE_SIGNERS: dict[str, dict[str, object]] = {
+    "duan-review-2026": {
+        # Ed25519 evidence-review public key (private key held offline).
+        "public_key": "I0_r-R-qvNacNY5jzOLX6-C5vQZZSee0TRVOxeFT0cI",
+        "approvers": ["duan-krynen"],
+        "gates": list(REQUIRED_EVIDENCE_GATES),
+        "not_before": 1_782_864_000,  # 2026-07-01T00:00:00Z
+        "not_after": 1_846_022_400,  # 2028-07-01T00:00:00Z
+    },
+}
 EXPECTED_AUTHENTICODE_SUBJECTS: frozenset[str] = frozenset()
 EXPECTED_AUTHENTICODE_THUMBPRINTS: frozenset[str] = frozenset()
 EXPECTED_GITHUB_REPOSITORY = "Dkrynen/lac"

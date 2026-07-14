@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1185,3 +1188,40 @@ def test_cloud_signed_records_stripped_of_lac_cloud_commit_fail_only_on_signatur
     assert all(not row["ok"] for row in rows)
     stripped_patent_clearance = forged_gates["patent_clearance"]
     assert set(stripped_patent_clearance) == gate._LOCAL_EVIDENCE_RECORD_FIELDS
+
+
+def test_trust_roots_are_onboarded_and_well_formed():
+    gate = _load_gate()
+
+    assert gate.TRUSTED_COMMIT_SIGNERS == frozenset({
+        "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
+    })
+    assert all(
+        gate._normalise_signer(signer) for signer in gate.TRUSTED_COMMIT_SIGNERS
+    )
+
+    assert set(gate.TRUSTED_EVIDENCE_SIGNERS) == {"duan-review-2026"}
+    entry = gate.TRUSTED_EVIDENCE_SIGNERS["duan-review-2026"]
+    assert set(entry) == {"public_key", "approvers", "gates", "not_before", "not_after"}
+    public_key = base64.urlsafe_b64decode(entry["public_key"] + "=")
+    assert len(public_key) == 32
+    Ed25519PublicKey.from_public_bytes(public_key)
+    assert entry["approvers"] == ["duan-krynen"]
+    assert list(entry["gates"]) == list(gate.REQUIRED_EVIDENCE_GATES)
+    assert isinstance(entry["not_before"], int)
+    assert isinstance(entry["not_after"], int)
+    assert entry["not_before"] < entry["not_after"]
+
+    assert gate.EXPECTED_AUTHENTICODE_SUBJECTS == frozenset()
+    assert gate.EXPECTED_AUTHENTICODE_THUMBPRINTS == frozenset()
+
+
+def test_default_evidence_trust_roots_reject_unlisted_signers(tmp_path):
+    gate = _load_gate()
+    path = tmp_path / "evidence.json"
+    private_key = Ed25519PrivateKey.generate()
+    digests = _write_hosted_evidence_objects(path)
+    evidence = _valid_evidence(gate, private_key, hosted_digests=digests)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    assert all(not row["ok"] for row in _check_evidence(gate, path))
