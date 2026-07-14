@@ -103,7 +103,7 @@ supply an alternative path.
 Accepted status values are `approved`, `passed`, and `verified`. Placeholder,
 pending, unsigned, stale, future-dated, untrusted, wrong-version, or malformed
 records fail closed. Commit and evidence-review trust roots were onboarded in a reviewed source
-commit on 2026-07-14; the Authenticode subject and thumbprint allowlists
+commit on 2026-07-14, with commit-signer allowlists scoped per repository (the lac-cloud contributor key is trusted for lac-cloud history only; release tags verify against the model-hub allowlist); the Authenticode subject and thumbprint allowlists
 remain intentionally empty until the release signing certificate exists, and
 an empty allowlist fails closed. An operator-supplied file cannot add its own
 signer.

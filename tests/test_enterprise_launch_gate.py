@@ -866,7 +866,7 @@ def test_release_tag_must_be_annotated_signed_target_head_and_use_trusted_signer
         return real_git(repo_path, *args)
 
     monkeypatch.setattr(gate, "_git", signed_tag)
-    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS", frozenset({signer}))
+    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS_BY_REPO", {"model_hub": frozenset({signer})})
     rows = gate.check_repository(
         "model_hub",
         repo,
@@ -910,7 +910,7 @@ def test_release_tag_must_be_annotated_signed_target_head_and_use_trusted_signer
     )
     assert next(row for row in rows if row["name"] == "model_hub_signed_release_tag")["ok"] is False
 
-    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS", frozenset())
+    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS_BY_REPO", {"model_hub": frozenset()})
     rows = gate.check_repository(
         "model_hub",
         repo,
@@ -919,7 +919,7 @@ def test_release_tag_must_be_annotated_signed_target_head_and_use_trusted_signer
     )
     assert next(row for row in rows if row["name"] == "model_hub_signed_release_tag")["ok"] is False
 
-    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS", frozenset({signer}))
+    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS_BY_REPO", {"model_hub": frozenset({signer})})
     _git(repo, "tag", "-d", "v2.7.0")
     _git(repo, "tag", "v2.7.0")
     rows = gate.check_repository(
@@ -1193,11 +1193,22 @@ def test_cloud_signed_records_stripped_of_lac_cloud_commit_fail_only_on_signatur
 def test_trust_roots_are_onboarded_and_well_formed():
     gate = _load_gate()
 
-    assert gate.TRUSTED_COMMIT_SIGNERS == frozenset({
-        "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
-    })
+    assert gate.TRUSTED_COMMIT_SIGNERS_BY_REPO == {
+        "model_hub": frozenset({
+            "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
+        }),
+        "lac_pro": frozenset({
+            "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
+        }),
+        "lac_cloud": frozenset({
+            "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
+            "SHA256:CdT6M0USfhHLOm5UqlZdwA+OdJqAtoxUGcPKtXCGKYI",
+        }),
+    }
     assert all(
-        gate._normalise_signer(signer) for signer in gate.TRUSTED_COMMIT_SIGNERS
+        gate._normalise_signer(signer)
+        for signers in gate.TRUSTED_COMMIT_SIGNERS_BY_REPO.values()
+        for signer in signers
     )
 
     assert set(gate.TRUSTED_EVIDENCE_SIGNERS) == {"duan-review-2026"}
@@ -1225,3 +1236,59 @@ def test_default_evidence_trust_roots_reject_unlisted_signers(tmp_path):
     path.write_text(json.dumps(evidence), encoding="utf-8")
 
     assert all(not row["ok"] for row in _check_evidence(gate, path))
+
+
+def test_cloud_only_signer_cannot_authorize_a_model_hub_release_tag(tmp_path, monkeypatch):
+    gate = _load_gate()
+    repo = _repo(tmp_path, "tagged")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "tag", "-a", "v2.7.0", "-m", "release 2.7.0")
+    real_git = gate._git
+    signer = "B" * 40
+
+    def signed_tag(repo_path, *args):
+        if args == ("verify-tag", "--raw", "refs/tags/v2.7.0"):
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                "",
+                f"[GNUPG:] NEWSIG\n[GNUPG:] VALIDSIG {signer} 2026-07-14 0 4 0 1 10 00 {signer}\n",
+            )
+        return real_git(repo_path, *args)
+
+    monkeypatch.setattr(gate, "_git", signed_tag)
+    monkeypatch.setattr(gate, "TRUSTED_COMMIT_SIGNERS_BY_REPO", {
+        "model_hub": frozenset(),
+        "lac_cloud": frozenset({signer}),
+    })
+
+    rows = gate.check_repository(
+        "model_hub",
+        repo,
+        release_tag="v2.7.0",
+        expected_tag_target=head,
+    )
+
+    assert next(
+        row for row in rows if row["name"] == "model_hub_signed_release_tag"
+    )["ok"] is False
+
+
+def test_unknown_repo_name_resolves_to_an_empty_signer_allowlist(tmp_path, monkeypatch):
+    gate = _load_gate()
+    repo = _repo(tmp_path, "mystery")
+    signer = "C" * 40
+    real_git = gate._git
+
+    def signed_log(repo_path, *args):
+        if args and args[0] == "log":
+            return subprocess.CompletedProcess(args, 0, f"G\x00{signer}\n", "")
+        return real_git(repo_path, *args)
+
+    monkeypatch.setattr(gate, "_git", signed_log)
+
+    rows = gate.check_repository("mystery_repo", repo)
+
+    assert next(
+        row for row in rows if row["name"] == "mystery_repo_signed_commits"
+    )["ok"] is False

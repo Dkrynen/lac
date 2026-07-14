@@ -127,10 +127,17 @@ LAC_PRO_RELEASE_BASE = (
 # Commit and evidence-review trust roots onboarded 2026-07-14 (reviewed
 # commit). Authenticode allowlists stay empty until the signing certificate
 # exists; an empty allowlist fails closed.
-TRUSTED_COMMIT_SIGNERS: frozenset[str] = frozenset({
-    # Duan Krynen - SSH Ed25519 release signing key (~/.ssh/lac_git_signing)
-    "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
-})
+# Commit-signer trust roots are scoped per repository. A repository name
+# without an entry resolves to an empty allowlist and fails closed. Release
+# tags verify against the model_hub set only, because only that lane
+# requests tag checks.
+_SIGNER_DKRYNEN = "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c"
+_SIGNER_ARQUD = "SHA256:CdT6M0USfhHLOm5UqlZdwA+OdJqAtoxUGcPKtXCGKYI"
+TRUSTED_COMMIT_SIGNERS_BY_REPO: dict[str, frozenset[str]] = {
+    "model_hub": frozenset({_SIGNER_DKRYNEN}),
+    "lac_pro": frozenset({_SIGNER_DKRYNEN}),
+    "lac_cloud": frozenset({_SIGNER_DKRYNEN, _SIGNER_ARQUD}),
+}
 TRUSTED_EVIDENCE_SIGNERS: dict[str, dict[str, object]] = {
     "duan-review-2026": {
         # Ed25519 evidence-review public key (private key held offline).
@@ -622,7 +629,7 @@ def check_repository(
                 signature_rows.append((state, _normalise_signer(fingerprint)))
     trusted_signers = {
         normalised
-        for signer in TRUSTED_COMMIT_SIGNERS
+        for signer in TRUSTED_COMMIT_SIGNERS_BY_REPO.get(name, frozenset())
         if (normalised := _normalise_signer(signer))
     }
     unsigned_count = sum(state not in _SIGNED_STATES for state, _ in signature_rows)
