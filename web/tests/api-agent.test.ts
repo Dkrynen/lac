@@ -32,47 +32,48 @@ test("agentSandbox requests status for the exact encoded project identity", asyn
   }
 });
 
-test("agentSandbox fails closed on malformed or contradictory readiness responses", async () => {
-  const originalFetch = globalThis.fetch;
-  const validReady = {
-    backend: "docker",
-    available: true,
-    code: "ready",
-    message: "Task sandbox ready.",
-    tasks: ["test"],
-    image: PINNED_IMAGE,
-    network: "none",
-  };
-  const invalidResponses = {
-    wrong_backend: { ...validReady, backend: "host" },
-    network_enabled: { ...validReady, network: "bridge" },
-    contradictory_code: { ...validReady, code: "docker_daemon_unavailable" },
-    unavailable_ready_code: { ...validReady, available: false, tasks: [], image: null },
-    empty_tasks: { ...validReady, tasks: [] },
-    invalid_tasks: { ...validReady, tasks: ["../test"] },
-    duplicate_tasks: { ...validReady, tasks: ["test", "test"] },
-    unpinned_image: { ...validReady, image: "python:latest" },
-    unexpected_field: { ...validReady, host_mount: "C:\\" },
-    missing_image: (({ image: _image, ...rest }) => rest)(validReady),
-    missing_tasks: (({ tasks: _tasks, ...rest }) => rest)(validReady),
-  };
+const validReady = {
+  backend: "docker",
+  available: true,
+  code: "ready",
+  message: "Task sandbox ready.",
+  tasks: ["test"],
+  image: PINNED_IMAGE,
+  network: "none",
+};
+const invalidResponses = {
+  wrong_backend: { ...validReady, backend: "host" },
+  network_enabled: { ...validReady, network: "bridge" },
+  contradictory_code: { ...validReady, code: "docker_daemon_unavailable" },
+  unavailable_ready_code: { ...validReady, available: false, tasks: [], image: null },
+  empty_tasks: { ...validReady, tasks: [] },
+  invalid_tasks: { ...validReady, tasks: ["../test"] },
+  duplicate_tasks: { ...validReady, tasks: ["test", "test"] },
+  unpinned_image: { ...validReady, image: "python:latest" },
+  unexpected_field: { ...validReady, host_mount: "C:\\" },
+  missing_image: (({ image: _image, ...rest }) => rest)(validReady),
+  missing_tasks: (({ tasks: _tasks, ...rest }) => rest)(validReady),
+};
 
-  try {
-    for (const [name, body] of Object.entries(invalidResponses)) {
-      globalThis.fetch = (async () =>
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        })) as typeof fetch;
+for (const [name, body] of Object.entries(invalidResponses)) {
+  test(`agentSandbox rejects invalid sandbox status response: ${name}`, async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+
+    try {
       await assert.rejects(
         () => api.agentSandbox("project-1"),
         /Invalid agent sandbox status response/
       );
+    } finally {
+      globalThis.fetch = originalFetch;
     }
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
+  });
+}
 
 test("agentSandbox accepts a consistent ready response and a bounded unavailable response", async () => {
   const originalFetch = globalThis.fetch;
