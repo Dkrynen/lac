@@ -124,13 +124,12 @@ LAC_PRO_RELEASE_BASE = (
     "138898dac87a5b9ce0df4d4a4c0169f2d27a7fff"  # pragma: allowlist secret -- private local Git commit
 )
 
-# Commit and evidence-review trust roots onboarded 2026-07-14 (reviewed
-# commit). Authenticode allowlists stay empty until the signing certificate
+# Trust roots onboarded 2026-07-14 (reviewed commits). Commit-signer
+# allowlists are scoped per repository: a repository name without an entry
+# resolves to an empty allowlist and fails closed, and release tags verify
+# against the model_hub set only, because only that lane requests tag
+# checks. Authenticode allowlists stay empty until the signing certificate
 # exists; an empty allowlist fails closed.
-# Commit-signer trust roots are scoped per repository. A repository name
-# without an entry resolves to an empty allowlist and fails closed. Release
-# tags verify against the model_hub set only, because only that lane
-# requests tag checks.
 _SIGNER_DKRYNEN = "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c"
 _SIGNER_ARQUD = "SHA256:CdT6M0USfhHLOm5UqlZdwA+OdJqAtoxUGcPKtXCGKYI"
 TRUSTED_COMMIT_SIGNERS_BY_REPO: dict[str, frozenset[str]] = {
