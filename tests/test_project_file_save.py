@@ -208,3 +208,14 @@ def test_save_rejected_off_machine(flask_app, isolated_home, tmp_path):
         headers={"Host": "evil.example.com"},
     )
     assert resp.status_code == 403
+
+
+def test_save_lone_surrogate_content_415(flask_app, isolated_home, tmp_path):
+    client = flask_app.test_client()
+    root = tmp_path / "proj"
+    root.mkdir()
+    pid = _register(client, root)
+    resp = _save(client, pid, "a.txt", "bad \ud800 text", None)
+    assert resp.status_code == 415, resp.get_json()
+    assert resp.get_json()["code"] == "project_file_not_previewable"
+    assert not (root / "a.txt").exists()

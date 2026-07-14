@@ -2046,7 +2046,14 @@ def api_project_file_save(project_id):
         }), 415
     from .agent.staging import MAX_STAGED_BYTES
 
-    if len(content.encode("utf-8")) > MAX_STAGED_BYTES:
+    try:
+        content_size = len(content.encode("utf-8"))
+    except UnicodeEncodeError:
+        return jsonify({
+            "error": "content is not supported as previewable text",
+            "code": "project_file_not_previewable",
+        }), 415
+    if content_size > MAX_STAGED_BYTES:
         return jsonify({
             "error": "content exceeds the 2 MiB staged-change limit",
             "code": "project_file_too_large",
