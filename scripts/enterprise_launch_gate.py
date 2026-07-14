@@ -134,7 +134,9 @@ TRUSTED_COMMIT_SIGNERS: frozenset[str] = frozenset({
 TRUSTED_EVIDENCE_SIGNERS: dict[str, dict[str, object]] = {
     "duan-review-2026": {
         # Ed25519 evidence-review public key (private key held offline).
-        "public_key": "I0_r-R-qvNacNY5jzOLX6-C5vQZZSee0TRVOxeFT0cI",
+        "public_key": (
+            "I0_r-R-qvNacNY5jzOLX6-C5vQZZSee0TRVOxeFT0cI"  # pragma: allowlist secret -- Ed25519 public key, not a secret
+        ),
         "approvers": ["duan-krynen"],
         "gates": list(REQUIRED_EVIDENCE_GATES),
         "not_before": 1_782_864_000,  # 2026-07-01T00:00:00Z
