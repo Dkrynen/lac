@@ -23,7 +23,7 @@ ACCESS = "a" * 43
 REFRESH = "r" * 43
 ROTATED_ACCESS = "b" * 43
 ROTATED_REFRESH = "s" * 43
-VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"  # pragma: allowlist secret -- RFC 7636 public test vector
 
 
 class MemoryTokenStore:
@@ -251,7 +251,7 @@ def test_authorization_start_uses_desktop_pkce_and_opens_the_system_browser():
     assert parsed.path == "/v1/auth/oauth/google/start"
     assert parse_qs(parsed.query) == {
         "client": ["desktop"],
-        "code_challenge": ["E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"],
+        "code_challenge": ["E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"],  # pragma: allowlist secret -- RFC 7636 public test vector
         "code_challenge_method": ["S256"],
     }
 

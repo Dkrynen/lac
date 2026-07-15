@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-CANONICAL_VECTOR_SHA256 = "36c5060b3e429fa8c52271004effcfa6eca4e7b4da0a9e4c1661786ed3ea29a7"
+CANONICAL_VECTOR_SHA256 = "36c5060b3e429fa8c52271004effcfa6eca4e7b4da0a9e4c1661786ed3ea29a7"  # pragma: allowlist secret -- public contract checksum
 _CLOUD_EXECUTION_GATES = {
     "provider_broker",
     "provider_metering",

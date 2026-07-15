@@ -21,9 +21,9 @@ from backend.cloud_session import (
 
 ROOT = Path(__file__).resolve().parents[1]
 VECTOR_PATH = ROOT / "tests" / "fixtures" / "public-desktop-bootstrap.v1.json"
-CANONICAL_VECTOR_SHA256 = "36c5060b3e429fa8c52271004effcfa6eca4e7b4da0a9e4c1661786ed3ea29a7"
+CANONICAL_VECTOR_SHA256 = "36c5060b3e429fa8c52271004effcfa6eca4e7b4da0a9e4c1661786ed3ea29a7"  # pragma: allowlist secret -- public contract checksum
 JOB_VECTOR_PATH = ROOT / "tests" / "fixtures" / "public-desktop-jobs.v1.json"
-CANONICAL_JOB_VECTOR_SHA256 = "707c9a5658f14f17ab1959f4aabd74349468a36e3869cd06e641b907b11a0dba"
+CANONICAL_JOB_VECTOR_SHA256 = "707c9a5658f14f17ab1959f4aabd74349468a36e3869cd06e641b907b11a0dba"  # pragma: allowlist secret -- public contract checksum
 PARSERS = {
     "oauth_token_response_v1": parse_public_oauth_token_response_v1,
     "account_response_v1": parse_public_account_response_v1,
