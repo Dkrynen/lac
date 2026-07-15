@@ -60,7 +60,9 @@ def launch_agent(project_dir, *,
                  config_fn=_default_config,
                  launch_fn=_default_launch,
                  out=print) -> int:
-    from backend.cookbook.recommend import AGENT_MIN_CONTEXT
+    from backend.cookbook.recommend import (
+        AGENT_MIN_CONTEXT, AGENT_PROMPT_BUDGET_FRACTION,
+    )
 
     project_dir = Path(project_dir).resolve()
     cfg = config_fn(project_dir)
@@ -108,9 +110,13 @@ def launch_agent(project_dir, *,
     write_commands_fn(project_dir)
     binary = resolve_bin_fn()
 
-    out("LAC picked + prepared %s for your box (%s score %s, num_ctx %s). "
-        "Launching OpenCode..." % (base, getattr(rec, "speed_source", "estimated"),
-                                   getattr(rec, "score", "?"), num_ctx))
+    # num_ctx alone overstates what the agent gets: Ollama truncates the input
+    # prompt at ~num_ctx/2, so report the budget the user actually has.
+    prompt_budget = int(num_ctx * AGENT_PROMPT_BUDGET_FRACTION)
+    out("LAC picked + prepared %s for your box (%s score %s, num_ctx %s, "
+        "~%s tokens of usable prompt). Launching OpenCode..."
+        % (base, getattr(rec, "speed_source", "estimated"),
+           getattr(rec, "score", "?"), num_ctx, prompt_budget))
     warning = (rec.details or {}).get("agent_warning")
     if warning:
         out("  [!] " + warning)

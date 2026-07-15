@@ -33,10 +33,31 @@ def test_agent_warning_flags_small_but_usable_models():
     assert _agent_warning(_entry(params_b=AGENT_RELIABLE_PARAMS_B)) is None  # >=7 -> no warn
 
 
-def test_agent_recs_enforce_32k_context_floor():
+def test_agent_recs_enforce_the_context_floor():
     recs = recommend(_box16(), use_case="agent", top_k=91)
     assert recs, "agent path returned no recommendations on a 16GB box"
     assert all(r.context_used >= AGENT_MIN_CONTEXT for r in recs)
+
+
+def test_context_floor_leaves_room_for_a_real_agent_prompt():
+    """Ollama truncates the input prompt at ~num_ctx/2 (measured live:
+    n_ctx_slot=32768 -> `truncating input prompt limit=16386 prompt=40478 keep=4`),
+    and a shredded prompt makes the model emit malformed tool calls.
+
+    Stock OpenCode's prompt measured ~7.6k tokens, but a real coding turn adds file
+    contents on top, and a customised OpenCode (extra agents/skills) measured ~40.5k.
+    A 32768 floor leaves only ~16k of prompt budget, so the floor must be higher.
+    """
+    assert AGENT_MIN_CONTEXT >= 65536
+    assert AGENT_MIN_CONTEXT // 2 >= 32768, "usable prompt budget is num_ctx/2"
+
+
+def test_agent_path_excludes_models_that_cannot_hold_the_prompt():
+    """qwen3:8b maxes out at a context below the floor -- its prompt budget would be
+    too small for the agent loop, so it must not be offered on the agent path."""
+    ids = {r.model.id for r in recommend(_box16(), use_case="agent", top_k=91)}
+    assert "qwen3:8b" not in ids, "a 32k-context model cannot hold OpenCode + real work"
+    assert "llama3.1:8b" in ids, "a 128k-context 8B must stay eligible (64k budget)"
 
 
 def test_agent_path_excludes_tiny_and_includes_capable_real_models():

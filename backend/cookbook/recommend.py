@@ -136,10 +136,22 @@ USE_CASE_WEIGHTS = {
 }
 
 CONTEXT_TARGETS = {"general": 4096, "coding": 8192, "reasoning": 8192,
-                   "chat": 4096, "agent": 32768}
+                   "chat": 4096, "agent": 65536}
 
 # --- Agent-loop capability (the "Claude Code for local models" moat) ---
-AGENT_MIN_CONTEXT = 32768
+# Ollama truncates the INPUT PROMPT at roughly num_ctx/2, keeping only the last
+# tokens. Measured on a live run at num_ctx=32768:
+#     "truncating input prompt" limit=16386 prompt=40478 keep=4
+# A truncated prompt loses the tool schemas, and the model then emits malformed
+# tool calls (Read{path:...} instead of Read{filePath:...}) and gives up.
+# So the usable prompt budget is ~num_ctx/2, and the floor must be set from that:
+#   32768 -> ~16k budget: stock OpenCode's prompt measured ~7.6k, so it "works"
+#            at rest but one real file read overflows it -> breaks MID-SESSION.
+#   65536 -> ~32k budget: room for stock OpenCode plus real work.
+# Verified: at num_ctx=131072 prompts of ~40.9k processed with zero truncation and
+# the agent completed the task; at 32768 the same task failed twice.
+AGENT_PROMPT_BUDGET_FRACTION = 0.5   # Ollama's prompt cap, as a share of num_ctx
+AGENT_MIN_CONTEXT = 65536
 AGENT_MIN_PARAMS_B = 3.0        # below this, not offered on the agent path
 AGENT_RELIABLE_PARAMS_B = 7.0   # 3.0 <= params < 7.0 -> offered WITH a weak-model warning
 # Model families with reliable native tool-calling (verified against models.json

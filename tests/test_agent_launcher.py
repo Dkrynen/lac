@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from backend.agent_launch.launcher import launch_agent
 
 
-def _rec(model_id="qwen3:8b", ctx=32768, warning=None):
+def _rec(model_id="qwen3:8b", ctx=65536, warning=None):
     return SimpleNamespace(
         model=SimpleNamespace(id=model_id, name=model_id, params_b=8.0),
         context_used=ctx,
@@ -57,9 +57,9 @@ def _base_kwargs(events, tmp_path, recs, *, ensure=None):
 
 def test_launch_happy_path_wires_everything(tmp_path):
     events = {}
-    rc = launch_agent(tmp_path, **_base_kwargs(events, tmp_path, [_rec("qwen3:8b", 32768)]))
+    rc = launch_agent(tmp_path, **_base_kwargs(events, tmp_path, [_rec("qwen3:8b", 65536)]))
     assert rc == 0
-    assert events["ensure"] == ("qwen3:8b", 32768)
+    assert events["ensure"] == ("qwen3:8b", 65536)
     assert events["config"][1] == "qwen3:8b-agent"          # variant, not base
     assert events["config"][2] == "http://localhost:11434"
     assert events["commands"] == tmp_path.resolve()
@@ -67,13 +67,28 @@ def test_launch_happy_path_wires_everything(tmp_path):
     assert Path(events["launch"][1]) == tmp_path.resolve()  # launched in the project dir
 
 
-def test_launch_floors_num_ctx_at_32k(tmp_path):
+def test_launch_floors_num_ctx_at_the_agent_minimum(tmp_path):
+    from backend.cookbook.recommend import AGENT_MIN_CONTEXT
     events = {}
     def ensure(base, num_ctx, *, list_names, create):
         events["ctx"] = num_ctx
         return f"{base}-agent"
     launch_agent(tmp_path, **_base_kwargs(events, tmp_path, [_rec("qwen3:8b", 8192)], ensure=ensure))
-    assert events["ctx"] == 32768                            # floored up from 8192
+    assert events["ctx"] == AGENT_MIN_CONTEXT                # floored up from 8192
+
+
+def test_launch_reports_the_usable_prompt_budget_not_just_num_ctx(tmp_path):
+    """num_ctx overstates what the user actually gets: Ollama truncates the prompt
+    at ~half of it. Report the honest number."""
+    printed = []
+    kwargs = _base_kwargs({}, tmp_path, [_rec("qwen3:8b", 131072)])
+    kwargs["out"] = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+    launch_agent(tmp_path, **kwargs)
+
+    text = "\n".join(printed)
+    assert "65536" in text or "65k" in text, \
+        "must surface the ~num_ctx/2 prompt budget, not only num_ctx"
 
 
 def test_launch_returns_1_when_no_model_fits(tmp_path):
@@ -89,10 +104,10 @@ def test_launch_prefers_an_installed_model_over_a_higher_ranked_uninstalled_one(
     the launcher must pick the best model the user actually has.
     """
     events = {}
-    recs = [_rec("qwen3:30b-a3b", 131072), _rec("qwen3:8b", 32768)]  # only qwen3:8b installed
+    recs = [_rec("qwen3:30b-a3b", 131072), _rec("qwen3:8b", 65536)]  # only qwen3:8b installed
     rc = launch_agent(tmp_path, **_base_kwargs(events, tmp_path, recs))
     assert rc == 0
-    assert events["ensure"] == ("qwen3:8b", 32768), "must build from the INSTALLED model"
+    assert events["ensure"] == ("qwen3:8b", 65536), "must build from the INSTALLED model"
     assert events["config"][1] == "qwen3:8b-agent"
 
 
@@ -115,7 +130,7 @@ def test_launch_refuses_and_guides_when_no_recommended_model_is_installed(tmp_pa
 def test_launch_mentions_a_better_model_the_user_could_pull(tmp_path):
     events = {}
     printed = []
-    recs = [_rec("qwen3:30b-a3b", 131072), _rec("qwen3:8b", 32768)]
+    recs = [_rec("qwen3:30b-a3b", 131072), _rec("qwen3:8b", 65536)]
     kwargs = _base_kwargs(events, tmp_path, recs)
     kwargs["out"] = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
