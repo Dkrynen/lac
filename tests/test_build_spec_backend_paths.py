@@ -2,6 +2,7 @@ import runpy
 from pathlib import Path, PurePosixPath
 
 import PyInstaller.utils.hooks
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,13 @@ def _spec_datas(monkeypatch) -> list[tuple[str, str]]:
             captured["datas"] = self.datas
 
     monkeypatch.chdir(ROOT)
+    web_index = ROOT / "web" / "dist" / "index.html"
+    real_exists = Path.exists
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda path: True if path == web_index else real_exists(path),
+    )
     monkeypatch.setattr(
         PyInstaller.utils.hooks,
         "collect_all",
@@ -38,6 +46,26 @@ def _spec_datas(monkeypatch) -> list[tuple[str, str]]:
         },
     )
     return captured["datas"]
+
+
+def test_build_spec_fails_closed_without_web_dist(monkeypatch):
+    web_index = ROOT / "web" / "dist" / "index.html"
+    real_exists = Path.exists
+
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda path: False if path == web_index else real_exists(path),
+    )
+    monkeypatch.setattr(
+        PyInstaller.utils.hooks,
+        "collect_all",
+        lambda _package: ([], [], []),
+    )
+
+    with pytest.raises(SystemExit, match="web/dist missing"):
+        runpy.run_path(str(SPEC))
 
 
 def test_backend_data_files_preserve_relative_paths_without_collisions(monkeypatch):
