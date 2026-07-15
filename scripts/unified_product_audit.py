@@ -5,18 +5,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 
 CANONICAL_VECTOR_SHA256 = "36c5060b3e429fa8c52271004effcfa6eca4e7b4da0a9e4c1661786ed3ea29a7"
 _CLOUD_EXECUTION_GATES = {
-    "authenticated_client_surface",
     "provider_broker",
     "provider_metering",
     "infrastructure_metering",
     "hosted_workspace_execution",
+}
+
+_INACTIVE_ENTITLEMENT = {
+    "state": "inactive",
+    "plan": None,
+    "expires_human": None,
+    "checked": None,
 }
 
 
@@ -45,9 +50,55 @@ def _require_root(label: str, root: Path, marker: str) -> Path:
     return resolved
 
 
+def enabled_cloud_execution_gates(capabilities: dict) -> list[str]:
+    return sorted(key for key in _CLOUD_EXECUTION_GATES if capabilities.get(key) is not False)
+
+
+def _probe_local_pro(*, host_root: Path, pro_root: Path) -> dict:
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "lac_pro.unified_probe",
+                "--host-root",
+                str(host_root),
+            ],
+            cwd=pro_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AuditError("The Local Pro host-contract probe could not execute") from exc
+    if completed.returncode != 0:
+        raise AuditError("The Local Pro host-contract probe failed closed")
+    try:
+        result = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise AuditError("The Local Pro host-contract probe returned invalid JSON") from exc
+    if (
+        not isinstance(result, dict)
+        or set(result) != {
+            "state", "product_id", "plugin_version", "host_api_version", "entitlement"
+        }
+        or result["state"] != "ready"
+        or result["product_id"] != "local_pro"
+        or not isinstance(result["plugin_version"], str)
+        or not result["plugin_version"]
+        or not isinstance(result["host_api_version"], int)
+        or isinstance(result["host_api_version"], bool)
+        or result["host_api_version"] < 1
+        or result["entitlement"] != _INACTIVE_ENTITLEMENT
+    ):
+        raise AuditError("The real Local Pro plugin did not satisfy the host discovery contract")
+    return result
+
+
 def audit_unified_product(*, host_root: Path, pro_root: Path, cloud_root: Path) -> dict:
     host_root = _require_root("LAC host", host_root, "backend/plugins.py")
-    pro_root = _require_root("Local Pro", pro_root, "lac_pro/plugin.py")
+    pro_root = _require_root("Local Pro", pro_root, "lac_pro/unified_probe.py")
     cloud_root = _require_root("LAC Cloud", cloud_root, "config/product-readiness.v1.json")
 
     host_vector = host_root / "tests" / "fixtures" / "public-desktop-bootstrap.v1.json"
@@ -63,32 +114,7 @@ def audit_unified_product(*, host_root: Path, pro_root: Path, cloud_root: Path) 
         if digest != CANONICAL_VECTOR_SHA256:
             raise AuditError(f"{label} bootstrap contract drifted: {digest}")
 
-    for source_root in (str(pro_root), str(host_root)):
-        if source_root in sys.path:
-            sys.path.remove(source_root)
-        sys.path.insert(0, source_root)
-
-    import backend.plugins as host_plugins
-    import lac_pro.license as pro_license
-    from lac_pro.plugin import ProPlugin
-
-    entry_point = SimpleNamespace(name="pro", load=lambda: ProPlugin())
-    with (
-        patch.object(pro_license, "check", return_value=None),
-        patch.object(pro_license, "_load_raw", return_value={}),
-        patch.object(host_plugins, "_entry_points", return_value=[entry_point]),
-    ):
-        loaded = host_plugins.discover()
-    if len(loaded) != 1 or loaded[0].state != "ready" or loaded[0].product_id != "local_pro":
-        raise AuditError("The real Local Pro plugin did not satisfy the host discovery contract")
-    entitlement = (loaded[0].product_state or {}).get("entitlement")
-    if entitlement != {
-        "state": "inactive",
-        "plan": None,
-        "expires_human": None,
-        "checked": None,
-    }:
-        raise AuditError("The Local Pro public entitlement contract is not fail-closed")
+    pro_state = _probe_local_pro(host_root=host_root, pro_root=pro_root)
 
     try:
         readiness = json.loads(
@@ -97,9 +123,7 @@ def audit_unified_product(*, host_root: Path, pro_root: Path, cloud_root: Path) 
         capabilities = readiness["capabilities"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise AuditError("The LAC Cloud product-readiness manifest is invalid") from exc
-    enabled_execution = sorted(
-        key for key in _CLOUD_EXECUTION_GATES if capabilities.get(key) is not False
-    )
+    enabled_execution = enabled_cloud_execution_gates(capabilities)
     if enabled_execution:
         raise AuditError(f"Cloud execution gates are not fail-closed: {', '.join(enabled_execution)}")
 
@@ -108,8 +132,8 @@ def audit_unified_product(*, host_root: Path, pro_root: Path, cloud_root: Path) 
         "execution_default": "local",
         "local_pro": {
             "state": "ready",
-            "plugin_version": loaded[0].version,
-            "host_api_version": loaded[0].host_api_version,
+            "plugin_version": pro_state["plugin_version"],
+            "host_api_version": pro_state["host_api_version"],
         },
         "cloud": {
             "contract_sha256": CANONICAL_VECTOR_SHA256,

@@ -4758,8 +4758,67 @@ def _cloud_error_response(exc: CloudSessionError | SecureTokenStoreError, status
     return response, status
 
 
+_CLOUD_PROXY_ERROR_STATUS = {
+    "auth_required": 401,
+    "quota_exhausted": 402,
+    "entitlement_required": 403,
+    "conflict_or_concurrency": 409,
+    "abuse_rate_limited": 429,
+    "invalid_response": 502,
+    "provider_unavailable": 503,
+    "corrupt_store": 503,
+    "secure_storage_unavailable": 503,
+}
+_CLOUD_JOB_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _cloud_json_response(payload: dict, status: int = 200):
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response, status
+
+
+def _cloud_invalid_request():
+    return _cloud_json_response({"error": {"code": "invalid_request"}}, 400)
+
+
+def _cloud_request_has_body() -> bool:
+    if request.content_length not in {None, 0}:
+        return True
+    try:
+        return bool(request.stream.read(1))
+    except Exception:  # noqa: BLE001 - unreadable request bodies fail closed
+        return True
+
+
+def _cloud_local_guard():
+    if _is_trusted_local_approval_request():
+        return None
+    return _cloud_json_response(
+        {"error": {"code": "local_request_required"}},
+        403,
+    )
+
+
+def _cloud_proxy_error_response(exc: CloudSessionError | SecureTokenStoreError):
+    code = exc.code
+    if isinstance(exc, SecureTokenStoreError) and code not in {
+        "corrupt_store", "secure_storage_unavailable"
+    }:
+        code = "secure_storage_unavailable"
+    status = _CLOUD_PROXY_ERROR_STATUS.get(code, 503)
+    stable_code = code if code in _CLOUD_PROXY_ERROR_STATUS else "provider_unavailable"
+    return _cloud_json_response({"error": {"code": stable_code}}, status)
+
+
 @app.route("/api/product/state")
 def api_product_state():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
     loaded = _discover_plugins_safe()
     response = jsonify({
         "schema_version": 1,
@@ -4774,37 +4833,104 @@ def api_product_state():
 
 @app.route("/api/cloud/auth/start", methods=["POST"])
 def api_cloud_auth_start():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
     if request.content_length is not None and request.content_length > 1024:
-        return jsonify({"error": {"code": "invalid_request"}}), 400
+        return _cloud_invalid_request()
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or set(data) != {"provider"}:
-        return jsonify({"error": {"code": "invalid_request"}}), 400
+        return _cloud_invalid_request()
     try:
         result = _cloud_session.start_authorization(data["provider"])
     except (CloudSessionError, SecureTokenStoreError) as exc:
         return _cloud_error_response(exc)
-    return jsonify({key: value for key, value in result.items() if key != "authorization_url"})
+    return _cloud_json_response(
+        {key: value for key, value in result.items() if key != "authorization_url"}
+    )
 
 
 @app.route("/api/cloud/auth/callback", methods=["POST"])
 def api_cloud_auth_callback():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
     if request.content_length is not None and request.content_length > 4096:
-        return jsonify({"error": {"code": "invalid_request"}}), 400
+        return _cloud_invalid_request()
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or set(data) != {"callback_uri"}:
-        return jsonify({"error": {"code": "invalid_request"}}), 400
+        return _cloud_invalid_request()
     try:
-        return jsonify(_cloud_session.complete_authorization(data["callback_uri"]))
+        return _cloud_json_response(
+            _cloud_session.complete_authorization(data["callback_uri"])
+        )
     except (CloudSessionError, SecureTokenStoreError) as exc:
         return _cloud_error_response(exc)
 
 
 @app.route("/api/cloud/logout", methods=["POST"])
 def api_cloud_logout():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
     try:
-        return jsonify(_cloud_session.logout())
+        return _cloud_json_response(_cloud_session.logout())
     except (CloudSessionError, SecureTokenStoreError) as exc:
         return _cloud_error_response(exc)
+
+
+@app.route("/api/cloud/jobs", methods=["GET"])
+def api_cloud_jobs():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    if request.args:
+        return _cloud_invalid_request()
+    try:
+        return _cloud_json_response(_cloud_session.list_jobs())
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_proxy_error_response(exc)
+
+
+@app.route("/api/cloud/jobs/<job_id>/events", methods=["GET"])
+def api_cloud_job_events(job_id):
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    values = request.args.getlist("after_sequence")
+    if (
+        _CLOUD_JOB_ID.fullmatch(job_id) is None
+        or set(request.args) != {"after_sequence"}
+        or len(values) != 1
+        or re.fullmatch(r"(?:-1|0|[1-9][0-9]{0,15})", values[0]) is None
+    ):
+        return _cloud_invalid_request()
+    after_sequence = int(values[0])
+    if after_sequence > 9_007_199_254_740_991:
+        return _cloud_invalid_request()
+    try:
+        return _cloud_json_response(
+            _cloud_session.job_events(job_id, after_sequence)
+        )
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_proxy_error_response(exc)
+
+
+@app.route("/api/cloud/jobs/<job_id>/cancel", methods=["POST"])
+def api_cloud_job_cancel(job_id):
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    if (
+        _CLOUD_JOB_ID.fullmatch(job_id) is None
+        or request.args
+        or _cloud_request_has_body()
+    ):
+        return _cloud_invalid_request()
+    try:
+        return _cloud_json_response(_cloud_session.cancel_job(job_id), 202)
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_proxy_error_response(exc)
 
 
 def _notify_model_installed(model_name: str) -> None:

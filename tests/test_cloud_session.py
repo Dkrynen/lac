@@ -42,6 +42,11 @@ class MemoryTokenStore:
         self.value = None
 
 
+class FailingClearTokenStore(MemoryTokenStore):
+    def clear(self):
+        raise SecureTokenStoreError("secure_storage_unavailable")
+
+
 class StubTransport:
     def __init__(self, responses=()):
         self.responses = list(responses)
@@ -110,6 +115,49 @@ def usage_payload():
         "activeJobs": 0,
         "queuedJobs": 0,
         "resetAt": {"monthly": 10, "weekly": 20, "five_hour": 30},
+    }
+
+
+def job_list_payload():
+    return {
+        "jobs": [
+            {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "workspace_id": "00000000-0000-4000-8000-000000000002",
+                "model_alias": "fast",
+                "status": "running",
+                "reserved_credits": 25,
+                "actual_credits": None,
+                "failure_code": None,
+                "created_at": 1_700_000_000,
+                "updated_at": 1_700_000_001,
+                "started_at": 1_700_000_001,
+                "finished_at": None,
+            }
+        ]
+    }
+
+
+def job_events_payload():
+    event = {
+        "event_id": "event_01",
+        "sequence": 1,
+        "phase": "running",
+        "message": "Hosted job started",
+        "percent": 10,
+        "occurred_at": 1_700_000_001_000,
+    }
+    return {
+        "job": {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "revision": 1,
+            "phase": "running",
+            "latest_sequence": 1,
+            "latest_progress": event,
+            "pending_approval": None,
+            "last_approval": None,
+        },
+        "events": [event],
     }
 
 
@@ -523,3 +571,224 @@ def test_logout_surfaces_secure_storage_clear_failure_instead_of_false_sign_out(
         "state": "connected",
         "execution_available": False,
     }
+
+
+def test_list_jobs_rotates_access_and_returns_only_the_strict_public_dto():
+    store = MemoryTokenStore(REFRESH)
+    transport = StubTransport([
+        response(200, token_payload(ROTATED_ACCESS, ROTATED_REFRESH)),
+        response(200, job_list_payload()),
+    ])
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=store,
+        transport=transport,
+    )
+
+    assert session.list_jobs() == job_list_payload()
+    assert [call[1] for call in transport.calls] == [
+        "https://api.example.test/v1/auth/token",
+        "https://api.example.test/v1/jobs",
+    ]
+    assert transport.calls[1][2]["Authorization"] == f"Bearer {ROTATED_ACCESS}"
+    assert REFRESH not in json.dumps(transport.calls[1], default=str)
+
+
+def test_job_events_uses_one_exact_bounded_sequence_query():
+    transport = StubTransport([response(200, job_events_payload())])
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=MemoryTokenStore(REFRESH),
+        transport=transport,
+        clock=lambda: 1_700_000_000.0,
+    )
+    session._access_token = ACCESS
+    session._access_expires_at = 1_700_001_000.0
+
+    result = session.job_events(
+        "00000000-0000-4000-8000-000000000001",
+        0,
+    )
+
+    assert result == job_events_payload()
+    assert transport.calls[0][0:2] == (
+        "GET",
+        "https://api.example.test/v1/jobs/00000000-0000-4000-8000-000000000001/events?after_sequence=0",
+    )
+    assert transport.calls[0][3] is None
+
+
+def test_job_events_rejects_sequences_already_acknowledged_by_the_caller():
+    transport = StubTransport([response(200, job_events_payload())])
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=MemoryTokenStore(REFRESH),
+        transport=transport,
+        clock=lambda: 1_700_000_000.0,
+    )
+    session._access_token = ACCESS
+    session._access_expires_at = 1_700_001_000.0
+
+    with pytest.raises(CloudSessionError, match="invalid_response"):
+        session.job_events(
+            "00000000-0000-4000-8000-000000000001",
+            1,
+        )
+
+
+def test_job_events_accepts_a_valid_snapshot_larger_than_the_old_capture_limit():
+    events = [
+        {
+            "event_id": f"event_{sequence}",
+            "sequence": sequence,
+            "phase": "running",
+            "message": "x" * 2_000,
+            "percent": None,
+            "occurred_at": 1_700_000_001_000 + sequence,
+        }
+        for sequence in range(100)
+    ]
+    payload = {
+        "job": {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "revision": 100,
+            "phase": "running",
+            "latest_sequence": 99,
+            "latest_progress": events[-1],
+            "pending_approval": None,
+            "last_approval": None,
+        },
+        "events": events,
+    }
+    cloud_response = response(200, payload)
+    assert len(cloud_response.body) > 128 * 1024
+    transport = StubTransport([cloud_response])
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=MemoryTokenStore(REFRESH),
+        transport=transport,
+        clock=lambda: 1_700_000_000.0,
+    )
+    session._access_token = ACCESS
+    session._access_expires_at = 1_700_001_000.0
+
+    result = session.job_events(
+        "00000000-0000-4000-8000-000000000001",
+        -1,
+    )
+
+    assert len(result["events"]) == 100
+    assert result["events"][-1]["sequence"] == 99
+
+
+def test_job_control_still_rejects_responses_larger_than_one_mebibyte():
+    oversized = CloudHttpResponse(
+        status=200,
+        headers={"content-type": "application/json"},
+        body=b" " * (1024 * 1024 + 1),
+    )
+    transport = StubTransport([oversized])
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=MemoryTokenStore(REFRESH),
+        transport=transport,
+        clock=lambda: 1_700_000_000.0,
+    )
+    session._access_token = ACCESS
+    session._access_expires_at = 1_700_001_000.0
+
+    with pytest.raises(CloudSessionError, match="invalid_response"):
+        session.list_jobs()
+
+
+def test_cancel_job_posts_no_body_and_parses_the_authoritative_status():
+    payload = {
+        "job": {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "status": "cancelling",
+        }
+    }
+    transport = StubTransport([response(202, payload)])
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=MemoryTokenStore(REFRESH),
+        transport=transport,
+        clock=lambda: 1_700_000_000.0,
+    )
+    session._access_token = ACCESS
+    session._access_expires_at = 1_700_001_000.0
+
+    assert session.cancel_job("00000000-0000-4000-8000-000000000001") == payload
+    assert transport.calls[0][0:2] == (
+        "POST",
+        "https://api.example.test/v1/jobs/00000000-0000-4000-8000-000000000001/cancel",
+    )
+    assert transport.calls[0][3] is None
+    assert "Content-Type" not in transport.calls[0][2]
+
+
+@pytest.mark.parametrize(
+    "job_id,after_sequence",
+    [
+        ("not-a-uuid", 0),
+        ("00000000-0000-4000-8000-000000000001/escape", 0),
+        ("00000000-0000-4000-8000-000000000001", True),
+        ("00000000-0000-4000-8000-000000000001", -2),
+        ("00000000-0000-4000-8000-000000000001", 9_007_199_254_740_992),
+    ],
+)
+def test_job_control_rejects_invalid_identity_or_sequence_before_network(
+    job_id, after_sequence
+):
+    transport = StubTransport()
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=MemoryTokenStore(REFRESH),
+        transport=transport,
+    )
+
+    with pytest.raises(CloudSessionError, match="invalid_request"):
+        session.job_events(job_id, after_sequence)
+
+    assert transport.calls == []
+
+
+def test_job_control_auth_required_clears_local_credentials_without_exposing_them():
+    store = MemoryTokenStore(REFRESH)
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=store,
+        transport=StubTransport([
+            response(200, token_payload(ROTATED_ACCESS, ROTATED_REFRESH)),
+            response(401, {"error": {"code": "auth_required"}}),
+        ]),
+    )
+
+    with pytest.raises(CloudSessionError) as caught:
+        session.list_jobs()
+
+    assert caught.value.code == "auth_required"
+    assert str(caught.value) == "auth_required"
+    assert REFRESH not in str(caught.value)
+    assert ROTATED_REFRESH not in str(caught.value)
+    assert store.value is None
+
+
+def test_job_control_surfaces_secure_storage_failure_when_auth_clear_fails():
+    store = FailingClearTokenStore(REFRESH)
+    session = CloudSession(
+        api_origin="https://api.example.test",
+        token_store=store,
+        transport=StubTransport([
+            response(200, token_payload(ROTATED_ACCESS, ROTATED_REFRESH)),
+            response(401, {"error": {"code": "auth_required"}}),
+        ]),
+    )
+
+    with pytest.raises(SecureTokenStoreError) as caught:
+        session.list_jobs()
+
+    assert caught.value.code == "secure_storage_unavailable"
+    assert ROTATED_REFRESH not in str(caught.value)
+    assert store.value == ROTATED_REFRESH
+    assert session._access_token is None

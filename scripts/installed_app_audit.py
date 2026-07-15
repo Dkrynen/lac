@@ -26,6 +26,7 @@ PAGE_ROUTES = [
     ("/downloads", "Downloads"),
     ("/pro", "LAC Pro"),
     ("/account", "Account"),
+    ("/cloud", "Cloud Activity"),
     ("/docs", "Docs"),
     ("/settings", "Settings"),
 ]

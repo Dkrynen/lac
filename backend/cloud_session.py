@@ -26,7 +26,13 @@ _UNCONFIGURED_HOSTS = {"replace-with-approved-cloud-api.example.invalid"}
 _OPAQUE_CREDENTIAL_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 _OPAQUE_CODE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _OPAQUE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
-_CAPTURE_LIMIT = 128 * 1024
+_PUBLIC_UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_PUBLIC_FAILURE_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_PUBLIC_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$")
+_CAPTURE_LIMIT = 1024 * 1024
 _AUTHORIZATION_TTL_SECONDS = 10 * 60
 _ENTITLEMENT_STATES = {
     "active", "trialing", "cancel_at_period_end", "past_due", "unpaid", "revoked",
@@ -41,6 +47,36 @@ _STABLE_FAILURE_CODES = {
     "provider_unavailable",
 }
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
+_MAX_PUBLIC_JOBS = 100
+_MAX_PUBLIC_JOB_CREDITS = 1_000
+_MAX_PUBLIC_JOB_EVENTS = 100
+_MAX_APPROVAL_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000
+_PUBLIC_JOB_STATUSES = {
+    "reserved_pending",
+    "queued",
+    "reserved",
+    "running",
+    "awaiting_approval",
+    "cancelling",
+    "cancelled",
+    "succeeded",
+    "failed",
+}
+_PUBLIC_JOB_PHASES = {
+    "queued", "running", "awaiting_approval", "completed", "failed", "cancelled",
+}
+_PUBLIC_JOB_MODEL_ALIASES = {
+    "fast", "smart", "code", "smart_plus", "code_plus", "expert",
+}
+_PUBLIC_APPROVAL_KINDS = {
+    "repository_write",
+    "pr_create",
+    "network_widening",
+    "secret_access",
+    "destructive_command",
+    "port_exposure",
+}
+_PUBLIC_APPROVAL_DECISIONS = {"approved", "rejected", "expired"}
 
 
 class CloudSessionError(RuntimeError):
@@ -326,6 +362,284 @@ def _parse_usage(value) -> dict:
     }
 
 
+def _parse_public_job(value) -> dict:
+    job = _exact_record(
+        value,
+        {
+            "id",
+            "workspace_id",
+            "model_alias",
+            "status",
+            "reserved_credits",
+            "actual_credits",
+            "failure_code",
+            "created_at",
+            "updated_at",
+            "started_at",
+            "finished_at",
+        },
+    )
+    job_id = job["id"]
+    workspace_id = job["workspace_id"]
+    reserved_credits = job["reserved_credits"]
+    actual_credits = job["actual_credits"]
+    failure_code = job["failure_code"]
+    if (
+        not isinstance(job_id, str)
+        or _PUBLIC_UUID_PATTERN.fullmatch(job_id) is None
+        or not isinstance(workspace_id, str)
+        or _PUBLIC_UUID_PATTERN.fullmatch(workspace_id) is None
+        or not isinstance(job["model_alias"], str)
+        or job["model_alias"] not in _PUBLIC_JOB_MODEL_ALIASES
+        or not isinstance(job["status"], str)
+        or job["status"] not in _PUBLIC_JOB_STATUSES
+        or isinstance(reserved_credits, bool)
+        or not isinstance(reserved_credits, int)
+        or not 1 <= reserved_credits <= _MAX_PUBLIC_JOB_CREDITS
+        or (
+            actual_credits is not None
+            and (
+                isinstance(actual_credits, bool)
+                or not isinstance(actual_credits, int)
+                or not 0 <= actual_credits <= reserved_credits
+            )
+        )
+        or (
+            failure_code is not None
+            and (
+                not isinstance(failure_code, str)
+                or _PUBLIC_FAILURE_CODE_PATTERN.fullmatch(failure_code) is None
+            )
+        )
+    ):
+        raise CloudSessionError("invalid_response")
+    created_at = _timestamp(job["created_at"])
+    updated_at = _timestamp(job["updated_at"])
+    started_at = _timestamp(job["started_at"], nullable=True)
+    finished_at = _timestamp(job["finished_at"], nullable=True)
+    if (
+        updated_at < created_at
+        or (started_at is not None and started_at < created_at)
+        or (finished_at is not None and finished_at < (started_at or created_at))
+    ):
+        raise CloudSessionError("invalid_response")
+    return {
+        "id": job_id,
+        "workspace_id": workspace_id,
+        "model_alias": job["model_alias"],
+        "status": job["status"],
+        "reserved_credits": reserved_credits,
+        "actual_credits": actual_credits,
+        "failure_code": failure_code,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
+
+
+def _parse_public_job_event(value) -> dict:
+    event = _exact_record(
+        value,
+        {"event_id", "sequence", "phase", "message", "percent", "occurred_at"},
+    )
+    event_id = event["event_id"]
+    sequence = event["sequence"]
+    percent = event["percent"]
+    if (
+        not isinstance(event_id, str)
+        or _PUBLIC_EVENT_ID_PATTERN.fullmatch(event_id) is None
+        or isinstance(sequence, bool)
+        or not isinstance(sequence, int)
+        or not 0 <= sequence <= _MAX_SAFE_INTEGER
+        or not isinstance(event["phase"], str)
+        or event["phase"] not in _PUBLIC_JOB_PHASES
+        or (
+            percent is not None
+            and (
+                isinstance(percent, bool)
+                or not isinstance(percent, int)
+                or not 0 <= percent <= 100
+            )
+        )
+    ):
+        raise CloudSessionError("invalid_response")
+    return {
+        "event_id": event_id,
+        "sequence": sequence,
+        "phase": event["phase"],
+        "message": _bounded_string(event["message"], limit=2_000),
+        "percent": percent,
+        "occurred_at": _timestamp(event["occurred_at"]),
+    }
+
+
+def _parse_public_pending_approval(value) -> dict | None:
+    if value is None:
+        return None
+    approval = _exact_record(
+        value,
+        {"approval_id", "kind", "summary", "requested_at", "expires_at"},
+    )
+    approval_id = approval["approval_id"]
+    requested_at = _timestamp(approval["requested_at"])
+    expires_at = _timestamp(approval["expires_at"])
+    if (
+        not isinstance(approval_id, str)
+        or _OPAQUE_ID_PATTERN.fullmatch(approval_id) is None
+        or not isinstance(approval["kind"], str)
+        or approval["kind"] not in _PUBLIC_APPROVAL_KINDS
+        or expires_at <= requested_at
+        or expires_at - requested_at > _MAX_APPROVAL_LIFETIME_MS
+    ):
+        raise CloudSessionError("invalid_response")
+    return {
+        "approval_id": approval_id,
+        "kind": approval["kind"],
+        "summary": _bounded_string(approval["summary"], limit=4_000),
+        "requested_at": requested_at,
+        "expires_at": expires_at,
+    }
+
+
+def _parse_public_resolved_approval(value) -> dict | None:
+    if value is None:
+        return None
+    approval = _exact_record(value, {"approval_id", "decision", "resolved_at"})
+    approval_id = approval["approval_id"]
+    if (
+        not isinstance(approval_id, str)
+        or _OPAQUE_ID_PATTERN.fullmatch(approval_id) is None
+        or not isinstance(approval["decision"], str)
+        or approval["decision"] not in _PUBLIC_APPROVAL_DECISIONS
+    ):
+        raise CloudSessionError("invalid_response")
+    return {
+        "approval_id": approval_id,
+        "decision": approval["decision"],
+        "resolved_at": _timestamp(approval["resolved_at"]),
+    }
+
+
+def parse_public_job_list_response_v1(value) -> dict:
+    outer = _exact_record(value, {"jobs"})
+    jobs = outer["jobs"]
+    if not isinstance(jobs, list) or len(jobs) > _MAX_PUBLIC_JOBS:
+        raise CloudSessionError("invalid_response")
+    parsed = [_parse_public_job(job) for job in jobs]
+    if len({job["id"] for job in parsed}) != len(parsed):
+        raise CloudSessionError("invalid_response")
+    if any(
+        previous["created_at"] < current["created_at"]
+        for previous, current in zip(parsed, parsed[1:])
+    ):
+        raise CloudSessionError("invalid_response")
+    return {"jobs": parsed}
+
+
+def parse_public_job_detail_response_v1(value) -> dict:
+    outer = _exact_record(value, {"job"})
+    detail = _exact_record(
+        outer["job"],
+        {
+            "id",
+            "workspace_id",
+            "model_alias",
+            "status",
+            "reserved_credits",
+            "actual_credits",
+            "failure_code",
+            "created_at",
+            "updated_at",
+            "started_at",
+            "finished_at",
+            "admission_pending",
+        },
+    )
+    admission_pending = detail["admission_pending"]
+    if not isinstance(admission_pending, bool):
+        raise CloudSessionError("invalid_response")
+    job = _parse_public_job({
+        key: value for key, value in detail.items() if key != "admission_pending"
+    })
+    if admission_pending != (job["status"] == "reserved_pending"):
+        raise CloudSessionError("invalid_response")
+    return {"job": {**job, "admission_pending": admission_pending}}
+
+
+def parse_public_job_event_snapshot_response_v1(value) -> dict:
+    outer = _exact_record(value, {"job", "events"})
+    state = _exact_record(
+        outer["job"],
+        {
+            "id",
+            "revision",
+            "phase",
+            "latest_sequence",
+            "latest_progress",
+            "pending_approval",
+            "last_approval",
+        },
+    )
+    job_id = state["id"]
+    revision = state["revision"]
+    latest_sequence = state["latest_sequence"]
+    latest_progress = (
+        None
+        if state["latest_progress"] is None
+        else _parse_public_job_event(state["latest_progress"])
+    )
+    if (
+        not isinstance(job_id, str)
+        or _PUBLIC_UUID_PATTERN.fullmatch(job_id) is None
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or not 0 <= revision <= _MAX_SAFE_INTEGER
+        or not isinstance(state["phase"], str)
+        or state["phase"] not in _PUBLIC_JOB_PHASES
+        or isinstance(latest_sequence, bool)
+        or not isinstance(latest_sequence, int)
+        or not -1 <= latest_sequence <= _MAX_SAFE_INTEGER
+        or (latest_progress is not None and latest_progress["sequence"] > latest_sequence)
+        or (latest_sequence == -1 and latest_progress is not None)
+    ):
+        raise CloudSessionError("invalid_response")
+    events = outer["events"]
+    if not isinstance(events, list) or len(events) > _MAX_PUBLIC_JOB_EVENTS:
+        raise CloudSessionError("invalid_response")
+    parsed_events = [_parse_public_job_event(event) for event in events]
+    previous_sequence = -1
+    for event in parsed_events:
+        if event["sequence"] <= previous_sequence or event["sequence"] > latest_sequence:
+            raise CloudSessionError("invalid_response")
+        previous_sequence = event["sequence"]
+    return {
+        "job": {
+            "id": job_id,
+            "revision": revision,
+            "phase": state["phase"],
+            "latest_sequence": latest_sequence,
+            "latest_progress": latest_progress,
+            "pending_approval": _parse_public_pending_approval(state["pending_approval"]),
+            "last_approval": _parse_public_resolved_approval(state["last_approval"]),
+        },
+        "events": parsed_events,
+    }
+
+
+def parse_public_job_cancel_response_v1(value) -> dict:
+    outer = _exact_record(value, {"job"})
+    job = _exact_record(outer["job"], {"id", "status"})
+    if (
+        not isinstance(job["id"], str)
+        or _PUBLIC_UUID_PATTERN.fullmatch(job["id"]) is None
+        or not isinstance(job["status"], str)
+        or job["status"] not in _PUBLIC_JOB_STATUSES
+    ):
+        raise CloudSessionError("invalid_response")
+    return {"job": {"id": job["id"], "status": job["status"]}}
+
+
 def parse_public_oauth_token_response_v1(value) -> dict:
     return _parse_token(value)
 
@@ -506,6 +820,45 @@ class CloudSession:
                 "error": {"code": "provider_unavailable"},
             }
 
+    def list_jobs(self) -> dict:
+        return self._authenticated_request(
+            "GET",
+            "/v1/jobs",
+            parser=parse_public_job_list_response_v1,
+        )
+
+    def job_events(self, job_id: str, after_sequence: int) -> dict:
+        job_id = self._validated_job_id(job_id)
+        if (
+            isinstance(after_sequence, bool)
+            or not isinstance(after_sequence, int)
+            or not -1 <= after_sequence <= _MAX_SAFE_INTEGER
+        ):
+            raise CloudSessionError("invalid_request")
+        query = urllib.parse.urlencode({"after_sequence": after_sequence})
+        result = self._authenticated_request(
+            "GET",
+            f"/v1/jobs/{job_id}/events?{query}",
+            parser=parse_public_job_event_snapshot_response_v1,
+        )
+        if (
+            result["job"]["id"].lower() != job_id.lower()
+            or any(event["sequence"] <= after_sequence for event in result["events"])
+        ):
+            raise CloudSessionError("invalid_response")
+        return result
+
+    def cancel_job(self, job_id: str) -> dict:
+        job_id = self._validated_job_id(job_id)
+        result = self._authenticated_request(
+            "POST",
+            f"/v1/jobs/{job_id}/cancel",
+            parser=parse_public_job_cancel_response_v1,
+        )
+        if result["job"]["id"].lower() != job_id.lower():
+            raise CloudSessionError("invalid_response")
+        return result
+
     def logout(self) -> dict:
         with self._lock:
             with self._token_rotation_lock():
@@ -539,6 +892,30 @@ class CloudSession:
                 )
                 self._accept_tokens(token)
                 return token["access_token"]
+
+    def _authenticated_request(self, method, path, *, parser):
+        if not self.configured:
+            raise CloudSessionError("cloud_not_configured")
+        try:
+            access = self._ensure_access()
+            if access is None:
+                raise CloudSessionError("auth_required")
+            return self._request(method, path, access=access, parser=parser)
+        except CloudSessionError as exc:
+            if exc.code == "auth_required":
+                try:
+                    self._clear_local(suppress_storage_error=False)
+                except SecureTokenStoreError as clear_exc:
+                    raise SecureTokenStoreError(
+                        "secure_storage_unavailable"
+                    ) from clear_exc
+            raise
+
+    @staticmethod
+    def _validated_job_id(job_id: str) -> str:
+        if not isinstance(job_id, str) or _PUBLIC_UUID_PATTERN.fullmatch(job_id) is None:
+            raise CloudSessionError("invalid_request")
+        return job_id
 
     def _token_rotation_lock(self):
         factory = getattr(self.token_store, "rotation_lock", None)

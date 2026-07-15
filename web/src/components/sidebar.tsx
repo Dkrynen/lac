@@ -12,6 +12,7 @@ import {
   BookOpen,
   Settings,
   UserRound,
+  Cloud,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,7 @@ const NAV = [
   { to: "/performance", label: "Performance", icon: Activity, end: false },
   { to: "/downloads", label: "Downloads", icon: Download, end: false },
   { to: "/pro", label: "Pro tools", icon: Sparkles, end: false },
+  { to: "/cloud", label: "Cloud activity", icon: Cloud, end: false },
   { to: "/account", label: "Account", icon: UserRound, end: false },
 ];
 

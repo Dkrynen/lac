@@ -1,0 +1,220 @@
+{
+  "schemaVersion": 1,
+  "contract": "lac.public.desktop-jobs",
+  "vectors": [
+    {
+      "name": "job list accepts bounded public rows",
+      "parser": "job_list_response_v1",
+      "valid": true,
+      "value": {
+        "jobs": [
+          {
+            "id": "00000000-0000-4000-8000-000000000201",
+            "workspace_id": "00000000-0000-4000-8000-000000000202",
+            "model_alias": "fast",
+            "status": "running",
+            "reserved_credits": 20,
+            "actual_credits": null,
+            "failure_code": null,
+            "created_at": 100,
+            "updated_at": 110,
+            "started_at": 105,
+            "finished_at": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "job list rejects internal object keys",
+      "parser": "job_list_response_v1",
+      "valid": false,
+      "value": {
+        "jobs": [
+          {
+            "id": "00000000-0000-4000-8000-000000000201",
+            "workspace_id": "00000000-0000-4000-8000-000000000202",
+            "model_alias": "fast",
+            "status": "running",
+            "reserved_credits": 20,
+            "actual_credits": null,
+            "failure_code": null,
+            "created_at": 100,
+            "updated_at": 110,
+            "started_at": 105,
+            "finished_at": null,
+            "input_object_key": "accounts/private/jobs/private/input.enc"
+          }
+        ]
+      }
+    },
+    {
+      "name": "job detail accepts explicit admission state",
+      "parser": "job_detail_response_v1",
+      "valid": true,
+      "value": {
+        "job": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "workspace_id": "00000000-0000-4000-8000-000000000202",
+          "model_alias": "code_plus",
+          "status": "reserved_pending",
+          "reserved_credits": 100,
+          "actual_credits": null,
+          "failure_code": null,
+          "created_at": 100,
+          "updated_at": 100,
+          "started_at": null,
+          "finished_at": null,
+          "admission_pending": true
+        }
+      }
+    },
+    {
+      "name": "job detail rejects unknown status",
+      "parser": "job_detail_response_v1",
+      "valid": false,
+      "value": {
+        "job": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "workspace_id": "00000000-0000-4000-8000-000000000202",
+          "model_alias": "fast",
+          "status": "processing",
+          "reserved_credits": 20,
+          "actual_credits": null,
+          "failure_code": null,
+          "created_at": 100,
+          "updated_at": 100,
+          "started_at": null,
+          "finished_at": null,
+          "admission_pending": false
+        }
+      }
+    },
+    {
+      "name": "event snapshot accepts authoritative agent state",
+      "parser": "job_event_snapshot_response_v1",
+      "valid": true,
+      "value": {
+        "job": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "revision": 2,
+          "phase": "running",
+          "latest_sequence": 1,
+          "latest_progress": {
+            "event_id": "runner:job:running",
+            "sequence": 1,
+            "phase": "running",
+            "message": "Runner transition: running",
+            "percent": null,
+            "occurred_at": 110
+          },
+          "pending_approval": null,
+          "last_approval": null
+        },
+        "events": [
+          {
+            "event_id": "runner:job:running",
+            "sequence": 1,
+            "phase": "running",
+            "message": "Runner transition: running",
+            "percent": null,
+            "occurred_at": 110
+          }
+        ]
+      }
+    },
+    {
+      "name": "event snapshot accepts approval metadata",
+      "parser": "job_event_snapshot_response_v1",
+      "valid": true,
+      "value": {
+        "job": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "revision": 3,
+          "phase": "awaiting_approval",
+          "latest_sequence": 2,
+          "latest_progress": null,
+          "pending_approval": {
+            "approval_id": "approval_0123456789abcdef012345",
+            "kind": "repository_write",
+            "summary": "Apply the generated patch",
+            "requested_at": 120,
+            "expires_at": 180
+          },
+          "last_approval": {
+            "approval_id": "approval_abcdef0123456789012345",
+            "decision": "approved",
+            "resolved_at": 115
+          }
+        },
+        "events": []
+      }
+    },
+    {
+      "name": "event snapshot rejects out of range percent",
+      "parser": "job_event_snapshot_response_v1",
+      "valid": false,
+      "value": {
+        "job": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "revision": 2,
+          "phase": "running",
+          "latest_sequence": 1,
+          "latest_progress": null,
+          "pending_approval": null,
+          "last_approval": null
+        },
+        "events": [
+          {
+            "event_id": "runner:job:running",
+            "sequence": 1,
+            "phase": "running",
+            "message": "Runner transition: running",
+            "percent": 101,
+            "occurred_at": 110
+          }
+        ]
+      }
+    },
+    {
+      "name": "event snapshot rejects internal fingerprints",
+      "parser": "job_event_snapshot_response_v1",
+      "valid": false,
+      "value": {
+        "job": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "revision": 2,
+          "phase": "running",
+          "latest_sequence": 1,
+          "latest_progress": null,
+          "pending_approval": null,
+          "last_approval": null,
+          "message_fingerprint": "sha256-private"
+        },
+        "events": []
+      }
+    },
+    {
+      "name": "cancel accepts a terminal race",
+      "parser": "job_cancel_response_v1",
+      "valid": true,
+      "value": {
+        "job": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "status": "cancelled"
+        }
+      }
+    },
+    {
+      "name": "cancel rejects internal coordination fields",
+      "parser": "job_cancel_response_v1",
+      "valid": false,
+      "value": {
+        "job": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "status": "cancelling",
+          "operation_id": "cancel_private"
+        }
+      }
+    }
+  ]
+}

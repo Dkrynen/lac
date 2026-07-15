@@ -16,6 +16,7 @@ import { Docs } from "@/pages/docs";
 import { Settings } from "@/pages/settings";
 import { Pro } from "./pages/pro";
 import { Account } from "./pages/account";
+import { CloudActivity } from "./pages/cloud-activity";
 
 export default function App() {
   const { theme } = useTheme();
@@ -79,6 +80,7 @@ export default function App() {
               <Route path="/downloads" element={<Downloads />} />
               <Route path="/pro" element={<Pro />} />
               <Route path="/account" element={<Account />} />
+              <Route path="/cloud" element={<CloudActivity />} />
               <Route path="/docs" element={<Docs />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />

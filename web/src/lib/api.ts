@@ -3,6 +3,13 @@
 
 import { decodeProjectFileDetail, decodeProjectFilesResponse, normalizeProjectFilePath } from "./project-files.ts";
 import { decodeProductState } from "./product-state.ts";
+import {
+  decodeCloudJobCancelResponse,
+  decodeCloudJobEventsResponse,
+  decodeCloudJobsResponse,
+  normalizeCloudAfterSequence,
+  normalizeCloudJobId,
+} from "./cloud-activity.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -123,6 +130,16 @@ export async function postJSON<T>(url: string, body: unknown): Promise<T> {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError(res.status, res.statusText, await readErrorBody(res));
+  return res.json() as Promise<T>;
+}
+
+async function postEmptyJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "omit",
+    headers: { Accept: "application/json" },
   });
   if (!res.ok) throw new ApiError(res.status, res.statusText, await readErrorBody(res));
   return res.json() as Promise<T>;
@@ -277,6 +294,29 @@ export const api = {
       { provider },
     ),
   cloudLogout: () => postJSON<{ state: "signed_out" }>("/api/cloud/logout", {}),
+  cloudJobs: async (signal?: AbortSignal) =>
+    decodeCloudJobsResponse(await getJSON<unknown>("/api/cloud/jobs", {
+      cache: "no-store",
+      credentials: "omit",
+      signal,
+    })),
+  cloudJobEvents: async (jobId: string, afterSequence = -1, signal?: AbortSignal) => {
+    const id = normalizeCloudJobId(jobId);
+    const cursor = normalizeCloudAfterSequence(afterSequence);
+    const query = new URLSearchParams({ after_sequence: String(cursor) });
+    const value = await getJSON<unknown>(
+      `/api/cloud/jobs/${encodeURIComponent(id)}/events?${query}`,
+      { cache: "no-store", credentials: "omit", signal },
+    );
+    return decodeCloudJobEventsResponse(value, id, cursor);
+  },
+  cancelCloudJob: async (jobId: string) => {
+    const id = normalizeCloudJobId(jobId);
+    return decodeCloudJobCancelResponse(
+      await postEmptyJSON<unknown>(`/api/cloud/jobs/${encodeURIComponent(id)}/cancel`),
+      id,
+    );
+  },
   scan: () => getJSON<import("./types").ScanInfo>("/api/scan"),
   recommend: (
     params: { vram?: number; use_case?: string; top_k?: number; gpu_mask?: number[]; allow_spill?: boolean } = {}
