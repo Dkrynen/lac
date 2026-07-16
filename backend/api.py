@@ -32,6 +32,8 @@ from .cookbook.config import load_config
 from .cookbook.downloads import download_history
 from .cookbook.hardware import detect, print_system
 from .cookbook.recommend import recommend, load_models
+from .cloud_session import CloudSession, CloudSessionError
+from .cloud_tokens import SecureTokenStoreError
 from .plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 from .permission import PermissionEngine
 from .pro_install import install_pro_plugin
@@ -51,6 +53,7 @@ _DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 _FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 _STATIC = str(_DIST) if (_DIST / "index.html").exists() else str(_FRONTEND)
 app = Flask(__name__, static_folder=_STATIC, static_url_path="", template_folder=_STATIC)
+_cloud_session = CloudSession()
 
 _TRUSTED_BROWSER_HOSTNAMES = {
     "localhost",
@@ -1020,7 +1023,7 @@ def ollama_status():
 def ollama_models():
     resp = _ollama_request("GET", "/api/tags")
     if resp is None or (isinstance(resp, dict) and "error" in resp):
-        return jsonify([])
+        return jsonify({"error": "Ollama model inventory unavailable"}), 502
     models = []
     for m in resp.get("models", []):
         digest = m.get("digest", "")
@@ -1031,6 +1034,139 @@ def ollama_models():
             "digest_short": digest[:12] if digest else "",
         })
     return jsonify(sorted(models, key=lambda x: x["name"]))
+
+
+_OLLAMA_PROFILE_MAX_MODELS = 2
+_OLLAMA_MODEL_INFO_SCAN_LIMIT = 256
+_OLLAMA_CONTEXT_LENGTH_MAX = 16_777_216
+
+
+def _nullable_ollama_string(value: object) -> str | None:
+    """Keep Ollama-reported strings exact while normalizing missing values."""
+    return value if isinstance(value, str) and value else None
+
+
+def _normalize_ollama_profile(tag: object) -> dict | None:
+    """Project one /api/tags row onto the public model-profile allowlist."""
+    if not isinstance(tag, dict):
+        return None
+    name = tag.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+
+    details = tag.get("details")
+    if not isinstance(details, dict):
+        details = {}
+
+    families_raw = details.get("families")
+    families = None
+    if isinstance(families_raw, list):
+        normalized_families = [
+            family for family in families_raw[:16]
+            if isinstance(family, str) and family
+        ]
+        families = normalized_families or None
+
+    size = tag.get("size")
+    size_gb = 0.0
+    if isinstance(size, (int, float)) and not isinstance(size, bool) and size >= 0:
+        size_gb = round(float(size) / (1024**3), 2)
+
+    digest = tag.get("digest")
+    if not isinstance(digest, str):
+        digest = ""
+    modified = tag.get("modified_at")
+    if not isinstance(modified, str):
+        modified = ""
+
+    return {
+        "name": name,
+        "size_gb": size_gb,
+        "modified": modified,
+        "digest": digest,
+        "digest_short": digest[:12] if digest else "",
+        "format": _nullable_ollama_string(details.get("format")),
+        "family": _nullable_ollama_string(details.get("family")),
+        "families": families,
+        "parameter_size": _nullable_ollama_string(details.get("parameter_size")),
+        "quantization_level": _nullable_ollama_string(details.get("quantization_level")),
+        "context_length": None,
+    }
+
+
+def _extract_ollama_context_length(model_info: object) -> int | None:
+    """Extract one unambiguous, bounded ``*.context_length`` value.
+
+    Ollama prefixes model-info keys with the architecture name.  Matching the
+    suffix avoids an architecture allowlist. Oversized input is rejected rather
+    than partially scanned, so a conflicting value can never hide past the
+    endpoint's processing bound.
+    """
+    if not isinstance(model_info, dict):
+        return None
+    if len(model_info) > _OLLAMA_MODEL_INFO_SCAN_LIMIT:
+        return None
+
+    values: set[int] = set()
+    for key, value in model_info.items():
+        if not isinstance(key, str) or not key.endswith(".context_length"):
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if not 0 < value <= _OLLAMA_CONTEXT_LENGTH_MAX:
+            continue
+        values.add(value)
+        if len(values) > 1:
+            return None
+    return next(iter(values)) if values else None
+
+
+@app.route("/api/ollama/model-profiles", methods=["POST"])
+def ollama_model_profiles():
+    """Return safe local evidence for one or two exact installed model names."""
+    data = request.get_json(silent=True)
+    requested = data.get("models") if isinstance(data, dict) else None
+    if (
+        not isinstance(requested, list)
+        or not 1 <= len(requested) <= _OLLAMA_PROFILE_MAX_MODELS
+        or any(
+            not isinstance(name, str) or not name or name != name.strip()
+            for name in requested
+        )
+    ):
+        return jsonify({"error": "models must contain one or two exact model names"}), 400
+    if len(set(requested)) != len(requested):
+        return jsonify({"error": "models must be unique"}), 400
+
+    tags_response = _ollama_request("GET", "/api/tags")
+    if not isinstance(tags_response, dict) or "error" in tags_response:
+        return jsonify({"error": "Ollama model inventory unavailable"}), 502
+
+    installed: dict[str, dict] = {}
+    tag_rows = tags_response.get("models")
+    if isinstance(tag_rows, list):
+        for row in tag_rows:
+            profile = _normalize_ollama_profile(row)
+            if profile is not None:
+                installed[profile["name"]] = profile
+
+    missing = [name for name in requested if name not in installed]
+    if missing:
+        return jsonify({"error": "model is not installed", "models": missing}), 404
+
+    profiles = []
+    for name in requested:
+        profile = installed[name]
+        show_response = _ollama_request(
+            "POST", "/api/show", {"model": name}, timeout=10,
+        )
+        if isinstance(show_response, dict) and "error" not in show_response:
+            profile["context_length"] = _extract_ollama_context_length(
+                show_response.get("model_info")
+            )
+        profiles.append(profile)
+
+    return jsonify({"profiles": profiles})
 
 
 @app.route("/api/ollama/pull", methods=["POST"])
@@ -1179,22 +1315,42 @@ def ollama_warm():
     return jsonify({"accepted": True}), 200
 
 
+def _unmeasured_performance_diagnosis(summary: str) -> dict:
+    return {
+        "state": "unmeasured",
+        "summary": summary,
+        "signals": [],
+        "actions": [
+            {"kind": "probe", "label": "Run a latency probe"},
+            {"kind": "benchmark", "label": "Run Pro tuning for deeper GPU-offload data"},
+        ],
+    }
+
+
 def _diagnose_performance(metrics: dict | None) -> dict:
     if not metrics:
-        return {
-            "state": "unmeasured",
-            "summary": "No local measurement yet.",
-            "signals": [],
-            "actions": [
-                {"kind": "probe", "label": "Run a latency probe"},
-                {"kind": "benchmark", "label": "Run Pro tuning for deeper GPU-offload data"},
-            ],
-        }
+        return _unmeasured_performance_diagnosis("No Ollama measurement yet.")
 
     tps = float(metrics.get("tokens_per_second") or 0)
-    ttft_ms = float(metrics.get("time_to_first_token_ms") or 0)
+    pre_generation_ms = float(metrics.get("time_to_first_token_ms") or 0)
     load_ms = float(metrics.get("load_duration_ms") or 0)
     prompt_ms = float(metrics.get("prompt_eval_duration_ms") or 0)
+    total_ms = float(metrics.get("total_duration_ms") or 0)
+    eval_ms = float(metrics.get("eval_duration_ms") or 0)
+    eval_count = float(metrics.get("eval_count") or 0)
+    if not any(value > 0 for value in (
+        tps,
+        pre_generation_ms,
+        load_ms,
+        prompt_ms,
+        total_ms,
+        eval_ms,
+        eval_count,
+    )):
+        return _unmeasured_performance_diagnosis(
+            "No usable Ollama measurement was reported."
+        )
+
     signals = []
     actions = []
 
@@ -1206,12 +1362,12 @@ def _diagnose_performance(metrics: dict | None) -> dict:
             "value_ms": round(load_ms, 1),
         })
         actions.append({"kind": "warm", "label": "Warm the model before chat and keep it resident"})
-    if ttft_ms >= 1500 and load_ms < 3000:
+    if pre_generation_ms >= 1500 and load_ms < 3000:
         signals.append({
-            "kind": "ttft",
+            "kind": "pre_generation",
             "severity": "warning",
-            "label": "First token is slow",
-            "value_ms": round(ttft_ms, 1),
+            "label": "Pre-generation is slow",
+            "value_ms": round(pre_generation_ms, 1),
         })
         actions.append({"kind": "context", "label": "Use a smaller context or shorter prompt"})
     if prompt_ms >= 1000:
@@ -1238,11 +1394,11 @@ def _diagnose_performance(metrics: dict | None) -> dict:
             "tokens_per_second": round(tps, 2),
         })
         actions.append({"kind": "tune", "label": "Run Pro tuning if the model feels sluggish"})
-    elif tps >= 100 and ttft_ms >= 1000:
+    elif tps >= 100 and pre_generation_ms >= 1000:
         signals.append({
             "kind": "fast_after_start",
             "severity": "info",
-            "label": "Generation is fast after the first token",
+            "label": "Generation is fast after setup",
             "tokens_per_second": round(tps, 2),
         })
         actions.append({"kind": "warm", "label": "Focus on warmup and prompt prefill, not raw generation speed"})
@@ -1259,7 +1415,7 @@ def _diagnose_performance(metrics: dict | None) -> dict:
     severe = {s.get("severity") for s in signals}
     state = "slow" if "danger" in severe else "watch" if "warning" in severe else "ok"
     if any(s.get("kind") == "fast_after_start" for s in signals):
-        summary = "Generation is fast; perceived latency is mostly before the first token."
+        summary = "Generation is fast; measured latency is mostly before generation."
     elif state == "slow":
         summary = "Generation speed is the main bottleneck."
     elif state == "watch":
@@ -1270,26 +1426,56 @@ def _diagnose_performance(metrics: dict | None) -> dict:
     return {"state": state, "summary": summary, "signals": signals, "actions": actions}
 
 
-def _installed_model_names() -> list[str]:
+def _installed_model_names_status() -> tuple[list[str], bool]:
     resp = _ollama_request("GET", "/api/tags")
     if not isinstance(resp, dict) or "error" in resp:
-        return []
+        return [], False
     return sorted(
         m.get("name")
         for m in resp.get("models", [])
         if isinstance(m, dict) and isinstance(m.get("name"), str)
-    )
+    ), True
 
 
-def _running_model_names() -> list[str]:
+def _running_model_names_status() -> tuple[list[str], bool]:
     resp = _ollama_request("GET", "/api/ps")
     if not isinstance(resp, dict) or "error" in resp:
-        return []
+        return [], False
     return sorted(
         m.get("name")
         for m in resp.get("models", [])
         if isinstance(m, dict) and isinstance(m.get("name"), str)
-    )
+    ), True
+
+
+_PUBLIC_PERFORMANCE_FIELDS = frozenset({
+    "model",
+    "prompt_len",
+    "num_predict",
+    "num_ctx",
+    "temperature",
+    "eval_count",
+    "eval_duration_ms",
+    "total_duration_ms",
+    "load_duration_ms",
+    "prompt_eval_duration_ms",
+    "tokens_per_second",
+    "time_to_first_token_ms",
+    "source",
+    "timestamp",
+    "protocol_id",
+    "fingerprint",
+})
+
+
+def _public_performance_metrics(record: object) -> dict:
+    """Allowlist counters and provenance; never expose prompts or model output."""
+    if not isinstance(record, dict):
+        return {}
+    return {
+        key: value for key, value in record.items()
+        if key in _PUBLIC_PERFORMANCE_FIELDS
+    }
 
 
 def _benchmark_history_for_model(model: str | None) -> list[dict]:
@@ -1299,7 +1485,7 @@ def _benchmark_history_for_model(model: str | None) -> list[dict]:
     if model:
         records = [r for r in records if r.get("model") == model]
     records.sort(key=lambda r: float(r.get("timestamp") or 0), reverse=True)
-    return records[:20]
+    return [_public_performance_metrics(record) for record in records[:20]]
 
 
 @app.route("/api/diagnostics/performance")
@@ -1307,10 +1493,14 @@ def api_performance_diagnostics():
     model = request.args.get("model", "").strip() or None
     records = _benchmark_history_for_model(model)
     latest = records[0] if records else None
+    installed_models, installed_models_reported = _installed_model_names_status()
+    running_models, running_models_reported = _running_model_names_status()
     return jsonify({
         "model": model,
-        "installed_models": _installed_model_names(),
-        "running_models": _running_model_names(),
+        "installed_models": installed_models,
+        "installed_models_reported": installed_models_reported,
+        "running_models": running_models,
+        "running_models_reported": running_models_reported,
         "history": records,
         "latest": latest,
         "diagnosis": _diagnose_performance(latest),
@@ -1326,6 +1516,7 @@ def api_performance_probe():
 
     prompt = "Reply with one short sentence confirming the LAC latency probe is ready."
     num_predict = 32
+    num_ctx = _interactive_context()
     result = _ollama_request(
         "POST",
         "/api/generate",
@@ -1335,7 +1526,7 @@ def api_performance_probe():
             "stream": False,
             "keep_alive": "30m",
             "options": {
-                "num_ctx": _interactive_context(),
+                "num_ctx": num_ctx,
                 "num_predict": num_predict,
                 "temperature": 0,
             },
@@ -1353,6 +1544,9 @@ def api_performance_probe():
 
     metrics = build_metrics(result, model.strip(), prompt, num_predict, 0.0)
     metrics["source"] = "diagnostic_probe"
+    metrics["protocol_id"] = "lac.quick-latency.v1"
+    metrics["num_ctx"] = num_ctx
+    metrics = _public_performance_metrics(metrics)
     return jsonify({
         "model": model.strip(),
         "state": "done",
@@ -3289,7 +3483,14 @@ def _debug_bundle_payload() -> dict:
             "model_install_mode": "on_demand_ollama_pull",
         },
         "plugins": [
-            {"name": p.name, "version": p.version, "ok": p.ok, "error": p.error}
+            {
+                "name": p.name,
+                "version": p.version,
+                "ok": p.ok,
+                "state": p.state,
+                "host_api_version": p.host_api_version,
+                "error": p.error or p.compatibility_error,
+            }
             for p in _discover_plugins_safe()
         ],
         "recent_downloads": downloads,
@@ -4300,8 +4501,8 @@ def ollama_library():
 @app.route("/api/ollama/ps")
 def ollama_ps():
     resp = _ollama_request("GET", "/api/ps")
-    if resp is None:
-        return jsonify({"running": False, "models": []})
+    if not isinstance(resp, dict) or "error" in resp:
+        return jsonify({"error": "Ollama residency unavailable"}), 502
     models = []
     for m in resp.get("models", []):
         models.append({
@@ -4709,6 +4910,220 @@ def _discover_plugins_safe():
         return []
 
 
+def _local_pro_product_state(loaded_plugins) -> dict:
+    candidates = [
+        plugin for plugin in loaded_plugins
+        if plugin.product_id == "local_pro" or plugin.name == "pro"
+    ]
+    if not candidates:
+        return {"state": "absent"}
+    if len(candidates) != 1:
+        return {
+            "state": "incompatible",
+            "plugin_version": "multiple",
+            "host_api_version": None,
+        }
+    plugin = candidates[0]
+    if plugin.state != "ready" or plugin.product_state is None:
+        return {
+            "state": plugin.state,
+            "plugin_version": plugin.version,
+            "host_api_version": plugin.host_api_version,
+        }
+    return {
+        "state": "ready",
+        "plugin_version": plugin.version,
+        "host_api_version": plugin.host_api_version,
+        **plugin.product_state,
+    }
+
+
+def _cloud_error_response(exc: CloudSessionError | SecureTokenStoreError, status=400):
+    code = exc.code
+    if isinstance(exc, SecureTokenStoreError) and code not in {
+        "corrupt_store", "secure_storage_unavailable"
+    }:
+        code = "secure_storage_unavailable"
+    response = jsonify({"error": {"code": code}})
+    response.headers["Cache-Control"] = "no-store"
+    return response, status
+
+
+_CLOUD_PROXY_ERROR_STATUS = {
+    "auth_required": 401,
+    "quota_exhausted": 402,
+    "entitlement_required": 403,
+    "conflict_or_concurrency": 409,
+    "abuse_rate_limited": 429,
+    "invalid_response": 502,
+    "provider_unavailable": 503,
+    "corrupt_store": 503,
+    "secure_storage_unavailable": 503,
+}
+_CLOUD_JOB_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _cloud_json_response(payload: dict, status: int = 200):
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response, status
+
+
+def _cloud_invalid_request():
+    return _cloud_json_response({"error": {"code": "invalid_request"}}, 400)
+
+
+def _cloud_request_has_body() -> bool:
+    if request.content_length not in {None, 0}:
+        return True
+    try:
+        return bool(request.stream.read(1))
+    except Exception:  # noqa: BLE001 - unreadable request bodies fail closed
+        return True
+
+
+def _cloud_local_guard():
+    if _is_trusted_local_approval_request():
+        return None
+    return _cloud_json_response(
+        {"error": {"code": "local_request_required"}},
+        403,
+    )
+
+
+def _cloud_proxy_error_response(exc: CloudSessionError | SecureTokenStoreError):
+    code = exc.code
+    if isinstance(exc, SecureTokenStoreError) and code not in {
+        "corrupt_store", "secure_storage_unavailable"
+    }:
+        code = "secure_storage_unavailable"
+    status = _CLOUD_PROXY_ERROR_STATUS.get(code, 503)
+    stable_code = code if code in _CLOUD_PROXY_ERROR_STATUS else "provider_unavailable"
+    return _cloud_json_response({"error": {"code": stable_code}}, status)
+
+
+@app.route("/api/product/state")
+def api_product_state():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    loaded = _discover_plugins_safe()
+    response = jsonify({
+        "schema_version": 1,
+        "execution_default": "local",
+        "local": {"state": "ready"},
+        "local_pro": _local_pro_product_state(loaded),
+        "cloud": _cloud_session.product_state(refresh=True),
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/api/cloud/auth/start", methods=["POST"])
+def api_cloud_auth_start():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    if request.content_length is not None and request.content_length > 1024:
+        return _cloud_invalid_request()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) != {"provider"}:
+        return _cloud_invalid_request()
+    try:
+        result = _cloud_session.start_authorization(data["provider"])
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_error_response(exc)
+    return _cloud_json_response(
+        {key: value for key, value in result.items() if key != "authorization_url"}
+    )
+
+
+@app.route("/api/cloud/auth/callback", methods=["POST"])
+def api_cloud_auth_callback():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    if request.content_length is not None and request.content_length > 4096:
+        return _cloud_invalid_request()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) != {"callback_uri"}:
+        return _cloud_invalid_request()
+    try:
+        return _cloud_json_response(
+            _cloud_session.complete_authorization(data["callback_uri"])
+        )
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_error_response(exc)
+
+
+@app.route("/api/cloud/logout", methods=["POST"])
+def api_cloud_logout():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    try:
+        return _cloud_json_response(_cloud_session.logout())
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_error_response(exc)
+
+
+@app.route("/api/cloud/jobs", methods=["GET"])
+def api_cloud_jobs():
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    if request.args:
+        return _cloud_invalid_request()
+    try:
+        return _cloud_json_response(_cloud_session.list_jobs())
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_proxy_error_response(exc)
+
+
+@app.route("/api/cloud/jobs/<job_id>/events", methods=["GET"])
+def api_cloud_job_events(job_id):
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    values = request.args.getlist("after_sequence")
+    if (
+        _CLOUD_JOB_ID.fullmatch(job_id) is None
+        or set(request.args) != {"after_sequence"}
+        or len(values) != 1
+        or re.fullmatch(r"(?:-1|0|[1-9][0-9]{0,15})", values[0]) is None
+    ):
+        return _cloud_invalid_request()
+    after_sequence = int(values[0])
+    if after_sequence > 9_007_199_254_740_991:
+        return _cloud_invalid_request()
+    try:
+        return _cloud_json_response(
+            _cloud_session.job_events(job_id, after_sequence)
+        )
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_proxy_error_response(exc)
+
+
+@app.route("/api/cloud/jobs/<job_id>/cancel", methods=["POST"])
+def api_cloud_job_cancel(job_id):
+    local_guard = _cloud_local_guard()
+    if local_guard is not None:
+        return local_guard
+    if (
+        _CLOUD_JOB_ID.fullmatch(job_id) is None
+        or request.args
+        or _cloud_request_has_body()
+    ):
+        return _cloud_invalid_request()
+    try:
+        return _cloud_json_response(_cloud_session.cancel_job(job_id), 202)
+    except (CloudSessionError, SecureTokenStoreError) as exc:
+        return _cloud_proxy_error_response(exc)
+
+
 def _notify_model_installed(model_name: str) -> None:
     """Call every plugin's on_model_installed(model_name), isolated per-plugin
     (mirrors _mount_plugins()'s isolation). A missing hook, a plugin that
@@ -4734,7 +5149,14 @@ def _notify_model_installed_async(model_name: str) -> None:
 @app.route("/api/plugins")
 def api_plugins():
     return jsonify([
-        {"name": p.name, "version": p.version, "ok": p.ok, "error": p.error}
+        {
+            "name": p.name,
+            "version": p.version,
+            "ok": p.ok,
+            "state": p.state,
+            "host_api_version": p.host_api_version,
+            "error": p.error or p.compatibility_error,
+        }
         for p in _discover_plugins_safe()
     ])
 

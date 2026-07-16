@@ -132,7 +132,10 @@ def test_project_registration_rejects_symlink_or_reparse_root(
             persistence.create_project("default", "Linked", str(link))
         assert persistence.list_projects("default") == []
     finally:
-        link.rmdir()
+        if os.name == "nt":
+            link.rmdir()
+        else:
+            link.unlink()
 
 
 def test_duplicate_project_root_is_a_conflict_even_across_workspaces(
@@ -282,7 +285,8 @@ def test_revalidate_project_root_fails_closed_on_missing_or_replaced_identity(
     root = _make_project_root(tmp_path)
     project = persistence.create_project("default", "Project", str(root))
 
-    root.rmdir()
+    displaced_root = tmp_path / "displaced-project"
+    root.rename(displaced_root)
     with pytest.raises(ValueError, match="missing|invalid|drift"):
         persistence.revalidate_project_root(project["id"])
 

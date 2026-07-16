@@ -40,5 +40,11 @@ def test_installed_app_audit_covers_all_first_class_routes():
     assert route_paths() <= audited
 
 
+def test_installed_app_audit_requires_the_cloud_activity_heading():
+    audit = _load_audit()
+
+    assert ("/cloud", "Cloud Activity") in audit.PAGE_ROUTES
+
+
 def test_sidebar_links_are_real_routes():
     assert sidebar_paths() <= route_paths()

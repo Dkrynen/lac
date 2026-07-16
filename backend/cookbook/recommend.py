@@ -132,9 +132,34 @@ USE_CASE_WEIGHTS = {
     "coding": (0.40, 0.15, 0.30, 0.15),
     "reasoning": (0.45, 0.10, 0.30, 0.15),
     "chat": (0.30, 0.30, 0.30, 0.10),
+    "agent": (0.45, 0.15, 0.20, 0.20),   # correctness + context over raw speed
 }
 
-CONTEXT_TARGETS = {"general": 4096, "coding": 8192, "reasoning": 8192, "chat": 4096}
+CONTEXT_TARGETS = {"general": 4096, "coding": 8192, "reasoning": 8192,
+                   "chat": 4096, "agent": 65536}
+
+# --- Agent-loop capability (the "Claude Code for local models" moat) ---
+# Ollama truncates the INPUT PROMPT at roughly num_ctx/2, keeping only the last
+# tokens. Measured on a live run at num_ctx=32768:
+#     "truncating input prompt" limit=16386 prompt=40478 keep=4
+# A truncated prompt loses the tool schemas, and the model then emits malformed
+# tool calls (Read{path:...} instead of Read{filePath:...}) and gives up.
+# So the usable prompt budget is ~num_ctx/2, and the floor must be set from that:
+#   32768 -> ~16k budget: stock OpenCode's prompt measured ~7.6k, so it "works"
+#            at rest but one real file read overflows it -> breaks MID-SESSION.
+#   65536 -> ~32k budget: room for stock OpenCode plus real work.
+# Verified: at num_ctx=131072 prompts of ~40.9k processed with zero truncation and
+# the agent completed the task; at 32768 the same task failed twice.
+AGENT_PROMPT_BUDGET_FRACTION = 0.5   # Ollama's prompt cap, as a share of num_ctx
+AGENT_MIN_CONTEXT = 65536
+AGENT_MIN_PARAMS_B = 3.0        # below this, not offered on the agent path
+AGENT_RELIABLE_PARAMS_B = 7.0   # 3.0 <= params < 7.0 -> offered WITH a weak-model warning
+# Model families with reliable native tool-calling (verified against models.json
+# arch vocabulary). Families known weak/absent at tool-calling are excluded.
+AGENT_CAPABLE_ARCHES = {
+    "qwen3", "qwen", "llama", "mistral", "cohere",
+    "deepseek", "phi4", "gpt-oss", "nemotron",
+}
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -188,6 +213,19 @@ def register_custom_model(entry_dict: dict) -> None:
 
 def load_models() -> list[ModelEntry]:
     return _load_shipped_models() + _load_custom_models()
+
+
+def _is_agent_capable(model: ModelEntry) -> bool:
+    """Agent-loop eligible: a tool-calling-capable family, big enough to be usable."""
+    return model.arch in AGENT_CAPABLE_ARCHES and model.params_b >= AGENT_MIN_PARAMS_B
+
+
+def _agent_warning(model: ModelEntry) -> str | None:
+    """A caution for small-but-usable agent models, else None."""
+    if AGENT_MIN_PARAMS_B <= model.params_b < AGENT_RELIABLE_PARAMS_B:
+        return ("This is a small model (%.1fB) -- it may struggle with multi-step "
+                "tool calls. A 7B+ model is more reliable if one fits." % model.params_b)
+    return None
 
 
 def best_fit_quant(params_b: float, is_moe: bool, active_params_b: float | None,
@@ -476,13 +514,18 @@ def recommend(info: SystemInfo, use_case: str = "coding",
     all_recs: list[Recommendation] = []
 
     for model in models:
-        if use_case not in model.use_cases and "general" not in model.use_cases:
+        if use_case == "agent":
+            if not _is_agent_capable(model):
+                continue
+        elif use_case not in model.use_cases and "general" not in model.use_cases:
             continue
 
         best_rec: Optional[Recommendation] = None
         model_vram_q4 = model.vram_q4 or _estimate_vram(model, QUANTS[4], model.context)
         ctx_options = [c for c in [model.context, 65536, 32768, 16384, 8192, 4096, 2048]
                        if c <= model.context]
+        if use_case == "agent":
+            ctx_options = [c for c in ctx_options if c >= AGENT_MIN_CONTEXT]
         quants = [SUB4BIT_QUANT] if model.sub4bit else QUANTS
 
         for quant in quants:
@@ -546,6 +589,10 @@ def recommend(info: SystemInfo, use_case: str = "coding",
                     best_rec = rec
 
         if best_rec:
+            if use_case == "agent":
+                _w = _agent_warning(model)
+                if _w:
+                    best_rec.details["agent_warning"] = _w
             all_recs.append(best_rec)
 
     all_recs.sort(key=lambda r: r.score, reverse=True)

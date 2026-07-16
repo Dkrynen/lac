@@ -2,15 +2,27 @@
 // in prod Flask serves the built bundle on the same origin.
 
 import { decodeProjectFileDetail, decodeProjectFilesResponse, normalizeProjectFilePath } from "./project-files.ts";
+import { decodeProductState } from "./product-state.ts";
+import {
+  decodeCloudJobCancelResponse,
+  decodeCloudJobEventsResponse,
+  decodeCloudJobsResponse,
+  normalizeCloudAfterSequence,
+  normalizeCloudJobId,
+} from "./cloud-activity.ts";
 
 export class ApiError extends Error {
   status: number;
   body: unknown;
 
   constructor(status: number, statusText: string, body: unknown) {
-    const message =
-      body && typeof body === "object" && "error" in body
-        ? String((body as { error?: unknown }).error)
+    const rawError = body && typeof body === "object" && "error" in body
+      ? (body as { error?: unknown }).error
+      : null;
+    const message = typeof rawError === "string"
+      ? rawError
+      : rawError && typeof rawError === "object" && "code" in rawError && typeof rawError.code === "string"
+        ? rawError.code.replace(/_/g, " ")
         : `${status} ${statusText}`;
     super(message);
     this.name = "ApiError";
@@ -118,6 +130,16 @@ export async function postJSON<T>(url: string, body: unknown): Promise<T> {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError(res.status, res.statusText, await readErrorBody(res));
+  return res.json() as Promise<T>;
+}
+
+async function postEmptyJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "omit",
+    headers: { Accept: "application/json" },
   });
   if (!res.ok) throw new ApiError(res.status, res.statusText, await readErrorBody(res));
   return res.json() as Promise<T>;
@@ -265,6 +287,36 @@ export async function* sse(
 }
 
 export const api = {
+  productState: () => getJSON<unknown>("/api/product/state").then(decodeProductState),
+  cloudAuthStart: (provider: "google" | "github") =>
+    postJSON<{ state: "authorizing"; provider: "google" | "github" }>(
+      "/api/cloud/auth/start",
+      { provider },
+    ),
+  cloudLogout: () => postJSON<{ state: "signed_out" }>("/api/cloud/logout", {}),
+  cloudJobs: async (signal?: AbortSignal) =>
+    decodeCloudJobsResponse(await getJSON<unknown>("/api/cloud/jobs", {
+      cache: "no-store",
+      credentials: "omit",
+      signal,
+    })),
+  cloudJobEvents: async (jobId: string, afterSequence = -1, signal?: AbortSignal) => {
+    const id = normalizeCloudJobId(jobId);
+    const cursor = normalizeCloudAfterSequence(afterSequence);
+    const query = new URLSearchParams({ after_sequence: String(cursor) });
+    const value = await getJSON<unknown>(
+      `/api/cloud/jobs/${encodeURIComponent(id)}/events?${query}`,
+      { cache: "no-store", credentials: "omit", signal },
+    );
+    return decodeCloudJobEventsResponse(value, id, cursor);
+  },
+  cancelCloudJob: async (jobId: string) => {
+    const id = normalizeCloudJobId(jobId);
+    return decodeCloudJobCancelResponse(
+      await postEmptyJSON<unknown>(`/api/cloud/jobs/${encodeURIComponent(id)}/cancel`),
+      id,
+    );
+  },
   scan: () => getJSON<import("./types").ScanInfo>("/api/scan"),
   recommend: (
     params: { vram?: number; use_case?: string; top_k?: number; gpu_mask?: number[]; allow_spill?: boolean } = {}
@@ -281,6 +333,11 @@ export const api = {
 
   ollamaStatus: () => getJSON<import("./types").OllamaStatus>("/api/ollama/status"),
   installed: () => getJSON<import("./types").InstalledModel[]>("/api/ollama/models"),
+  modelProfiles: (models: string[]) =>
+    postJSON<import("./types").OllamaModelProfilesResponse>(
+      "/api/ollama/model-profiles",
+      { models },
+    ),
   ps: () => getJSON<import("./types").PsResponse>("/api/ollama/ps"),
   delete: (model: string) => postJSON<{ success?: boolean; error?: string }>("/api/ollama/delete", { model }),
   /** Preload a model into VRAM (fire-and-forget) so the first chat message isn't slow. */

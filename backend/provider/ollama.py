@@ -44,12 +44,19 @@ class OllamaProvider(LLMProvider):
         models = []
         for m in result.get("models", []):
             details = m.get("details", {})
+            context_length = m.get("context_length", details.get("context_length", 0))
+            if (
+                isinstance(context_length, bool)
+                or not isinstance(context_length, int)
+                or context_length <= 0
+            ):
+                context_length = 0
             models.append(
                 ModelInfo(
                     name=m.get("name", ""),
                     size=m.get("size", 0),
                     modified=m.get("modified", ""),
-                    context_length=details.get("parameter_size", 0),
+                    context_length=context_length,
                     quant=details.get("quantization_level", ""),
                     family=details.get("family", ""),
                     raw=m,
@@ -201,3 +208,13 @@ class OllamaProvider(LLMProvider):
                 return True
         except Exception:
             return False
+
+    def create(self, name: str, from_model: str, parameters: dict) -> None:
+        """Bake a derived Ollama model that inherits `from_model` with overridden
+        parameters (e.g. {"num_ctx": 32768}). Uses the modern /api/create schema.
+        Streaming is disabled and the response is consumed so the call blocks until
+        the build finishes. Timeout must stay non-zero: urllib reads 0 as a
+        non-blocking socket, which fails connect() outright instead of waiting."""
+        body = {"model": name, "from": from_model, "parameters": parameters, "stream": False}
+        with self._request("POST", "/api/create", body, timeout=600) as resp:
+            resp.read()

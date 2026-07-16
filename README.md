@@ -13,6 +13,7 @@ LAC is a local-LLM manager built around one question: *what's the best model thi
 - **Real-speed calibration** — recs are tagged `measured` / `calibrated` / `estimated` with confidence bands; LAC Pro can feed the `measured` tier for supported installs after activation
 - **What-if controls** — toggle GPUs on/off, allow/deny RAM spill, and watch the recommendations recompute live in the web UI
 - **Model management + chat** — install, run, delete; streaming chat with session persistence; full TUI
+- **Studio + Lab** - use configured providers in a project-aware workbench (local Ollama by default), compare exact model identities from the configured Ollama endpoint, and run a reproducible diagnostic protocol
 
 ## Install
 
@@ -47,9 +48,9 @@ The free tier is complete and stays free. **Local Pro** adds the paid power tool
 
 Local Pro is planned at **$36/year** (the equivalent of $3/month). Checkout is **not open yet**; the [waitlist](https://dkrynen.github.io/lac/) hears first.
 
-**Pro Cloud** is the planned **$20/month** higher tier. It includes everything in Local Pro, plus end-to-end encrypted sync and capped hosted agents. Encrypted sync is designed so LAC cannot read the ciphertext. Hosted processing is a separate, explicit path: only selected job inputs are decrypted for execution and may be sent to approved model providers. It is **not yet available**: checkout, hosted usage, quotas, and cloud entitlements must not be treated as live.
+**Pro Cloud** is the planned **$20/month** higher tier. It includes everything in Local Pro, plus end-to-end encrypted sync and capped hosted agents. Encrypted sync is designed so LAC cannot read the ciphertext. Hosted processing is a separate, explicit path: only selected job inputs are decrypted for execution and may be sent to approved model providers. The 2.7 desktop now contains the fail-closed Google/GitHub account bridge and a single Account surface for Local, Local Pro, and Cloud state. The production Cloud origin is deliberately unconfigured, and hosted execution remains disabled until the launch gate has approved the service, provider, metering, retention, and operational evidence.
 
-**At launch,** every paid buyer first signs in to a LAC account with Google or GitHub. Checkout starts from that authenticated account, and access follows the signed Polar webhook rather than the browser redirect. Polar then provides the Local Pro license key. Run `lac unlock <key>` or use **Settings -> Activate Pro** in the web UI; after activation the Local Pro runtime remains key-based and local. Restart LAC so the Pro cockpit mounts cleanly. Free installs ship no Pro code.
+**At launch,** every paid buyer first signs in to a LAC account with Google or GitHub from the desktop Account page. Checkout starts from that authenticated account, and access follows the signed Polar webhook rather than the browser redirect. Polar then provides the Local Pro license key. Run `lac unlock <key>` or use **Settings -> Activate Pro** in the web UI; after activation, model execution and tuning use the configured Ollama endpoint (local by default) while the key-based entitlement periodically revalidates through the configured Pro activation service. Restart LAC so the Pro cockpit mounts cleanly. Free installs ship no Pro code.
 
 ## Hardware detection
 
@@ -73,6 +74,7 @@ cd web && npm ci && npm run dev       # Vite dev server (proxies /api)
 .venv/Scripts/python scripts/public_readiness_gate.py --include-live-import --include-launch-smoke --allow-existing-launch  # full gate against an already-running app
 .venv/Scripts/python scripts/release_readiness.py  # read-only local/public release check
 .venv/Scripts/python scripts/pro_commerce_readiness.py  # read-only Pro checkout/delivery readiness check
+.venv/Scripts/python scripts/unified_product_audit.py --pro-root ../lac-pro --cloud-root ../lac-cloud  # real three-repo contract audit
 .venv/Scripts/python scripts/installed_app_audit.py  # installed app page/API audit
 .venv/Scripts/python scripts/installed_launch_smoke.py --allow-existing  # audit an already-running installed app
 .venv/Scripts/python scripts/runtime_smoke.py --model qwen2.5:0.5b  # live installed-app chat/session smoke test
@@ -81,6 +83,10 @@ cd web && npm ci && npm run dev       # Vite dev server (proxies /api)
 ```
 
 Plugins mount via the `lac.plugins` entry-point group — see [docs/PLUGINS.md](docs/PLUGINS.md). Contributions welcome: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Read the [Security](SECURITY.md) and [Privacy](PRIVACY.md) policies before reporting a vulnerability or changing a network boundary.
+
+Source builds may point the dormant account bridge at an approved staging API with `LAC_CLOUD_API_ORIGIN=https://...`. Frozen releases ignore that environment override and use the reviewed origin compiled into the client; the checked-in placeholder therefore keeps Cloud inert in unapproved builds.
 
 ## System requirements
 

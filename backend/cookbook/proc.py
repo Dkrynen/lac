@@ -41,6 +41,13 @@ def popen(cmd, **kwargs):
     return p
 
 
+def run_interactive(cmd, **kwargs):
+    """subprocess.run for an INTERACTIVE child (e.g. a terminal TUI like OpenCode):
+    inherits the parent console and stdio so the user can interact. Deliberately does
+    NOT hide the window -- the opposite of run()/popen(), which suppress it."""
+    return subprocess.run(cmd, **kwargs)
+
+
 def register_spawned(pid) -> None:
     with _lock:
         _spawned_pids.add(int(pid))

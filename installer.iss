@@ -42,6 +42,8 @@ Source: "dist\lac\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs i
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "SECURITY.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "PRIVACY.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 ; Vite hashes web assets, so remove stale bundles before copying the fresh UI.
@@ -52,6 +54,12 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: autostart
+
+[Registry]
+Root: HKLM; Subkey: "Software\Classes\lac"; ValueType: string; ValueData: "URL:LAC OAuth Callback"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Classes\lac"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKLM; Subkey: "Software\Classes\lac\DefaultIcon"; ValueType: string; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKLM; Subkey: "Software\Classes\lac\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent

@@ -52,7 +52,7 @@ launch still requires all nineteen.
 The evidence file is operator supplied, limited to 1 MiB, and must stay outside
 the repository. It contains references to authoritative records, not reports or
 secrets themselves. Schema v3 requires an exact top-level field set (`schema_version`, `release_scope`, `release_version`, `gates`) and an exact
-set of required gates. Every record is signed independently with an allowlisted,
+set of required gates. Each record carries its own signature from an allowlisted,
 gate-scoped Ed25519 review key:
 
 ```json
@@ -84,6 +84,50 @@ HEAD commits checked by the gate plus the exact lowercase SHA-256 digests of the
 installer and `release-provenance.json`. Missing artifacts or repository heads
 produce empty expected bindings and make every evidence record fail closed.
 
+### Offline evidence signing
+
+Prepare a complete unsigned schema-v3 manifest in the private evidence-bundle
+directory. Each record must contain its final authoritative reference, digest,
+review decision, release bindings, and signer ID, but must not yet contain a
+`signature` field. After the accountable reviewer checks every referenced
+record, hash the exact reviewed draft bytes and sign the bundle with the
+allowlisted Ed25519 key held outside the repository:
+
+```powershell
+$Draft = 'C:\private\LAC-Launch-Evidence\2.7.0-unsigned.json'
+$DraftSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Draft).Hash.ToLowerInvariant()
+
+python scripts/sign_enterprise_evidence.py `
+  --input $Draft `
+  --expected-input-sha256 $DraftSha256 `
+  --private-key C:\private\LAC-Launch-Evidence-Key\duan-review-2026.pem `
+  --output C:\private\LAC-Launch-Evidence\2.7.0.json `
+  --prompt-key-password `
+  --acknowledge-authoritative-records-reviewed
+```
+
+The signer refuses repository-local input, output, and key paths; a draft whose
+bytes do not match the supplied digest; malformed or stale records; wrong keys;
+mixed release bindings; invalid hosted-journey objects; missing operator
+acknowledgement; and an existing output file. It reads each input through one
+file handle, verifies the final open-handle destination before writing, and
+never logs a key, password, record, or signature.
+
+This signature is an **accountable-reviewer attestation** over the manifest. It
+does not retrieve or approve the referenced external record and does not prove
+that a reviewer is independent. Gates requiring an external penetration test,
+independent cryptographic review, or remediation retest still require a genuine
+authoritative record issued by that separate reviewer; the acknowledgement
+means the accountable reviewer has checked that record before signing its
+digest and reference.
+
+Use an encrypted PEM and an ACL-restricted private directory. The file mode is
+best-effort on Windows and does not replace NTFS access control. An unencrypted
+PEM is accepted only with the explicit `--allow-unencrypted-private-key`
+exception for separately protected storage. Never copy the private key, its
+password, or signed private evidence into source control, chat, logs, or a
+public CI artifact.
+
 `cloud_staging_smoke` additionally binds its staging API, Agent, and Runner
 Worker version UUIDs. `cloud_production_dark_smoke`, `regional_latency_slo`, and
 `hosted_agent_end_to_end` bind their production Worker version UUIDs, and those
@@ -102,11 +146,108 @@ supply an alternative path.
 
 Accepted status values are `approved`, `passed`, and `verified`. Placeholder,
 pending, unsigned, stale, future-dated, untrusted, wrong-version, or malformed
-records fail closed. Commit and evidence-review trust roots were onboarded in a reviewed source
-commit on 2026-07-14, with commit-signer allowlists scoped per repository (the lac-cloud contributor key is trusted for lac-cloud history only; release tags verify against the model-hub allowlist); the Authenticode subject and thumbprint allowlists
-remain intentionally empty until the release signing certificate exists, and
-an empty allowlist fails closed. An operator-supplied file cannot add its own
-signer.
+records fail closed. Commit and evidence-review trust roots were onboarded in
+reviewed source. The commit-signer allowlists remain scoped per repository: the
+lac-cloud contributor key is trusted for lac-cloud history only, while GitHub's
+web-flow signing key is trusted for model-hub only so signed squash merges can
+be verified without weakening either private repository. The gate downloads
+GitHub's published `web-flow.gpg` key into an ephemeral keyring, requires the
+pinned file SHA-256
+`6e8af687f60cf3f403151c8fb1b26e95e6f9e424ca60cc8f3787bd4466a3ef84`,
+requires full fingerprint `968479A1AFF927E37D1A566BB5690EEEBB952194`, and
+fails closed on download, hash, import, fingerprint, or bounded history-timeout
+failure without consulting the operator's ambient keyring. GnuPG reports a
+cryptographically valid signature from this freshly imported key with unknown
+ownertrust (`U`); the gate accepts that state only for the exact pinned
+web-flow fingerprint and the separately reviewed commit
+`a25cec76589f7fded297c37b5e0ff407eed31fc0` in `model-hub`. Because GitHub's
+key is service-global, later web-flow commits fail closed until their full
+object IDs are reviewed and onboarded. Git is also forced to use the same
+absolute GPG executable that imported the pinned key, overriding repository or
+ambient verifier configuration. [GitHub documents](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)
+this as the local verification key for web-interface commits. Release tags use
+a separate Duan-only signer allowlist, so GitHub's
+web-flow key cannot authorize a release tag. The Authenticode subject and
+thumbprint allowlists remain intentionally empty until
+the release signing certificate exists, and an empty allowlist fails closed.
+An operator-supplied file cannot add its own signer.
+
+### Windows signing provider boundary
+
+The candidate workflow is prepared for SSL.com eSigner CKA backed by a
+non-exportable cloud-HSM key. It does not accept, reconstruct, import, or write
+an exportable PFX. The protected `production-release` environment supplies only
+the eSigner credentials `ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, and
+`ESIGNER_TOTP_SECRET`, plus the public certificate-selection variables
+`ESIGNER_CERTIFICATE_SUBJECT` and `ESIGNER_CERTIFICATE_THUMBPRINT`. Credentials
+are scoped only to each of the two signing-helper invocations and must never be
+copied into a repository, evidence record, log artifact, or chat.
+
+The release is split across fresh GitHub-hosted Windows jobs. The unsigned
+application build runs npm, Python dependency installation, tests, and
+PyInstaller without signing credentials. A new dedicated runner verifies its
+SHA-256 handoff manifest and signs only `lac.exe`. Another credential-free
+runner verifies that signed handoff, installs and authenticates exact Inno
+Setup 6.7.3, and creates the unsigned installer. A final new runner verifies
+the next handoff, signs only the installer, re-verifies both signatures,
+creates provenance, and attests the release candidate. Signing runners never
+run npm, pip, PyInstaller, or ISCC, and the workflow does not use Chocolatey.
+Pinned upload and download actions protect transport integrity, while a
+source-, tag-, stage-, and version-bound manifest checks every file name, size,
+and SHA-256 at each job boundary. Every PowerShell block that invokes a native
+CLI enables terminating native-command errors before its first invocation, so
+an earlier Python, npm, Git, provider, compiler, or verification failure cannot
+be hidden by a later successful command. The remote annotated tag and its
+verified signature are rechecked immediately before each provider call to
+close tag-movement races.
+
+This isolation does not fully close provider and runner trust. GitHub injects
+the credentials when the signing-helper step starts. The helper immediately
+copies them into process-local variables and removes them from its environment
+before downloading or running the pinned vendor installer, but the values are
+already present in the PowerShell process during that bootstrap. CKA then
+requires the username, password, and TOTP secret as plaintext command-line
+arguments for `config`; a same-user process inspector on the otherwise fresh
+signing runner could observe them. This remains a Medium residual risk until
+SSL.com provides a safer supported authentication interface or the protected
+environment can issue single-use credentials. The pinned vendor installer and
+tool necessarily execute in each signing job; the boundary excludes unrelated
+build/package tooling, not the signing provider itself.
+
+The workflow currently pins the deliberately audited CKA v1.0.6 package at its
+exact versioned GitHub URL and requires package SHA-256
+`e4971440e4ebed94328492cf36e18999554c5c657c856f1cb14a6072c8b1c263`
+before extraction or execution. This is an audited workflow pin, not a claim
+that v1.0.6 is SSL.com's current CKA release. Any provider-version change
+requires a fresh package-integrity review, a new committed digest, contract-test
+updates, and reviewed workflow changes. Mutable download aliases are forbidden.
+After the archive digest matches, the helper also requires the one audited
+inner installer filename, byte length, SSL Corp Authenticode signer, and SSL.com
+timestamp identity before executing it. The packaging runner similarly pins
+the official immutable Inno Setup 6.7.3 release asset URL, byte length,
+SHA-256, Pyrsys signer identity, and Sectigo timestamp identity before executing
+it. The verified installer runs current-user and silent into a new exact
+`RUNNER_TEMP` directory. The resulting ISCC must then match its separately
+pinned byte length, SHA-256, and Pyrsys signer before compilation. Pre-existing
+or reparse-point package paths fail closed, and a `finally` block runs the exact
+generated uninstaller and removes only the owned installer, install tree, and
+ownership marker. No package-manager or registry record is trusted as evidence.
+
+Before downloading or configuring CKA, the selected certificate subject and
+thumbprint must already be present in the committed Authenticode allowlists.
+The loaded Windows certificate store must then contain exactly one matching,
+currently valid code-signing certificate with a CKA-backed private key. Both
+`lac.exe` and the installer are signed through SignTool with SHA-256 and the
+fixed SSL.com RFC3161 endpoint `http://ts.ssl.com`; their resulting signer and
+timestamp evidence is verified before provenance is created. Each target must
+be `NotSigned` before signing, and independent `/all` verification must report
+exactly one primary signature afterward. A helper `finally` block unloads CKA
+and removes the exact certificate, generated master key, package, installation,
+and per-run session directories without retaining provider logs. An immediate
+credential-free `always()` step performs one bounded cleanup retry when the
+ownership marker remains; publication stays failed if cleanup cannot complete.
+Because the committed Authenticode allowlists are still empty, the workflow
+currently fails before any provider download or signing request.
 
 Freshness is evaluated against the executing machine's clock. The authoritative
 publication run must therefore execute in protected CI with retained run
