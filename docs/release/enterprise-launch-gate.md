@@ -52,7 +52,7 @@ launch still requires all nineteen.
 The evidence file is operator supplied, limited to 1 MiB, and must stay outside
 the repository. It contains references to authoritative records, not reports or
 secrets themselves. Schema v3 requires an exact top-level field set (`schema_version`, `release_scope`, `release_version`, `gates`) and an exact
-set of required gates. Every record is signed independently with an allowlisted,
+set of required gates. Each record carries its own signature from an allowlisted,
 gate-scoped Ed25519 review key:
 
 ```json
@@ -83,6 +83,50 @@ Every required record binds the exact `model-hub`, `lac-pro`, and `lac-cloud`
 HEAD commits checked by the gate plus the exact lowercase SHA-256 digests of the
 installer and `release-provenance.json`. Missing artifacts or repository heads
 produce empty expected bindings and make every evidence record fail closed.
+
+### Offline evidence signing
+
+Prepare a complete unsigned schema-v3 manifest in the private evidence-bundle
+directory. Each record must contain its final authoritative reference, digest,
+review decision, release bindings, and signer ID, but must not yet contain a
+`signature` field. After the accountable reviewer checks every referenced
+record, hash the exact reviewed draft bytes and sign the bundle with the
+allowlisted Ed25519 key held outside the repository:
+
+```powershell
+$Draft = 'C:\private\LAC-Launch-Evidence\2.7.0-unsigned.json'
+$DraftSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Draft).Hash.ToLowerInvariant()
+
+python scripts/sign_enterprise_evidence.py `
+  --input $Draft `
+  --expected-input-sha256 $DraftSha256 `
+  --private-key C:\private\LAC-Launch-Evidence-Key\duan-review-2026.pem `
+  --output C:\private\LAC-Launch-Evidence\2.7.0.json `
+  --prompt-key-password `
+  --acknowledge-authoritative-records-reviewed
+```
+
+The signer refuses repository-local input, output, and key paths; a draft whose
+bytes do not match the supplied digest; malformed or stale records; wrong keys;
+mixed release bindings; invalid hosted-journey objects; missing operator
+acknowledgement; and an existing output file. It reads each input through one
+file handle, verifies the final open-handle destination before writing, and
+never logs a key, password, record, or signature.
+
+This signature is an **accountable-reviewer attestation** over the manifest. It
+does not retrieve or approve the referenced external record and does not prove
+that a reviewer is independent. Gates requiring an external penetration test,
+independent cryptographic review, or remediation retest still require a genuine
+authoritative record issued by that separate reviewer; the acknowledgement
+means the accountable reviewer has checked that record before signing its
+digest and reference.
+
+Use an encrypted PEM and an ACL-restricted private directory. The file mode is
+best-effort on Windows and does not replace NTFS access control. An unencrypted
+PEM is accepted only with the explicit `--allow-unencrypted-private-key`
+exception for separately protected storage. Never copy the private key, its
+password, or signed private evidence into source control, chat, logs, or a
+public CI artifact.
 
 `cloud_staging_smoke` additionally binds its staging API, Agent, and Runner
 Worker version UUIDs. `cloud_production_dark_smoke`, `regional_latency_slo`, and
