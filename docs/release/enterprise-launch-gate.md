@@ -172,6 +172,83 @@ thumbprint allowlists remain intentionally empty until
 the release signing certificate exists, and an empty allowlist fails closed.
 An operator-supplied file cannot add its own signer.
 
+### Windows signing provider boundary
+
+The candidate workflow is prepared for SSL.com eSigner CKA backed by a
+non-exportable cloud-HSM key. It does not accept, reconstruct, import, or write
+an exportable PFX. The protected `production-release` environment supplies only
+the eSigner credentials `ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, and
+`ESIGNER_TOTP_SECRET`, plus the public certificate-selection variables
+`ESIGNER_CERTIFICATE_SUBJECT` and `ESIGNER_CERTIFICATE_THUMBPRINT`. Credentials
+are scoped only to each of the two signing-helper invocations and must never be
+copied into a repository, evidence record, log artifact, or chat.
+
+The release is split across fresh GitHub-hosted Windows jobs. The unsigned
+application build runs npm, Python dependency installation, tests, and
+PyInstaller without signing credentials. A new dedicated runner verifies its
+SHA-256 handoff manifest and signs only `lac.exe`. Another credential-free
+runner verifies that signed handoff, installs and authenticates exact Inno
+Setup 6.7.3, and creates the unsigned installer. A final new runner verifies
+the next handoff, signs only the installer, re-verifies both signatures,
+creates provenance, and attests the release candidate. Signing runners never
+run npm, pip, PyInstaller, or ISCC, and the workflow does not use Chocolatey.
+Pinned upload and download actions protect transport integrity, while a
+source-, tag-, stage-, and version-bound manifest checks every file name, size,
+and SHA-256 at each job boundary. Every PowerShell block that invokes a native
+CLI enables terminating native-command errors before its first invocation, so
+an earlier Python, npm, Git, provider, compiler, or verification failure cannot
+be hidden by a later successful command. The remote annotated tag and its
+verified signature are rechecked immediately before each provider call to
+close tag-movement races.
+
+This isolation does not fully close provider and runner trust. GitHub injects
+the credentials when the signing-helper step starts. The helper immediately
+copies them into process-local variables and removes them from its environment
+before downloading or running the pinned vendor installer, but the values are
+already present in the PowerShell process during that bootstrap. CKA then
+requires the username, password, and TOTP secret as plaintext command-line
+arguments for `config`; a same-user process inspector on the otherwise fresh
+signing runner could observe them. This remains a Medium residual risk until
+SSL.com provides a safer supported authentication interface or the protected
+environment can issue single-use credentials. The pinned vendor installer and
+tool necessarily execute in each signing job; the boundary excludes unrelated
+build/package tooling, not the signing provider itself.
+
+The workflow currently pins the deliberately audited CKA v1.0.6 package at its
+exact versioned GitHub URL and requires package SHA-256
+`e4971440e4ebed94328492cf36e18999554c5c657c856f1cb14a6072c8b1c263`
+before extraction or execution. This is an audited workflow pin, not a claim
+that v1.0.6 is SSL.com's current CKA release. Any provider-version change
+requires a fresh package-integrity review, a new committed digest, contract-test
+updates, and reviewed workflow changes. Mutable download aliases are forbidden.
+After the archive digest matches, the helper also requires the one audited
+inner installer filename, byte length, SSL Corp Authenticode signer, and SSL.com
+timestamp identity before executing it. The packaging runner similarly pins
+the official immutable Inno Setup 6.7.3 release asset URL, byte length,
+SHA-256, Pyrsys signer identity, and Sectigo timestamp identity before executing
+it. The verified installer runs current-user and silent into a new exact
+`RUNNER_TEMP` directory. The resulting ISCC must then match its separately
+pinned byte length, SHA-256, and Pyrsys signer before compilation. Pre-existing
+or reparse-point package paths fail closed, and a `finally` block runs the exact
+generated uninstaller and removes only the owned installer, install tree, and
+ownership marker. No package-manager or registry record is trusted as evidence.
+
+Before downloading or configuring CKA, the selected certificate subject and
+thumbprint must already be present in the committed Authenticode allowlists.
+The loaded Windows certificate store must then contain exactly one matching,
+currently valid code-signing certificate with a CKA-backed private key. Both
+`lac.exe` and the installer are signed through SignTool with SHA-256 and the
+fixed SSL.com RFC3161 endpoint `http://ts.ssl.com`; their resulting signer and
+timestamp evidence is verified before provenance is created. Each target must
+be `NotSigned` before signing, and independent `/all` verification must report
+exactly one primary signature afterward. A helper `finally` block unloads CKA
+and removes the exact certificate, generated master key, package, installation,
+and per-run session directories without retaining provider logs. An immediate
+credential-free `always()` step performs one bounded cleanup retry when the
+ownership marker remains; publication stays failed if cleanup cannot complete.
+Because the committed Authenticode allowlists are still empty, the workflow
+currently fails before any provider download or signing request.
+
 Freshness is evaluated against the executing machine's clock. The authoritative
 publication run must therefore execute in protected CI with retained run
 provenance and a trustworthy runner clock; a local invocation is only a

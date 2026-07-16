@@ -18,13 +18,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-windows:
+  authorize-release:
     runs-on: windows-latest
     environment: production-release
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+    outputs:
+      tag: ${{ steps.release_version.outputs.tag }}
+      version: ${{ steps.release_version.outputs.version }}
+      source_commit: ${{ steps.release_version.outputs.source_commit }}
+      tag_object: ${{ steps.release_version.outputs.tag_object }}
+      inno_license_confirmed: ${{ steps.protected_controls.outputs.inno_license_confirmed }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -35,14 +39,6 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
-          cache: pip
-
-      - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: web/package-lock.json
 
       - name: Resolve and verify the immutable release version
         id: release_version
@@ -51,6 +47,8 @@ jobs:
           REQUESTED_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $tag = $env:REQUESTED_RELEASE_TAG
           if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
             throw "Version must be an exact vX.Y.Z tag; got '$tag'"
@@ -100,23 +98,30 @@ jobs:
           python scripts/pro_commerce_readiness.py --require-baked-gate --allow-missing-lac-pro --worker-env production --allow-worker-placeholders --require-receipt-signing
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "version=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
+          "source_commit=$env:GITHUB_SHA" >> $env:GITHUB_OUTPUT
+          "tag_object=$tagObject" >> $env:GITHUB_OUTPUT
 
       - name: Require protected release controls
+        id: protected_controls
         shell: pwsh
         env:
-          SIGNING_CERTIFICATE_PFX_BASE64: ${{ secrets.SIGNING_CERTIFICATE_PFX_BASE64 }}
-          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
-          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
           INNO_SETUP_LICENSE_CONFIRMED: ${{ vars.INNO_SETUP_LICENSE_CONFIRMED }}
+          ESIGNER_CERTIFICATE_SUBJECT: ${{ vars.ESIGNER_CERTIFICATE_SUBJECT }}
+          ESIGNER_CERTIFICATE_THUMBPRINT: ${{ vars.ESIGNER_CERTIFICATE_THUMBPRINT }}
         run: |
           if ($env:INNO_SETUP_LICENSE_CONFIRMED -ne "true") {
             throw "The protected environment must confirm the commercial Inno Setup license."
           }
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PFX_BASE64) -or
-              [string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD) -or
-              [string]::IsNullOrWhiteSpace($env:SIGNING_TIMESTAMP_URL)) {
-            throw "Authenticode certificate and timestamp settings are required."
+          $subject = ([string]$env:ESIGNER_CERTIFICATE_SUBJECT).Trim()
+          $thumbprint = ([string]$env:ESIGNER_CERTIFICATE_THUMBPRINT -replace '\s', '').ToUpperInvariant()
+          if ($subject.Length -eq 0 -or $subject.Length -gt 512 -or
+              $subject -cnotmatch '^[\x20-\x7e]+$' -or
+              $thumbprint -cnotmatch '^[0-9A-F]{40}$' -or
+              [string]$env:ESIGNER_CERTIFICATE_SUBJECT -cne $subject -or
+              [string]$env:ESIGNER_CERTIFICATE_THUMBPRINT -cne $thumbprint) {
+            throw "The protected environment must select a well-formed public eSigner identity."
           }
+          "inno_license_confirmed=true" >> $env:GITHUB_OUTPUT
 
       - name: Smoke the exact protected production delivery gate
         shell: pwsh
@@ -126,6 +131,8 @@ jobs:
           PRO_GATE_TESTED_VERSION: ${{ vars.PRO_GATE_TESTED_VERSION }}
           PRO_GATE_WAF_EVIDENCE: ${{ vars.PRO_GATE_WAF_EVIDENCE }}
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           if ([string]::IsNullOrWhiteSpace($env:LAC_PRO_TEST_LOCAL_KEY) -or
               [string]::IsNullOrWhiteSpace($env:LAC_PRO_TEST_CLOUD_KEY) -or
               [string]::IsNullOrWhiteSpace($env:PRO_GATE_TESTED_VERSION) -or
@@ -141,9 +148,54 @@ jobs:
           python scripts/pro_commerce_readiness.py --require-baked-gate --allow-missing-lac-pro --worker-env production --allow-worker-placeholders --require-receipt-signing --live-gate --expected-deployment-commit "${{ github.sha }}" --valid-key-env LAC_PRO_TEST_LOCAL_KEY
           python scripts/pro_commerce_readiness.py --require-baked-gate --allow-missing-lac-pro --worker-env production --allow-worker-placeholders --require-receipt-signing --live-gate --expected-deployment-commit "${{ github.sha }}" --valid-key-env LAC_PRO_TEST_CLOUD_KEY
 
+  build-unsigned-app:
+    needs: authorize-release
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.unsigned_app_manifest.outputs.manifest_sha256 }}
+      artifact_digest: ${{ steps.upload_unsigned_app.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.authorize-release.outputs.source_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind build inputs to the authorized source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $authorizedCommit = "${{ needs.authorize-release.outputs.source_commit }}"
+          if ($authorizedCommit -cne "${{ github.sha }}") {
+            throw "The authorized source output does not match this workflow commit."
+          }
+          $headCommit = (git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $headCommit -cne $authorizedCommit) {
+            throw "The build checkout is not the authorized source commit."
+          }
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
       - name: Build web app
         working-directory: web
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           npm ci
           npm test
           npm run typecheck
@@ -153,7 +205,10 @@ jobs:
           npm sbom --sbom-format cyclonedx > dist/web-sbom.json
 
       - name: Audit and install Python dependencies
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           python -m pip install --disable-pip-version-check "uv==0.11.28"
           uv pip install --system --require-hashes -r requirements-release.lock
@@ -161,9 +216,12 @@ jobs:
           python -m cyclonedx_py environment --output-file dist/python-sbom.json
 
       - name: Run the complete source and secret gates
+        shell: pwsh
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pytest -m "not live" -p no:cacheprovider -q
           $tracked = @(git ls-files)
           & detect-secrets-hook --baseline .secrets.baseline @tracked
@@ -171,7 +229,10 @@ jobs:
 
       - name: Run the complete delivery Worker gates
         working-directory: worker
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           npm ci
           npm test
           npm run typecheck
@@ -180,157 +241,710 @@ jobs:
           npx wrangler deploy --dry-run --env staging
           npx wrangler deploy --dry-run --env production
 
-      - name: Build application
-        run: pyinstaller -y build.spec
+      - name: Build unsigned application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          pyinstaller -y build.spec
 
-      - name: Import signing certificate and sign application
+      - name: Assemble unsigned application handoff
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = "${{ needs.authorize-release.outputs.version }}"
+          $dependencyLockHash = (Get-FileHash -LiteralPath requirements-release.lock -Algorithm SHA256).Hash.ToLowerInvariant()
+          $metadata = [ordered]@{
+            schema_version = 1
+            version = $version
+            tag = "${{ needs.authorize-release.outputs.tag }}"
+            source_commit = "${{ needs.authorize-release.outputs.source_commit }}"
+            dependency_lock_sha256 = $dependencyLockHash
+            python_version = (python --version 2>&1 | Out-String).Trim()
+            pyinstaller_version = (pyinstaller --version 2>&1 | Out-String).Trim()
+          }
+          $metadata | ConvertTo-Json -Depth 3 | Set-Content dist\build-metadata.json -Encoding utf8
+          Copy-Item -LiteralPath web\dist\web-sbom.json -Destination dist\web-sbom.json
+          $handoffDist = ".handoff\unsigned-app\payload\dist"
+          New-Item -ItemType Directory -Path $handoffDist -Force | Out-Null
+          Copy-Item -LiteralPath dist\lac -Destination $handoffDist -Recurse
+          Copy-Item -LiteralPath dist\python-sbom.json, dist\web-sbom.json, dist\build-metadata.json -Destination $handoffDist
+
+      - name: Write unsigned application handoff manifest
+        id: unsigned_app_manifest
+        shell: pwsh
+        run: |
+          $manifestSha256 = & scripts/release_handoff_manifest.ps1 `
+            -Mode Write `
+            -RootPath ".handoff\unsigned-app\payload" `
+            -ManifestPath ".handoff\unsigned-app\manifest.json" `
+            -Stage "unsigned-app" `
+            -SourceCommit "${{ needs.authorize-release.outputs.source_commit }}" `
+            -Tag "${{ needs.authorize-release.outputs.tag }}" `
+            -Version "${{ needs.authorize-release.outputs.version }}"
+          "manifest_sha256=$manifestSha256" >> $env:GITHUB_OUTPUT
+
+      - name: Upload unsigned application handoff
+        id: upload_unsigned_app
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-app-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .handoff/unsigned-app/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  sign-application:
+    needs: [authorize-release, build-unsigned-app]
+    runs-on: windows-latest
+    environment: production-release
+    permissions:
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.signed_app_manifest.outputs.manifest_sha256 }}
+      artifact_digest: ${{ steps.upload_signed_app.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.authorize-release.outputs.source_commit }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Bind signing helper to the authorized source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $authorizedCommit = "${{ needs.authorize-release.outputs.source_commit }}"
+          if ($authorizedCommit -cne "${{ github.sha }}") {
+            throw "The authorized source output does not match this workflow commit."
+          }
+          $headCommit = (git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $headCommit -cne $authorizedCommit) {
+            throw "The signing checkout is not the authorized source commit."
+          }
+
+      - name: Download unsigned application handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-app-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .handoff/unsigned-app
+
+      - name: Verify unsigned application handoff
         shell: pwsh
         env:
-          SIGNING_CERTIFICATE_PFX_BASE64: ${{ secrets.SIGNING_CERTIFICATE_PFX_BASE64 }}
-          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
-          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+          EXPECTED_UNSIGNED_APP_MANIFEST_SHA256: ${{ needs.build-unsigned-app.outputs.manifest_sha256 }}
+          EXPECTED_UNSIGNED_APP_ARTIFACT_DIGEST: ${{ needs.build-unsigned-app.outputs.artifact_digest }}
         run: |
-          $pfxPath = Join-Path $env:RUNNER_TEMP "lac-signing.pfx"
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_PFX_BASE64))
-          try {
-            $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
-            $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
-            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
-              Where-Object FullName -Match '\\x64\\signtool\.exe$' |
-              Sort-Object FullName -Descending |
-              Select-Object -First 1 -ExpandProperty FullName
-            if (-not $signtool) { throw "signtool.exe was not found" }
-            & $signtool sign /sha1 $certificate.Thumbprint /s My /fd SHA256 /tr $env:SIGNING_TIMESTAMP_URL /td SHA256 dist\lac\lac.exe
-            if ($LASTEXITCODE -ne 0) { throw "Application signing failed" }
-            if ((Get-AuthenticodeSignature -FilePath dist\lac\lac.exe).Status -ne "Valid") {
-              throw "Application Authenticode verification failed"
-            }
-          } finally {
-            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-            if ($null -ne $certificate) {
-              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+          if ($env:EXPECTED_UNSIGNED_APP_ARTIFACT_DIGEST -cnotmatch '^[0-9a-f]{64}$') {
+            throw "The upload action did not bind the unsigned application artifact digest."
+          }
+          & scripts/release_handoff_manifest.ps1 `
+            -Mode Verify `
+            -RootPath ".handoff\unsigned-app\payload" `
+            -ManifestPath ".handoff\unsigned-app\manifest.json" `
+            -Stage "unsigned-app" `
+            -SourceCommit "${{ needs.authorize-release.outputs.source_commit }}" `
+            -Tag "${{ needs.authorize-release.outputs.tag }}" `
+            -Version "${{ needs.authorize-release.outputs.version }}" `
+            -ExpectedManifestSha256 $env:EXPECTED_UNSIGNED_APP_MANIFEST_SHA256
+
+      - name: Revalidate immutable tag immediately before application signing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tag = "${{ needs.authorize-release.outputs.tag }}"
+          $expectedTagObject = "${{ needs.authorize-release.outputs.tag_object }}"
+          $tagRefJson = gh api `
+            -H "Accept: application/vnd.github+json" `
+            -H "X-GitHub-Api-Version: 2022-11-28" `
+            "/repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw "The release tag ref no longer exists." }
+          $tagRefRecord = $tagRefJson | ConvertFrom-Json
+          if ($tagRefRecord.object.type -ne "tag" -or
+              $tagRefRecord.object.sha -cne $expectedTagObject) {
+            throw "The release tag ref changed after authorization."
+          }
+          $tagJson = gh api `
+            -H "Accept: application/vnd.github+json" `
+            -H "X-GitHub-Api-Version: 2022-11-28" `
+            "/repos/$env:GITHUB_REPOSITORY/git/tags/$expectedTagObject"
+          if ($LASTEXITCODE -ne 0) { throw "The release tag object no longer exists." }
+          $tagRecord = $tagJson | ConvertFrom-Json
+          if ($tagRecord.tag -cne $tag -or
+              $tagRecord.verification.verified -ne $true -or
+              $tagRecord.verification.reason -cne "valid" -or
+              $tagRecord.object.sha -cne "${{ needs.authorize-release.outputs.source_commit }}") {
+            throw "The release tag signature or source binding changed after authorization."
+          }
+
+      - name: Sign application through eSigner CKA
+        shell: pwsh
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          ESIGNER_CERTIFICATE_SUBJECT: ${{ vars.ESIGNER_CERTIFICATE_SUBJECT }}
+          ESIGNER_CERTIFICATE_THUMBPRINT: ${{ vars.ESIGNER_CERTIFICATE_THUMBPRINT }}
+        run: |
+          & scripts/sign_windows_artifact.ps1 `
+            -ArtifactKind Application `
+            -ArtifactPath ".handoff\unsigned-app\payload\dist\lac\lac.exe" `
+            -ExpectedVersion "${{ needs.authorize-release.outputs.version }}"
+
+      - name: Retry eSigner cleanup after application signing
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          ESIGNER_CERTIFICATE_SUBJECT: ${{ vars.ESIGNER_CERTIFICATE_SUBJECT }}
+          ESIGNER_CERTIFICATE_THUMBPRINT: ${{ vars.ESIGNER_CERTIFICATE_THUMBPRINT }}
+        run: scripts/cleanup_esigner_session.ps1
+
+      - name: Write signed application handoff manifest
+        id: signed_app_manifest
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath ".handoff\unsigned-app\manifest.json" -Force
+          $manifestSha256 = & scripts/release_handoff_manifest.ps1 `
+            -Mode Write `
+            -RootPath ".handoff\unsigned-app\payload" `
+            -ManifestPath ".handoff\unsigned-app\manifest.json" `
+            -Stage "signed-app" `
+            -SourceCommit "${{ needs.authorize-release.outputs.source_commit }}" `
+            -Tag "${{ needs.authorize-release.outputs.tag }}" `
+            -Version "${{ needs.authorize-release.outputs.version }}"
+          "manifest_sha256=$manifestSha256" >> $env:GITHUB_OUTPUT
+
+      - name: Upload signed application handoff
+        id: upload_signed_app
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-app-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .handoff/unsigned-app/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  package-unsigned-installer:
+    needs: [authorize-release, sign-application]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.unsigned_installer_manifest.outputs.manifest_sha256 }}
+      artifact_digest: ${{ steps.upload_unsigned_installer.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.authorize-release.outputs.source_commit }}
+          persist-credentials: false
+
+      - name: Bind packaging inputs to the authorized source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $authorizedCommit = "${{ needs.authorize-release.outputs.source_commit }}"
+          if ($authorizedCommit -cne "${{ github.sha }}") {
+            throw "The authorized source output does not match this workflow commit."
+          }
+          $headCommit = (git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $headCommit -cne $authorizedCommit) {
+            throw "The packaging checkout is not the authorized source commit."
+          }
+          if ("${{ needs.authorize-release.outputs.inno_license_confirmed }}" -cne "true") {
+            throw "The authorized release did not confirm the commercial Inno Setup license."
+          }
+
+      - name: Download signed application handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signed-app-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .handoff/signed-app
+
+      - name: Verify signed application handoff
+        shell: pwsh
+        env:
+          EXPECTED_SIGNED_APP_MANIFEST_SHA256: ${{ needs.sign-application.outputs.manifest_sha256 }}
+          EXPECTED_SIGNED_APP_ARTIFACT_DIGEST: ${{ needs.sign-application.outputs.artifact_digest }}
+        run: |
+          if ($env:EXPECTED_SIGNED_APP_ARTIFACT_DIGEST -cnotmatch '^[0-9a-f]{64}$') {
+            throw "The upload action did not bind the signed application artifact digest."
+          }
+          & scripts/release_handoff_manifest.ps1 `
+            -Mode Verify `
+            -RootPath ".handoff\signed-app\payload" `
+            -ManifestPath ".handoff\signed-app\manifest.json" `
+            -Stage "signed-app" `
+            -SourceCommit "${{ needs.authorize-release.outputs.source_commit }}" `
+            -Tag "${{ needs.authorize-release.outputs.tag }}" `
+            -Version "${{ needs.authorize-release.outputs.version }}" `
+            -ExpectedManifestSha256 $env:EXPECTED_SIGNED_APP_MANIFEST_SHA256
+
+      - name: Build unsigned installer with pinned Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sourceDist = ".handoff\signed-app\payload\dist"
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item -LiteralPath "$sourceDist\lac" -Destination dist -Recurse -Force
+          Copy-Item -LiteralPath "$sourceDist\python-sbom.json", "$sourceDist\web-sbom.json", "$sourceDist\build-metadata.json" -Destination dist
+          $application = "dist\lac\lac.exe"
+          if (-not (Test-Path -LiteralPath $application -PathType Leaf)) {
+            throw "The manifest-bound signed application is missing before packaging."
+          }
+          $applicationSignature = Get-AuthenticodeSignature -LiteralPath $application
+          if ($applicationSignature.Status -ne "Valid" -or
+              $null -eq $applicationSignature.TimeStamperCertificate) {
+            throw "The manifest-bound application is not validly signed before packaging."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+            throw "The pinned Inno Setup bootstrap requires an ephemeral runner."
+          }
+          $innoInstallerUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          $expectedInnoInstallerBytes = 10592232
+          $expectedInnoInstallerSha256 = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732" # pragma: allowlist secret -- public package checksum
+          $expectedInnoSubject = "CN=Pyrsys B.V., O=Pyrsys B.V., S=Noord-Holland, C=NL"
+          $expectedInnoThumbprint = "E0AB19C8D38CBF9C44709925122A7A02F8C70CB7" # pragma: allowlist secret -- public certificate thumbprint
+          $expectedInnoTimestampSubject = "CN=Sectigo Public Time Stamping Signer R36, O=Sectigo Limited, S=West Yorkshire, C=GB"
+          $expectedInnoTimestampThumbprint = "38C914811044B4DC663E93D4744B814186A9B5B1" # pragma: allowlist secret -- public certificate thumbprint
+          $expectedIsccBytes = 1456272
+          $expectedIsccSha256 = "0a8757031b33777e4c9cbffee40f11a5062b36d25cbe144c1db73b6102b80ad7" # pragma: allowlist secret -- public package checksum
+          $expectedIsccThumbprint = "E0AB19C8D38CBF9C44709925122A7A02F8C70CB7" # pragma: allowlist secret -- public certificate thumbprint
+          $innoInstallerPath = Join-Path $env:RUNNER_TEMP "innosetup-6.7.3.exe"
+          $innoInstallRoot = Join-Path $env:RUNNER_TEMP "inno-setup-6.7.3"
+          $innoOwnershipMarker = Join-Path $env:RUNNER_TEMP "inno-setup-6.7.3.marker"
+          foreach ($path in @($innoInstallerPath, $innoInstallRoot, $innoOwnershipMarker)) {
+            if (Test-Path -LiteralPath $path) {
+              throw "Refusing to reuse pre-existing Inno Setup material."
             }
           }
 
-      - name: Build installer with licensed Inno Setup
-        shell: pwsh
-        env:
-          INNO_SETUP_LICENSE_CONFIRMED: ${{ vars.INNO_SETUP_LICENSE_CONFIRMED }}
-        run: |
-          if ($env:INNO_SETUP_LICENSE_CONFIRMED -ne "true") { throw "Inno Setup license is not confirmed" }
-          choco install innosetup --version=6.7.3 -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
-          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
+          function Remove-ExactInnoTree([string]$Path) {
+            $expected = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP "inno-setup-6.7.3"))
+            $actual = [IO.Path]::GetFullPath($Path)
+            if ($actual -cne $expected) {
+              throw "Refusing an unexpected Inno Setup cleanup path."
+            }
+            if (-not (Test-Path -LiteralPath $actual)) { return }
+            $rootItem = Get-Item -LiteralPath $actual -Force
+            if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Refusing to remove an Inno Setup reparse point."
+            }
+            $nestedReparsePoints = @(Get-ChildItem -LiteralPath $actual -Force -Recurse |
+              Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
+            if ($nestedReparsePoints.Count -ne 0) {
+              throw "Refusing to remove an Inno Setup tree containing a reparse point."
+            }
+            Remove-Item -LiteralPath $actual -Recurse -Force
+          }
 
-      - name: Sign and verify release artifacts
-        shell: pwsh
-        env:
-          SIGNING_CERTIFICATE_PFX_BASE64: ${{ secrets.SIGNING_CERTIFICATE_PFX_BASE64 }}
-          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
-          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
-        run: |
-          $version = "${{ steps.release_version.outputs.version }}"
-          $installer = "dist\LAC-Setup-$version.exe"
-          $pfxPath = Join-Path $env:RUNNER_TEMP "lac-signing.pfx"
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_PFX_BASE64))
+          $innoOwned = $false
           try {
-            $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
-            $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
-            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
-              Where-Object FullName -Match '\\x64\\signtool\.exe$' |
-              Sort-Object FullName -Descending |
-              Select-Object -First 1 -ExpandProperty FullName
-            if (-not $signtool) { throw "signtool.exe was not found" }
-            & $signtool sign /sha1 $certificate.Thumbprint /s My /fd SHA256 /tr $env:SIGNING_TIMESTAMP_URL /td SHA256 $installer
-            if ($LASTEXITCODE -ne 0) { throw "Installer signing failed" }
-            function Get-Rfc3161SignatureEvidence([string]$path) {
-              $signature = Get-AuthenticodeSignature -FilePath $path
-              if ($signature.Status -ne "Valid") {
-                throw "Invalid Authenticode signature for ${path}: $($signature.Status)"
+            New-Item -ItemType File -Path $innoOwnershipMarker | Out-Null
+            $innoOwned = $true
+            Invoke-WebRequest -Uri $innoInstallerUrl -OutFile $innoInstallerPath -MaximumRedirection 5
+            $innoInstallerItem = Get-Item -LiteralPath $innoInstallerPath -Force
+            if (($innoInstallerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "The pinned Inno Setup installer is a reparse point."
+            }
+            $innoInstallerHash = (Get-FileHash -LiteralPath $innoInstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($innoInstallerItem.Length -ne $expectedInnoInstallerBytes -or
+                $innoInstallerHash -cne $expectedInnoInstallerSha256) {
+              throw "The pinned Inno Setup installer failed its immutable size or SHA-256 check."
+            }
+            $innoSignature = Get-AuthenticodeSignature -LiteralPath $innoInstallerPath
+            if ($innoSignature.Status -ne "Valid" -or
+                $innoSignature.SignerCertificate.Subject -cne $expectedInnoSubject -or
+                $innoSignature.SignerCertificate.Thumbprint -ne $expectedInnoThumbprint -or
+                $null -eq $innoSignature.TimeStamperCertificate -or
+                $innoSignature.TimeStamperCertificate.Subject -cne $expectedInnoTimestampSubject -or
+                $innoSignature.TimeStamperCertificate.Thumbprint -ne $expectedInnoTimestampThumbprint) {
+              throw "The pinned Inno Setup installer failed its exact signer or timestamp identity check."
+            }
+
+            New-Item -ItemType Directory -Path $innoInstallRoot | Out-Null
+            & $innoInstallerPath /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS /CURRENTUSER "/DIR=$innoInstallRoot"
+            if ($LASTEXITCODE -ne 0) {
+              throw "The pinned Inno Setup installer failed."
+            }
+            $installRootItem = Get-Item -LiteralPath $innoInstallRoot -Force
+            if (($installRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "The pinned Inno Setup install root became a reparse point."
+            }
+            $installedReparsePoints = @(Get-ChildItem -LiteralPath $innoInstallRoot -Force -Recurse |
+              Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
+            if ($installedReparsePoints.Count -ne 0) {
+              throw "The pinned Inno Setup install tree contains a reparse point."
+            }
+            $iscc = Join-Path $innoInstallRoot "ISCC.exe"
+            if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) {
+              throw "The exact pinned Inno Setup compiler is missing."
+            }
+            $isccItem = Get-Item -LiteralPath $iscc -Force
+            if (($isccItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "The pinned Inno Setup compiler is a reparse point."
+            }
+            $isccHash = (Get-FileHash -LiteralPath $iscc -Algorithm SHA256).Hash.ToLowerInvariant()
+            $isccSignature = Get-AuthenticodeSignature -LiteralPath $iscc
+            if ($isccItem.Length -ne $expectedIsccBytes -or
+                $isccHash -cne $expectedIsccSha256 -or
+                $isccSignature.Status -ne "Valid" -or
+                $isccSignature.SignerCertificate.Subject -cne $expectedInnoSubject -or
+                $isccSignature.SignerCertificate.Thumbprint -ne $expectedIsccThumbprint) {
+              throw "The installed compiler does not match the audited Inno Setup 6.7.3 identity."
+            }
+
+            & $iscc installer.iss
+            if ($LASTEXITCODE -ne 0) {
+              throw "Installer build failed."
+            }
+            $installer = "dist\LAC-Setup-${{ needs.authorize-release.outputs.version }}.exe"
+            if (-not (Test-Path -LiteralPath $installer -PathType Leaf) -or
+                (Get-AuthenticodeSignature -LiteralPath $installer).Status -ne "NotSigned") {
+              throw "The exact unsigned installer output was not produced."
+            }
+          } finally {
+            $cleanupFailures = [Collections.Generic.List[string]]::new()
+            $cleanupAuthorized = $false
+            if ($innoOwned -and (Test-Path -LiteralPath $innoOwnershipMarker -PathType Leaf)) {
+              try {
+                $markerItem = Get-Item -LiteralPath $innoOwnershipMarker -Force
+                if (($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                  throw "The Inno Setup ownership marker is a reparse point."
+                }
+                $cleanupAuthorized = $true
+              } catch {
+                $cleanupFailures.Add("ownership-marker")
               }
-              $timestampCertificate = $signature.TimeStamperCertificate
-              if ($null -eq $timestampCertificate) {
-                throw "RFC3161 timestamp certificate is missing for ${path}"
+            } elseif ($innoOwned) {
+              $cleanupFailures.Add("ownership-marker")
+            }
+
+            if ($cleanupAuthorized) {
+              $uninstaller = Join-Path $innoInstallRoot "unins000.exe"
+              if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
+                try {
+                  $uninstallerItem = Get-Item -LiteralPath $uninstaller -Force
+                  if (($uninstallerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "The Inno Setup uninstaller is a reparse point."
+                  }
+                  & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+                  if ($LASTEXITCODE -ne 0) { $cleanupFailures.Add("uninstaller") }
+                } catch {
+                  $cleanupFailures.Add("uninstaller")
+                }
               }
-              $ekuExtension = $timestampCertificate.Extensions |
-                Where-Object { $_.Oid.Value -eq "2.5.29.37" }
-              $hasTimestampEku = @($ekuExtension.EnhancedKeyUsages |
-                Where-Object { $_.Value -eq "1.3.6.1.5.5.7.3.8" }).Count -gt 0
-              if (-not $hasTimestampEku) {
-                throw "Timestamp certificate lacks the timestamping EKU for ${path}"
+              try {
+                Remove-ExactInnoTree -Path $innoInstallRoot
+              } catch {
+                $cleanupFailures.Add("install-root")
               }
-              $verified = @(& $signtool verify /pa /all /v $path 2>&1)
-              if ($LASTEXITCODE -ne 0) { throw "signtool verification failed for ${path}" }
-              $match = [regex]::Match(
-                ($verified -join "`n"),
-                "(?im)^\s*The signature is timestamped:\s*(.+?)\s*$"
-              )
-              if (-not $match.Success) { throw "RFC3161 timestamp is missing for ${path}" }
-              $parsedTimestamp = [DateTimeOffset]::MinValue
-              $style = [Globalization.DateTimeStyles]::AllowWhiteSpaces -bor
-                [Globalization.DateTimeStyles]::AssumeLocal
-              $parsed = [DateTimeOffset]::TryParseExact(
-                $match.Groups[1].Value,
-                "ddd MMM dd HH:mm:ss yyyy",
-                [Globalization.CultureInfo]::InvariantCulture,
-                $style,
-                [ref]$parsedTimestamp
-              )
-              if (-not $parsed) {
-                $parsed = [DateTimeOffset]::TryParse(
-                  $match.Groups[1].Value,
-                  [Globalization.CultureInfo]::CurrentCulture,
-                  $style,
-                  [ref]$parsedTimestamp
-                )
+              if (Test-Path -LiteralPath $innoInstallerPath) {
+                try {
+                  $archiveItem = Get-Item -LiteralPath $innoInstallerPath -Force
+                  if (($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "The Inno Setup installer became a reparse point."
+                  }
+                  Remove-Item -LiteralPath $innoInstallerPath -Force
+                } catch {
+                  $cleanupFailures.Add("installer")
+                }
               }
-              if (-not $parsed) { throw "RFC3161 timestamp time is invalid for ${path}" }
-              $timestampUtc = $parsedTimestamp.UtcDateTime
-              if ($timestampUtc -lt $timestampCertificate.NotBefore.ToUniversalTime() -or
-                  $timestampUtc -gt $timestampCertificate.NotAfter.ToUniversalTime()) {
-                throw "RFC3161 timestamp falls outside its certificate window for ${path}"
-              }
-              return [pscustomobject]@{
-                status = $signature.Status.ToString()
-                timestamp = [ordered]@{
-                  protocol = "RFC3161"
-                  timestamped_at_utc = $timestampUtc.ToString("o")
-                  certificate_subject = $timestampCertificate.Subject
-                  certificate_thumbprint = $timestampCertificate.Thumbprint
-                  certificate_not_before = $timestampCertificate.NotBefore.ToUniversalTime().ToString("o")
-                  certificate_not_after = $timestampCertificate.NotAfter.ToUniversalTime().ToString("o")
-                  timestamping_eku = $hasTimestampEku
+              if ($cleanupFailures.Count -eq 0) {
+                try {
+                  Remove-Item -LiteralPath $innoOwnershipMarker -Force
+                } catch {
+                  $cleanupFailures.Add("ownership-marker")
                 }
               }
             }
-            $applicationSignature = Get-Rfc3161SignatureEvidence "dist\lac\lac.exe"
-            $installerSignature = Get-Rfc3161SignatureEvidence $installer
-          } finally {
-            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-            if ($null -ne $certificate) {
-              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+            if ($cleanupFailures.Count -gt 0) {
+              throw "One or more pinned Inno Setup cleanup operations failed."
             }
           }
+
+      - name: Assemble unsigned installer handoff
+        shell: pwsh
+        run: |
+          $handoffDist = ".handoff\unsigned-installer\payload\dist"
+          New-Item -ItemType Directory -Path "$handoffDist\lac" -Force | Out-Null
+          Copy-Item -LiteralPath "dist\LAC-Setup-${{ needs.authorize-release.outputs.version }}.exe" -Destination $handoffDist
+          Copy-Item -LiteralPath dist\lac\lac.exe -Destination "$handoffDist\lac\lac.exe"
+          Copy-Item -LiteralPath dist\python-sbom.json, dist\web-sbom.json, dist\build-metadata.json -Destination $handoffDist
+
+      - name: Write unsigned installer handoff manifest
+        id: unsigned_installer_manifest
+        shell: pwsh
+        run: |
+          $manifestSha256 = & scripts/release_handoff_manifest.ps1 `
+            -Mode Write `
+            -RootPath ".handoff\unsigned-installer\payload" `
+            -ManifestPath ".handoff\unsigned-installer\manifest.json" `
+            -Stage "unsigned-installer" `
+            -SourceCommit "${{ needs.authorize-release.outputs.source_commit }}" `
+            -Tag "${{ needs.authorize-release.outputs.tag }}" `
+            -Version "${{ needs.authorize-release.outputs.version }}"
+          "manifest_sha256=$manifestSha256" >> $env:GITHUB_OUTPUT
+
+      - name: Upload unsigned installer handoff
+        id: upload_unsigned_installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-installer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .handoff/unsigned-installer/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  sign-installer-and-attest:
+    needs: [authorize-release, package-unsigned-installer]
+    runs-on: windows-latest
+    environment: production-release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.authorize-release.outputs.source_commit }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Bind final signing helper to the authorized source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $authorizedCommit = "${{ needs.authorize-release.outputs.source_commit }}"
+          if ($authorizedCommit -cne "${{ github.sha }}") {
+            throw "The authorized source output does not match this workflow commit."
+          }
+          $headCommit = (git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $headCommit -cne $authorizedCommit) {
+            throw "The final signing checkout is not the authorized source commit."
+          }
+
+      - name: Download unsigned installer handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-installer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .handoff/unsigned-installer
+
+      - name: Verify unsigned installer handoff
+        shell: pwsh
+        env:
+          EXPECTED_UNSIGNED_INSTALLER_MANIFEST_SHA256: ${{ needs.package-unsigned-installer.outputs.manifest_sha256 }}
+          EXPECTED_UNSIGNED_INSTALLER_ARTIFACT_DIGEST: ${{ needs.package-unsigned-installer.outputs.artifact_digest }}
+        run: |
+          if ($env:EXPECTED_UNSIGNED_INSTALLER_ARTIFACT_DIGEST -cnotmatch '^[0-9a-f]{64}$') {
+            throw "The upload action did not bind the unsigned installer artifact digest."
+          }
+          & scripts/release_handoff_manifest.ps1 `
+            -Mode Verify `
+            -RootPath ".handoff\unsigned-installer\payload" `
+            -ManifestPath ".handoff\unsigned-installer\manifest.json" `
+            -Stage "unsigned-installer" `
+            -SourceCommit "${{ needs.authorize-release.outputs.source_commit }}" `
+            -Tag "${{ needs.authorize-release.outputs.tag }}" `
+            -Version "${{ needs.authorize-release.outputs.version }}" `
+            -ExpectedManifestSha256 $env:EXPECTED_UNSIGNED_INSTALLER_MANIFEST_SHA256
+
+      - name: Revalidate immutable tag immediately before installer signing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tag = "${{ needs.authorize-release.outputs.tag }}"
+          $expectedTagObject = "${{ needs.authorize-release.outputs.tag_object }}"
+          $tagRefJson = gh api `
+            -H "Accept: application/vnd.github+json" `
+            -H "X-GitHub-Api-Version: 2022-11-28" `
+            "/repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw "The release tag ref no longer exists." }
+          $tagRefRecord = $tagRefJson | ConvertFrom-Json
+          if ($tagRefRecord.object.type -ne "tag" -or
+              $tagRefRecord.object.sha -cne $expectedTagObject) {
+            throw "The release tag ref changed after authorization."
+          }
+          $tagJson = gh api `
+            -H "Accept: application/vnd.github+json" `
+            -H "X-GitHub-Api-Version: 2022-11-28" `
+            "/repos/$env:GITHUB_REPOSITORY/git/tags/$expectedTagObject"
+          if ($LASTEXITCODE -ne 0) { throw "The release tag object no longer exists." }
+          $tagRecord = $tagJson | ConvertFrom-Json
+          if ($tagRecord.tag -cne $tag -or
+              $tagRecord.verification.verified -ne $true -or
+              $tagRecord.verification.reason -cne "valid" -or
+              $tagRecord.object.sha -cne "${{ needs.authorize-release.outputs.source_commit }}") {
+            throw "The release tag signature or source binding changed after authorization."
+          }
+
+      - name: Sign installer through eSigner CKA
+        shell: pwsh
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          ESIGNER_CERTIFICATE_SUBJECT: ${{ vars.ESIGNER_CERTIFICATE_SUBJECT }}
+          ESIGNER_CERTIFICATE_THUMBPRINT: ${{ vars.ESIGNER_CERTIFICATE_THUMBPRINT }}
+        run: |
+          & scripts/sign_windows_artifact.ps1 `
+            -ArtifactKind Installer `
+            -ArtifactPath ".handoff\unsigned-installer\payload\dist\LAC-Setup-${{ needs.authorize-release.outputs.version }}.exe" `
+            -ExpectedVersion "${{ needs.authorize-release.outputs.version }}"
+
+      - name: Retry eSigner cleanup after installer signing
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          ESIGNER_CERTIFICATE_SUBJECT: ${{ vars.ESIGNER_CERTIFICATE_SUBJECT }}
+          ESIGNER_CERTIFICATE_THUMBPRINT: ${{ vars.ESIGNER_CERTIFICATE_THUMBPRINT }}
+        run: scripts/cleanup_esigner_session.ps1
+
+      - name: Verify release artifacts and create provenance
+        shell: pwsh
+        env:
+          ESIGNER_CERTIFICATE_SUBJECT: ${{ vars.ESIGNER_CERTIFICATE_SUBJECT }}
+          ESIGNER_CERTIFICATE_THUMBPRINT: ${{ vars.ESIGNER_CERTIFICATE_THUMBPRINT }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = "${{ needs.authorize-release.outputs.version }}"
+          $sourceDist = ".handoff\unsigned-installer\payload\dist"
+          New-Item -ItemType Directory -Path dist\lac -Force | Out-Null
+          Copy-Item -LiteralPath "$sourceDist\LAC-Setup-$version.exe" -Destination dist
+          Copy-Item -LiteralPath "$sourceDist\lac\lac.exe" -Destination dist\lac\lac.exe
+          Copy-Item -LiteralPath "$sourceDist\python-sbom.json", "$sourceDist\web-sbom.json", "$sourceDist\build-metadata.json" -Destination dist
+          $installer = "dist\LAC-Setup-$version.exe"
+          $requestedSubject = $env:ESIGNER_CERTIFICATE_SUBJECT.Trim()
+          $requestedThumbprint = ($env:ESIGNER_CERTIFICATE_THUMBPRINT -replace '\s', '').ToUpperInvariant()
+          if ($requestedSubject.Length -gt 512 -or $requestedSubject -cnotmatch '^[\x20-\x7e]+$' -or
+              $requestedThumbprint -cnotmatch '^[0-9A-F]{40}$') {
+            throw "The final Authenticode identity is malformed."
+          }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -File -Recurse |
+            Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe was not found" }
+          function Get-Rfc3161SignatureEvidence([string]$path) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $path
+            if ($signature.Status -ne "Valid") {
+              throw "Invalid Authenticode signature for ${path}: $($signature.Status)"
+            }
+            if ($signature.SignerCertificate.Thumbprint -ne $env:ESIGNER_CERTIFICATE_THUMBPRINT -or
+                $signature.SignerCertificate.Subject -cne $env:ESIGNER_CERTIFICATE_SUBJECT -or
+                $signature.SignerCertificate.Thumbprint -ne $requestedThumbprint -or
+                $signature.SignerCertificate.Subject -cne $requestedSubject) {
+              throw "Unexpected Authenticode signer identity for ${path}"
+            }
+            $timestampCertificate = $signature.TimeStamperCertificate
+            if ($null -eq $timestampCertificate) {
+              throw "RFC3161 timestamp certificate is missing for ${path}"
+            }
+            $ekuExtension = $timestampCertificate.Extensions |
+              Where-Object { $_.Oid.Value -eq "2.5.29.37" }
+            $hasTimestampEku = @($ekuExtension.EnhancedKeyUsages |
+              Where-Object { $_.Value -eq "1.3.6.1.5.5.7.3.8" }).Count -gt 0
+            if (-not $hasTimestampEku) {
+              throw "Timestamp certificate lacks the timestamping EKU for ${path}"
+            }
+            $verified = @(& $signtool verify /pa /all /v $path 2>&1)
+            if ($LASTEXITCODE -ne 0) { throw "signtool verification failed for ${path}" }
+            $signatureIndexes = @([regex]::Matches(
+              ($verified -join "`n"),
+              "(?im)^\s*Signature Index:\s*(?<index>\d+).*$"
+            ))
+            if ($signatureIndexes.Count -ne 1 -or
+                $signatureIndexes[0].Groups["index"].Value -cne "0") {
+              throw "Exactly one primary Authenticode signature is required for ${path}"
+            }
+            $match = [regex]::Match(
+              ($verified -join "`n"),
+              "(?im)^\s*The signature is timestamped:\s*(.+?)\s*$"
+            )
+            if (-not $match.Success) { throw "RFC3161 timestamp is missing for ${path}" }
+            $parsedTimestamp = [DateTimeOffset]::MinValue
+            $style = [Globalization.DateTimeStyles]::AllowWhiteSpaces -bor
+              [Globalization.DateTimeStyles]::AssumeLocal
+            $parsed = [DateTimeOffset]::TryParseExact(
+              $match.Groups[1].Value,
+              "ddd MMM dd HH:mm:ss yyyy",
+              [Globalization.CultureInfo]::InvariantCulture,
+              $style,
+              [ref]$parsedTimestamp
+            )
+            if (-not $parsed) {
+              $parsed = [DateTimeOffset]::TryParse(
+                $match.Groups[1].Value,
+                [Globalization.CultureInfo]::CurrentCulture,
+                $style,
+                [ref]$parsedTimestamp
+              )
+            }
+            if (-not $parsed) { throw "RFC3161 timestamp time is invalid for ${path}" }
+            $timestampUtc = $parsedTimestamp.UtcDateTime
+            if ($timestampUtc -lt $timestampCertificate.NotBefore.ToUniversalTime() -or
+                $timestampUtc -gt $timestampCertificate.NotAfter.ToUniversalTime()) {
+              throw "RFC3161 timestamp falls outside its certificate window for ${path}"
+            }
+            return [pscustomobject]@{
+              status = $signature.Status.ToString()
+              subject = $signature.SignerCertificate.Subject
+              thumbprint = $signature.SignerCertificate.Thumbprint
+              timestamp = [ordered]@{
+                protocol = "RFC3161"
+                timestamped_at_utc = $timestampUtc.ToString("o")
+                certificate_subject = $timestampCertificate.Subject
+                certificate_thumbprint = $timestampCertificate.Thumbprint
+                certificate_not_before = $timestampCertificate.NotBefore.ToUniversalTime().ToString("o")
+                certificate_not_after = $timestampCertificate.NotAfter.ToUniversalTime().ToString("o")
+                timestamping_eku = $hasTimestampEku
+              }
+            }
+          }
+          $applicationSignature = Get-Rfc3161SignatureEvidence "dist\lac\lac.exe"
+          $installerSignature = Get-Rfc3161SignatureEvidence $installer
           $installerItem = Get-Item $installer
           $applicationItem = Get-Item "dist\lac\lac.exe"
           $pythonSbomItem = Get-Item "dist\python-sbom.json"
-          $webSbomItem = Get-Item "web\dist\web-sbom.json"
+          $webSbomItem = Get-Item "dist\web-sbom.json"
+          $buildMetadata = Get-Content -LiteralPath "dist\build-metadata.json" -Raw | ConvertFrom-Json
+          if ($buildMetadata.source_commit -cne "${{ needs.authorize-release.outputs.source_commit }}" -or
+              $buildMetadata.tag -cne "${{ needs.authorize-release.outputs.tag }}" -or
+              $buildMetadata.version -cne $version -or
+              $buildMetadata.dependency_lock_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw "The build metadata is not bound to the authorized release."
+          }
           $installerHash = (Get-FileHash -Algorithm SHA256 $installerItem.FullName).Hash.ToLowerInvariant()
           $applicationHash = (Get-FileHash -Algorithm SHA256 $applicationItem.FullName).Hash.ToLowerInvariant()
           $pythonSbomHash = (Get-FileHash -Algorithm SHA256 $pythonSbomItem.FullName).Hash.ToLowerInvariant()
           $webSbomHash = (Get-FileHash -Algorithm SHA256 $webSbomItem.FullName).Hash.ToLowerInvariant()
-          $dependencyLockHash = (Get-FileHash -Algorithm SHA256 requirements-release.lock).Hash.ToLowerInvariant()
-          "$installerHash  $($installerItem.Name)" | Set-Content dist\SHA256SUMS.txt -Encoding ascii
-          Copy-Item -LiteralPath "web\dist\web-sbom.json" -Destination "dist\web-sbom.json"
+          @(
+            "$installerHash  $($installerItem.Name)"
+            "$applicationHash  lac.exe"
+            "$pythonSbomHash  $($pythonSbomItem.Name)"
+            "$webSbomHash  $($webSbomItem.Name)"
+          ) | Set-Content dist\SHA256SUMS.txt -Encoding ascii
           $provenance = [ordered]@{
             schema_version = 2
             version = $version
-            tag = "${{ steps.release_version.outputs.tag }}"
-            source_commit = "${{ github.sha }}"
+            tag = "${{ needs.authorize-release.outputs.tag }}"
+            source_commit = "${{ needs.authorize-release.outputs.source_commit }}"
             built_at_utc = [DateTime]::UtcNow.ToString("o")
-            dependency_lock_sha256 = $dependencyLockHash
-            python_version = (python --version 2>&1 | Out-String).Trim()
-            pyinstaller_version = (pyinstaller --version 2>&1 | Out-String).Trim()
+            dependency_lock_sha256 = $buildMetadata.dependency_lock_sha256
+            python_version = $buildMetadata.python_version
+            pyinstaller_version = $buildMetadata.pyinstaller_version
             installer = [ordered]@{
               filename = $installerItem.Name
               bytes = $installerItem.Length
@@ -356,13 +970,13 @@ jobs:
               sha256 = $webSbomHash
             }
           }
-          $provenance | ConvertTo-Json -Depth 4 | Set-Content dist\release-provenance.json -Encoding utf8
+          $provenance | ConvertTo-Json -Depth 5 | Set-Content dist\release-provenance.json -Encoding utf8
 
       - name: Attest the signed release provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
-            dist/LAC-Setup-${{ steps.release_version.outputs.version }}.exe
+            dist/LAC-Setup-${{ needs.authorize-release.outputs.version }}.exe
             dist/lac/lac.exe
             dist/SHA256SUMS.txt
             dist/release-provenance.json
@@ -370,13 +984,13 @@ jobs:
             dist/web-sbom.json
 
       - name: Upload signed release candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: signed-windows-${{ steps.release_version.outputs.version }}
+          name: signed-windows-${{ needs.authorize-release.outputs.version }}
           if-no-files-found: error
           retention-days: 14
           path: |
-            dist/LAC-Setup-${{ steps.release_version.outputs.version }}.exe
+            dist/LAC-Setup-${{ needs.authorize-release.outputs.version }}.exe
             dist/lac/lac.exe
             dist/SHA256SUMS.txt
             dist/release-provenance.json
