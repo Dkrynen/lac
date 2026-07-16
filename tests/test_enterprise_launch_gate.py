@@ -1068,7 +1068,7 @@ def test_web_flow_keyring_requires_pinned_bytes_and_fingerprint(
 ):
     gate = _load_gate()
     key = b"pinned GitHub web-flow public key"
-    fingerprint = "968479A1AFF927E37D1A566BB5690EEEBB952194"
+    fingerprint = "968479A1AFF927E37D1A566BB5690EEEBB952194"  # pragma: allowlist secret -- public key fingerprint
     monkeypatch.setattr(
         gate, "GITHUB_WEB_FLOW_KEY_SHA256", hashlib.sha256(key).hexdigest(),
     )
@@ -1483,15 +1483,15 @@ def test_trust_roots_are_onboarded_and_well_formed():
 
     assert gate.GITHUB_WEB_FLOW_KEY_URL == "https://github.com/web-flow.gpg"
     assert gate.GITHUB_WEB_FLOW_KEY_SHA256 == (
-        "6e8af687f60cf3f403151c8fb1b26e95e6f9e424ca60cc8f3787bd4466a3ef84"
+        "6e8af687f60cf3f403151c8fb1b26e95e6f9e424ca60cc8f3787bd4466a3ef84"  # pragma: allowlist secret -- public key checksum
     )
     assert gate.GITHUB_WEB_FLOW_FINGERPRINT == (
-        "968479A1AFF927E37D1A566BB5690EEEBB952194"
+        "968479A1AFF927E37D1A566BB5690EEEBB952194"  # pragma: allowlist secret -- public key fingerprint
     )
     assert gate.TRUSTED_COMMIT_SIGNERS_BY_REPO == {
         "model_hub": frozenset({
             "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
-            "968479A1AFF927E37D1A566BB5690EEEBB952194",
+            "968479A1AFF927E37D1A566BB5690EEEBB952194",  # pragma: allowlist secret -- public key fingerprint
         }),
         "lac_pro": frozenset({
             "SHA256:1e+lhgtrePHcjsvpPTQLLYRqwgwgBp07HCi2mdo+Q8c",
@@ -1506,7 +1506,7 @@ def test_trust_roots_are_onboarded_and_well_formed():
     })
     assert gate.TRUSTED_WEB_FLOW_COMMITS_BY_REPO == {
         "model_hub": frozenset({
-            "a25cec76589f7fded297c37b5e0ff407eed31fc0",
+            "a25cec76589f7fded297c37b5e0ff407eed31fc0",  # pragma: allowlist secret -- public reviewed commit
         }),
     }
     assert all(

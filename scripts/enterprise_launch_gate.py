@@ -121,9 +121,9 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 SIGNATURE_HISTORY_TIMEOUT_SECONDS = 120
 GITHUB_WEB_FLOW_KEY_URL = "https://github.com/web-flow.gpg"
 GITHUB_WEB_FLOW_KEY_SHA256 = (
-    "6e8af687f60cf3f403151c8fb1b26e95e6f9e424ca60cc8f3787bd4466a3ef84"
+    "6e8af687f60cf3f403151c8fb1b26e95e6f9e424ca60cc8f3787bd4466a3ef84"  # pragma: allowlist secret -- public key checksum
 )
-GITHUB_WEB_FLOW_FINGERPRINT = "968479A1AFF927E37D1A566BB5690EEEBB952194"
+GITHUB_WEB_FLOW_FINGERPRINT = "968479A1AFF927E37D1A566BB5690EEEBB952194"  # pragma: allowlist secret -- public key fingerprint
 GITHUB_WEB_FLOW_KEY_MAX_BYTES = 64 * 1024
 EVIDENCE_MANIFEST_MAX_BYTES = 1024 * 1024
 EVIDENCE_OBJECT_MAX_BYTES = 256 * 1024
@@ -153,7 +153,7 @@ TRUSTED_COMMIT_SIGNERS_BY_REPO: dict[str, frozenset[str]] = {
 TRUSTED_RELEASE_TAG_SIGNERS = frozenset({_SIGNER_DKRYNEN})
 TRUSTED_WEB_FLOW_COMMITS_BY_REPO: dict[str, frozenset[str]] = {
     "model_hub": frozenset({
-        "a25cec76589f7fded297c37b5e0ff407eed31fc0",
+        "a25cec76589f7fded297c37b5e0ff407eed31fc0",  # pragma: allowlist secret -- public reviewed commit
     }),
 }
 TRUSTED_EVIDENCE_SIGNERS: dict[str, dict[str, object]] = {
