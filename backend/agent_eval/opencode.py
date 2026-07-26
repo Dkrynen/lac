@@ -377,6 +377,8 @@ def _run_process_outcome(
         if isinstance(process, CapturedProcess):
             capture = {
                 "cleanup_complete": process.cleanup_complete,
+                "windows_job_measured": bool(process.containment),
+                "windows_job": process.containment,
                 "stdout": {
                     "allowed_bytes": limits.stdout_bytes,
                     "observed_bytes": process.observed_stdout_bytes,

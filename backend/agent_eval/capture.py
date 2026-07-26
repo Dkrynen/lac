@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -118,6 +118,7 @@ class CapturedProcess:
     cleanup_complete: bool = True
     cleanup_deferred: bool = False
     deferred_cleanup_status: DeferredCleanupStatus | None = None
+    containment: dict[str, object] = field(default_factory=dict)
 
 
 class CaptureLimitExceeded(ValueError):
@@ -358,6 +359,7 @@ def run_bounded_process(
     readers_started = False
     cleanup_complete = True
     process_cleanup_complete = True
+    job_cleanup_complete = True
     reader_cleanup_complete = True
     pipe_cleanup_complete = True
     temporary_cleanup_complete = True
@@ -375,6 +377,43 @@ def run_bounded_process(
                 stderr=subprocess.PIPE,
                 text=False,
             )
+            windows_job_required = bool(
+                getattr(launch, "_windows_job_launcher", False)
+            )
+            if windows_job_required:
+                from .windows_job import WindowsJobProcess
+
+                if not isinstance(process, WindowsJobProcess):
+                    deadline = (
+                        time.monotonic()
+                        + float(limits.cleanup_grace_seconds)
+                    )
+                    _terminate_process(process, deadline)
+                    for pipe_name in ("stdout", "stderr"):
+                        pipe = getattr(process, pipe_name, None)
+                        if pipe is not None:
+                            pipe.close()
+                    raise RuntimeError(
+                        "verified Windows launcher must return a real "
+                        "WindowsJobProcess"
+                    )
+                started_evidence = process.containment_evidence()
+                if not (
+                    started_evidence.get("real_windows_job") is True
+                    and started_evidence.get("assignment_proven") is True
+                    and started_evidence.get("active_process_limit") == 1
+                    and started_evidence.get("kill_on_close") is True
+                    and started_evidence.get("resume_after_assignment") is True
+                ):
+                    deadline = (
+                        time.monotonic()
+                        + float(limits.cleanup_grace_seconds)
+                    )
+                    _terminate_process(process, deadline)
+                    process.close()
+                    raise RuntimeError(
+                        "Windows Job assignment and limits were not proven"
+                    )
             if process.stdout is None or process.stderr is None:
                 raise RuntimeError("launcher must provide binary stdout and stderr pipes")
             threads = [
@@ -471,6 +510,26 @@ def run_bounded_process(
             else:
                 pipe_cleanup_complete = False
 
+            containment: dict[str, object] = {}
+            if windows_job_required:
+                completed, _value, error = _bounded_call(
+                    process.close,
+                    cleanup_deadline,
+                )
+                job_cleanup_complete = completed and error is None
+                if job_cleanup_complete:
+                    containment = process.containment_evidence()
+                    job_cleanup_complete = (
+                        containment.get("real_windows_job") is True
+                        and containment.get("assignment_proven") is True
+                        and containment.get("active_process_limit") == 1
+                        and containment.get("kill_on_close") is True
+                        and containment.get("resume_after_assignment") is True
+                        and containment.get("final_active_processes") == 0
+                        and containment.get("handles_closed") is True
+                        and containment.get("cleanup_certain") is True
+                    )
+
             raw_stdout = b""
             raw_stderr = b""
             if reader_cleanup_complete:
@@ -498,6 +557,7 @@ def run_bounded_process(
 
         cleanup_complete = (
             process_cleanup_complete
+            and job_cleanup_complete
             and reader_cleanup_complete
             and pipe_cleanup_complete
             and temporary_cleanup_complete
@@ -537,6 +597,8 @@ def run_bounded_process(
                 errors.append(f"capture_reader_error:{state['reader_error']}")
         if not process_cleanup_complete:
             errors.append("process_cleanup_incomplete")
+        if not job_cleanup_complete:
+            errors.append("windows_job_cleanup_incomplete")
         if not reader_cleanup_complete:
             errors.append(
                 "capture_cleanup_incomplete:task5_containment_required"
@@ -565,6 +627,7 @@ def run_bounded_process(
             cleanup_complete=cleanup_complete,
             cleanup_deferred=cleanup_deferred,
             deferred_cleanup_status=deferred_cleanup_status,
+            containment=containment,
         )
     finally:
         pass

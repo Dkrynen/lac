@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ from .identity import (
     capture_preflight_identities,
     compare_postflight_identities,
 )
+from .windows_job import WindowsJobProcess
 
 
 _RUN_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$")
@@ -284,6 +286,68 @@ def _bounded_capture_result(
     )
 
 
+def _windows_containment_result(
+    results: dict[str, ArmResult],
+    measured_arms: set[str],
+) -> EvidenceControlResult:
+    invalid: list[str] = []
+    details: dict[str, Any] = {}
+    for arm in ("stock", "lac"):
+        capture = results[arm].capture
+        measured = (
+            capture.get("windows_job")
+            if isinstance(capture, dict)
+            else None
+        )
+        details[arm] = measured
+        if arm not in measured_arms:
+            invalid.append(
+                f"{arm}: containment was not produced by the measured "
+                "default adapter"
+            )
+            continue
+        if not isinstance(measured, dict):
+            invalid.append(f"{arm}: Windows Job evidence is missing")
+            continue
+        if capture.get("windows_job_measured") is not True:
+            invalid.append(f"{arm}: typed Job measurement marker is missing")
+            continue
+        expected = {
+            "real_windows_job": True,
+            "assignment_proven": True,
+            "active_process_limit": 1,
+            "kill_on_close": True,
+            "resume_after_assignment": True,
+            "final_active_processes": 0,
+            "handles_closed": True,
+            "cleanup_certain": True,
+        }
+        for name, value in expected.items():
+            observed = measured.get(name)
+            if name in {
+                "active_process_limit",
+                "final_active_processes",
+            } and type(observed) is not int:
+                invalid.append(f"{arm}: {name} is not an exact integer")
+            elif observed != value:
+                invalid.append(
+                    f"{arm}: {name} was not proven as {value!r}"
+                )
+    return EvidenceControlResult(
+        "windows_process_tree_containment",
+        EvidenceState.FAIL if invalid else EvidenceState.PASS,
+        (
+            "; ".join(invalid)
+            if invalid
+            else (
+                "stock and LAC arms proved assignment-before-resume, "
+                "active-process limiting, and zero-active cleanup"
+            )
+        ),
+        {"arms": details},
+    )
+
+
 def _complete_config_identity(value: Any) -> bool:
     return (
         isinstance(value, dict)
@@ -395,6 +459,7 @@ def run_evaluation(
         identity_results = _identity_failures(reason)
 
     results: dict[str, ArmResult] = {}
+    measured_windows_arms: set[str] = set()
     scores: dict[str, ScoreResult] = {}
     fixture_controls: list[EvidenceControlResult] = []
     try:
@@ -435,6 +500,10 @@ def run_evaluation(
                         adapter_kwargs["resolve_bin_fn"] = (
                             lambda: preflight.opencode.path
                         )
+                        if os.name == "nt":
+                            adapter_kwargs["launcher"] = (
+                                WindowsJobProcess.start
+                            )
                     candidate = adapter(
                         arm_task,
                         model,
@@ -443,6 +512,12 @@ def run_evaluation(
                         **adapter_kwargs,
                     )
                 result = _validated_result(arm, model, candidate)
+                if (
+                    os.name == "nt"
+                    and adapter in (run_stock, run_lac)
+                    and result.capture.get("windows_job_measured") is True
+                ):
+                    measured_windows_arms.add(arm)
             except Exception as exc:
                 result = _adapter_failure(arm, model, exc)
             score = _score_result(result, plan.task.scorer.expected)
@@ -584,6 +659,7 @@ def run_evaluation(
             "immutable_ollama_model_lineage",
             "sealed_fixture_materialization",
             "bounded_process_and_http_capture",
+            "windows_process_tree_containment",
         }
     ]
     fixture_ok = len(fixture_controls) == 3 and all(
@@ -596,6 +672,10 @@ def run_evaluation(
         {"arms": [item.details for item in fixture_controls]},
     )
     capture_result = _bounded_capture_result(results)
+    windows_containment_result = _windows_containment_result(
+        results,
+        measured_windows_arms,
+    )
     evidence = seal_evidence(
         run_root,
         mode,
@@ -603,6 +683,7 @@ def run_evaluation(
             *carried_results,
             *identity_results,
             fixture_result,
+            windows_containment_result,
             capture_result,
         ],
     )

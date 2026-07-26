@@ -667,6 +667,52 @@ def test_run_opencode_persists_exact_capture_overflow_reason(tmp_path):
     _assert_config_identity_complete_and_released(result)
 
 
+def test_run_opencode_preserves_measured_windows_job_evidence(tmp_path):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    containment = {
+        "real_windows_job": True,
+        "assignment_proven": True,
+        "active_process_limit": 1,
+        "memory_limit_bytes": None,
+        "kill_on_close": True,
+        "resume_after_assignment": True,
+        "final_active_processes": 0,
+        "handles_closed": True,
+        "cleanup_certain": True,
+    }
+    raw = _successful_stdout().encode("utf-8")
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=lambda *_a, **_kw: CapturedProcess(
+            exit_code=0,
+            stdout=raw.decode("utf-8"),
+            stderr="",
+            completed=True,
+            timed_out=False,
+            overflowed=False,
+            observed_stdout_bytes=len(raw),
+            observed_stderr_bytes=0,
+            limits=DEFAULT_CAPTURE_LIMITS,
+            errors=(),
+            temporary_paths=(),
+            raw_stdout=raw,
+            raw_stderr=b"",
+            containment=containment,
+        ),
+    )
+
+    assert result.completed is True
+    assert result.capture["windows_job_measured"] is True
+    assert result.capture["windows_job"] == containment
+    _assert_config_identity_complete_and_released(result)
+
+
 def test_run_opencode_records_timeout(tmp_path):
     workspace = tmp_path / "lac"
     workspace.mkdir()

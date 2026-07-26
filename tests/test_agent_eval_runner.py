@@ -28,6 +28,7 @@ from backend.agent_eval.runner import (
     run_evaluation,
 )
 from backend.agent_eval.task import EvalScorer, EvalTask
+from backend.agent_eval.windows_job import WindowsJobProcess
 
 
 def _task(tmp_path: Path) -> EvalTask:
@@ -71,6 +72,7 @@ def _result(
     elif capture_valid:
         capture = {
             "cleanup_complete": True,
+            "windows_job_measured": True,
             "stdout": {
                 "allowed_bytes": 4 * 1024 * 1024,
                 "observed_bytes": 512,
@@ -80,6 +82,17 @@ def _result(
                 "allowed_bytes": 1024 * 1024,
                 "observed_bytes": 0,
                 "overflowed": False,
+            },
+            "windows_job": {
+                "real_windows_job": True,
+                "assignment_proven": True,
+                "active_process_limit": 1,
+                "memory_limit_bytes": None,
+                "kill_on_close": True,
+                "resume_after_assignment": True,
+                "final_active_processes": 0,
+                "handles_closed": True,
+                "cleanup_certain": True,
             },
         }
     return ArmResult(
@@ -560,12 +573,15 @@ def test_default_opencode_arms_execute_exact_preflight_target(
     executed = {}
 
     def fake_run(task, model, host, workspace, arm, **kwargs):
-        executed[arm] = kwargs["resolve_bin_fn"]()
+        executed[arm] = (
+            kwargs["resolve_bin_fn"](),
+            kwargs["launcher"],
+        )
         return _result(arm, model, "ZeroDivisionError")
 
     monkeypatch.setattr(opencode_module, "_run_opencode", fake_run)
 
-    run_evaluation(
+    comparison = run_evaluation(
         _plan(tmp_path),
         run_id="direct-target",
         raw_fn=lambda task, model, host: _result(
@@ -587,7 +603,16 @@ def test_default_opencode_arms_execute_exact_preflight_target(
         identity_lease_fn=_noop_identity_lease,
     )
 
-    assert executed == {"stock": target, "lac": target}
+    assert executed == {
+        "stock": (target, WindowsJobProcess.start),
+        "lac": (target, WindowsJobProcess.start),
+    }
+    containment = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "windows_process_tree_containment"
+    )
+    assert containment["state"] == "pass"
 
 
 def test_runtime_files_cannot_be_mutated_during_runner_execution(tmp_path):
@@ -836,3 +861,85 @@ def test_runner_fails_closed_on_malformed_or_overflowed_capture_evidence(
     )
     assert carried["state"] == "fail"
     assert arm in carried["reason"]
+
+
+def test_runner_rejects_fabricated_containment_from_injected_adapters(tmp_path):
+    injected = EvidenceControlResult(
+        "windows_process_tree_containment",
+        EvidenceState.FAIL,
+        "caller verdict must be replaced",
+    )
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="derived-windows-containment",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=lambda task, model, host, workspace: _result(
+            "stock", model, "ZeroDivisionError"
+        ),
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+        preliminary_results=(injected,),
+    )
+
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "windows_process_tree_containment"
+    )
+    assert control["state"] == "fail"
+    assert "not produced by the measured default adapter" in control["reason"]
+
+
+@pytest.mark.parametrize(
+    ("arm", "change"),
+    [
+        ("stock", {"real_windows_job": False}),
+        ("stock", {"assignment_proven": False}),
+        ("lac", {"active_process_limit": 2}),
+        ("lac", {"final_active_processes": 1}),
+        ("lac", {"handles_closed": False}),
+        ("stock", {"cleanup_certain": False}),
+        ("stock", {"active_process_limit": True}),
+        ("lac", {"final_active_processes": False}),
+    ],
+)
+def test_runner_replaces_injected_windows_pass_with_measured_failure(
+    tmp_path, arm, change
+):
+    injected = EvidenceControlResult(
+        "windows_process_tree_containment",
+        EvidenceState.PASS,
+        "caller assertion must be ignored",
+    )
+
+    def result_for(candidate, model):
+        result = _result(candidate, model, "ZeroDivisionError")
+        if candidate == arm:
+            capture = dict(result.capture)
+            windows_job = dict(capture["windows_job"])
+            windows_job.update(change)
+            capture["windows_job"] = windows_job
+            return replace(result, capture=capture)
+        return result
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id=f"invalid-windows-{arm}-{next(iter(change))}",
+        raw_fn=lambda task, model, host: result_for("raw", model),
+        stock_fn=lambda task, model, host, workspace: result_for(
+            "stock", model
+        ),
+        lac_fn=lambda task, model, host, workspace: result_for("lac", model),
+        preliminary_results=(injected,),
+    )
+
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "windows_process_tree_containment"
+    )
+    assert control["state"] == "fail"
+    assert arm in control["reason"]

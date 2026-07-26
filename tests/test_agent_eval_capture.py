@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 import sys
 import threading
@@ -15,6 +16,7 @@ from backend.agent_eval.capture import (
     capture_bounded_response,
     run_bounded_process,
 )
+from backend.agent_eval.windows_job import WindowsJobProcess
 
 
 class Response:
@@ -824,3 +826,87 @@ def test_bounded_process_never_uses_unbounded_wait_when_termination_is_ineffecti
     )
     assert process.wait_timeouts
     assert all(value is not None for value in process.wait_timeouts)
+
+
+def test_verified_windows_launcher_refuses_non_job_result(tmp_path):
+    class OrdinaryProcess:
+        def __init__(self):
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.returncode = None
+            self.terminate_calls = 0
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminate_calls += 1
+            self.returncode = 1
+
+        def kill(self):
+            self.returncode = 1
+
+        def wait(self, timeout=None):
+            assert timeout is not None
+            return self.returncode
+
+    ordinary = OrdinaryProcess()
+
+    def launcher(*_args, **_kwargs):
+        return ordinary
+
+    launcher._windows_job_launcher = True
+    with pytest.raises(RuntimeError, match="real WindowsJobProcess"):
+        run_bounded_process(
+            ["ordinary.exe"],
+            cwd=tmp_path,
+            env={},
+            timeout=1,
+            limits=CaptureLimits(cleanup_grace_seconds=0.1),
+            launcher=launcher,
+        )
+    assert ordinary.terminate_calls == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object contract")
+@pytest.mark.parametrize("failure_mode", ["timeout", "overflow"])
+def test_windows_job_timeout_and_overflow_prove_zero_active_processes(
+    tmp_path, failure_mode
+):
+    if failure_mode == "timeout":
+        script = "import time; time.sleep(30)"
+        timeout = 0.05
+        limits = CaptureLimits(
+            stdout_bytes=128,
+            stderr_bytes=128,
+            cleanup_grace_seconds=2,
+        )
+    else:
+        script = (
+            "import sys,time; "
+            "sys.stdout.buffer.write(b'x'*4096); "
+            "sys.stdout.buffer.flush(); time.sleep(30)"
+        )
+        timeout = 10
+        limits = CaptureLimits(
+            stdout_bytes=128,
+            stderr_bytes=128,
+            cleanup_grace_seconds=2,
+        )
+
+    result = run_bounded_process(
+        [getattr(sys, "_base_executable", sys.executable), "-c", script],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=timeout,
+        limits=limits,
+        launcher=WindowsJobProcess.start,
+    )
+
+    assert result.completed is False
+    assert result.timed_out is (failure_mode == "timeout")
+    assert result.overflowed is (failure_mode == "overflow")
+    assert result.cleanup_complete is True
+    assert result.containment["final_active_processes"] == 0
+    assert result.containment["handles_closed"] is True
+    assert result.containment["cleanup_certain"] is True
