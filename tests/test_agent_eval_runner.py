@@ -219,6 +219,34 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
     assert evidence["artifact_valid"] is False
 
 
+def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
+    from backend.agent_eval.identity import EvaluationIdentitySnapshot
+    from backend.agent_eval.evidence import EvidenceControlResult, EvidenceState
+
+    snapshot = EvaluationIdentitySnapshot.for_test()
+    def capture(_plan):
+        return snapshot
+    def compare(before, after):
+        assert before is snapshot and after is snapshot
+        return (
+            EvidenceControlResult("runtime_dependency_provenance", EvidenceState.PASS, "unchanged"),
+            EvidenceControlResult("immutable_ollama_model_lineage", EvidenceState.PASS, "unchanged"),
+        )
+
+    comparison = run_evaluation(
+        _plan(tmp_path), run_id="identity-run",
+        raw_fn=lambda task, model, host: _result("raw", model, "ZeroDivisionError"),
+        stock_fn=lambda task, model, host, workspace: _result("stock", model, "ZeroDivisionError"),
+        lac_fn=lambda task, model, host, workspace: _result("lac", model, "ZeroDivisionError"),
+        identity_capture_fn=capture, identity_compare_fn=compare,
+    )
+    identity_root = tmp_path / "evidence" / "identity-run" / "identities"
+    assert {path.name for path in identity_root.iterdir()} == {"lac.json", "ollama.json", "opencode.json", "models.json"}
+    states = {item["name"]: item["state"] for item in comparison["evidence"]["controls"]["results"]}
+    assert states["runtime_dependency_provenance"] == "pass"
+    assert states["immutable_ollama_model_lineage"] == "pass"
+
+
 def test_run_evaluation_persists_partial_arm_failure(tmp_path):
     def crash(*_args):
         raise RuntimeError("adapter bug")

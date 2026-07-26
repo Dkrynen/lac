@@ -8,6 +8,24 @@ from backend.agent_launch.config_writer import (
 )
 
 
+def test_evaluation_config_is_local_only_and_disables_ambient_features(tmp_path):
+    from backend.agent_launch.config_writer import write_opencode_config_file
+
+    out = write_opencode_config_file(
+        tmp_path / "runtime" / "opencode.json", "gpt-oss:20b", "http://127.0.0.1:11434"
+    )
+    cfg = json.loads(out.read_text(encoding="utf-8"))
+    assert "$schema" not in cfg
+    assert cfg["autoupdate"] is False
+    assert cfg["share"] == "disabled"
+    assert cfg["enabled_providers"] == ["ollama"]
+    assert cfg["plugin"] == []
+    assert cfg["mcp"] == {}
+    assert cfg["instructions"] == []
+    assert cfg["formatter"] is False
+    assert cfg["snapshot"] is False
+
+
 def test_write_opencode_config_points_at_ollama_and_model(tmp_path):
     out = write_opencode_config(tmp_path, "qwen3:8b-agent", "http://localhost:11434")
     assert out == tmp_path / ".opencode" / "opencode.json"

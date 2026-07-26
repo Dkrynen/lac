@@ -28,6 +28,11 @@ from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
 from .result import ArmResult
 from .scoring import ScoreResult, score_exact_text
 from .task import EvalTask, snapshot_fixture
+from .identity import (
+    EvaluationIdentitySnapshot,
+    capture_preflight_identities,
+    compare_postflight_identities,
+)
 
 
 _RUN_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$")
@@ -241,6 +246,8 @@ def run_evaluation(
     environment: dict[str, Any] | None = None,
     mode: EvidenceMode = EvidenceMode.DIAGNOSTIC,
     preliminary_results: Iterable[EvidenceControlResult] = (),
+    identity_capture_fn: Callable[[EvaluationPlan], EvaluationIdentitySnapshot] = capture_preflight_identities,
+    identity_compare_fn: Callable[[EvaluationIdentitySnapshot, EvaluationIdentitySnapshot], tuple[EvidenceControlResult, EvidenceControlResult]] = compare_postflight_identities,
 ) -> dict[str, Any]:
     run_id = run_id or _default_run_id()
     if not _RUN_ID.fullmatch(run_id):
@@ -255,6 +262,22 @@ def run_evaluation(
     arms_root.mkdir()
     manifest = _manifest(plan, environment or {}, mode)
     atomic_write_json(run_root / "manifest.json", manifest)
+
+    identity_results: tuple[EvidenceControlResult, ...]
+    preflight: EvaluationIdentitySnapshot | None = None
+    try:
+        preflight = identity_capture_fn(plan)
+        identity_root = run_root / "identities"
+        identity_root.mkdir()
+        for name, payload in preflight.artifact_payloads().items():
+            atomic_write_json(identity_root / f"{name}.json", payload)
+        identity_results = ()
+    except Exception as exc:
+        reason = f"identity preflight failed: {type(exc).__name__}: {exc}"
+        identity_results = (
+            EvidenceControlResult("runtime_dependency_provenance", EvidenceState.FAIL, reason, {}),
+            EvidenceControlResult("immutable_ollama_model_lineage", EvidenceState.FAIL, reason, {}),
+        )
 
     results: dict[str, ArmResult] = {}
     scores: dict[str, ScoreResult] = {}
@@ -302,6 +325,19 @@ def run_evaluation(
             {"result": asdict(result), "score": asdict(score)},
         )
 
+    if preflight is not None:
+        try:
+            identity_results = identity_compare_fn(preflight, identity_capture_fn(plan))
+        except Exception as exc:
+            reason = f"identity postflight failed: {type(exc).__name__}: {exc}"
+            identity_results = (
+                EvidenceControlResult("runtime_dependency_provenance", EvidenceState.FAIL, reason, {}),
+                EvidenceControlResult("immutable_ollama_model_lineage", EvidenceState.FAIL, reason, {}),
+            )
+
+    identity_valid = all(
+        item.state is EvidenceState.PASS for item in identity_results
+    )
     comparison = {
         "schema_version": 1,
         "run_id": run_id,
@@ -314,7 +350,20 @@ def run_evaluation(
         "passes": {arm: score.passed for arm, score in scores.items()},
         "models": {arm: result.model for arm, result in results.items()},
         "fixture_sha256": plan.fixture_sha256,
+        "identity_valid": identity_valid,
+        "identity_controls": [
+            {"name": item.name, "state": item.state.value, "reason": item.reason}
+            for item in identity_results
+        ],
     }
     atomic_write_json(run_root / "comparison.json", comparison)
-    evidence = seal_evidence(run_root, mode, preliminary_results)
+    carried_results = [
+        item
+        for item in preliminary_results
+        if item.name not in {
+            "runtime_dependency_provenance",
+            "immutable_ollama_model_lineage",
+        }
+    ]
+    evidence = seal_evidence(run_root, mode, [*carried_results, *identity_results])
     return {**comparison, "evidence": evidence}

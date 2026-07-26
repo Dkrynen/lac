@@ -70,6 +70,7 @@ def build_opencode_config(
     *,
     permission: dict | None = None,
     tools: dict | None = None,
+    evaluation: bool = False,
 ) -> dict:
     base_url = ollama_host.rstrip("/") + "/v1"
     config = {
@@ -88,6 +89,20 @@ def build_opencode_config(
         config["permission"] = copy.deepcopy(permission)
     if tools is not None:
         config["tools"] = copy.deepcopy(tools)
+    if evaluation:
+        config.pop("$schema")
+        config.update(
+            {
+                "autoupdate": False,
+                "share": "disabled",
+                "enabled_providers": ["ollama"],
+                "plugin": [],
+                "mcp": {},
+                "instructions": [],
+                "formatter": False,
+                "snapshot": False,
+            }
+        )
     return config
 
 
@@ -110,7 +125,7 @@ def write_opencode_config_file(
     out.write_text(
         json.dumps(
             build_opencode_config(
-                model, ollama_host, permission=permission, tools=tools
+                model, ollama_host, permission=permission, tools=tools, evaluation=True
             ),
             indent=2,
         ),
