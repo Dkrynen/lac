@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.agent_eval.evidence import EvidenceMode
 from backend.agent_eval.result import ArmResult
 from backend.agent_eval.runner import (
     EvalPlanError,
@@ -163,7 +164,6 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
 
     run_root = tmp_path / "evidence" / "run-001"
     assert comparison["artifact_written"] is True
-    assert comparison["artifact_valid"] is False
     assert "runtime_dependency_provenance" in comparison["evidence_blockers"]
     assert comparison["all_arms_executed"] is True
     assert comparison["all_arms_passed"] is False
@@ -212,7 +212,11 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
     }
     assert json.loads(
         (run_root / "comparison.json").read_text(encoding="utf-8")
-    ) == comparison
+    ) == {key: value for key, value in comparison.items() if key != "evidence"}
+    evidence = json.loads((run_root / "evidence.json").read_text(encoding="utf-8"))
+    assert comparison["evidence"] == evidence
+    assert evidence["mode"] == EvidenceMode.DIAGNOSTIC.value
+    assert evidence["artifact_valid"] is False
 
 
 def test_run_evaluation_persists_partial_arm_failure(tmp_path):
@@ -239,7 +243,6 @@ def test_run_evaluation_persists_partial_arm_failure(tmp_path):
     )
     stock = json.loads(result_path.read_text(encoding="utf-8"))
     assert comparison["artifact_written"] is True
-    assert comparison["artifact_valid"] is False
     assert comparison["all_arms_executed"] is False
     assert comparison["passes"]["stock"] is False
     assert stock["result"]["completed"] is False

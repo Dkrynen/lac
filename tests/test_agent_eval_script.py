@@ -77,6 +77,9 @@ def test_dry_run_validates_real_boundaries_without_creating_output(tmp_path):
     assert "possible" in report["runtime_dependency_bootstrap"]
     assert report["os_egress_enforced"] is False
     assert report["evidence_ready"] is False
+    assert report["mode"] == "verified"
+    assert report["artifact_valid"] is False
+    assert report["controls"]["results"][0]["state"] == "unsupported"
 
 
 def test_script_refuses_missing_models_before_runner(tmp_path):
@@ -99,46 +102,36 @@ def test_script_refuses_missing_models_before_runner(tmp_path):
     assert "LAC model is not installed" in report["error"]
 
 
-def test_live_script_returns_zero_when_all_arms_execute_even_if_task_fails(tmp_path):
+def test_verified_script_stops_before_generation_when_controls_are_missing(tmp_path):
     script = _load_script()
     lines = []
-    captured = {}
-
-    def runner(plan, **kwargs):
-        captured.update(plan=plan, kwargs=kwargs)
-        return {
-            "artifact_valid": True,
-            "all_arms_executed": True,
-            "all_arms_passed": False,
-            "passes": {"raw": True, "stock": False, "lac": True},
-        }
 
     rc = script.main(
         _argv(tmp_path, "--run-id", "live-001"),
         list_models_fn=_models,
         resolve_bin_fn=lambda: Path("opencode"),
-        run_fn=runner,
-        environment_fn=lambda: {"git": {"commit": "abc"}},
+        run_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("verified mode must not execute arms")
+        ),
         out=lines.append,
     )
 
     report = json.loads("\n".join(lines))
-    assert rc == 0
-    assert report["all_arms_passed"] is False
-    assert captured["kwargs"]["run_id"] == "live-001"
-    assert captured["kwargs"]["environment"]["git"]["commit"] == "abc"
+    assert rc == 2
+    assert report["mode"] == "verified"
+    assert "runtime_dependency_provenance" in report["missing_controls"]
 
 
-def test_live_script_returns_one_for_partial_execution(tmp_path):
+def test_diagnostic_script_runs_and_returns_invalid_artifact_status(tmp_path):
     script = _load_script()
     lines = []
 
     rc = script.main(
-        _argv(tmp_path),
+        _argv(tmp_path, "--mode", "diagnostic"),
         list_models_fn=_models,
         resolve_bin_fn=lambda: Path("opencode"),
         run_fn=lambda *_a, **_kw: {
-            "artifact_valid": True,
+            "evidence": {"artifact_valid": False},
             "all_arms_executed": False,
             "all_arms_passed": False,
         },

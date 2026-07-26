@@ -18,7 +18,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.agent_eval.runner import build_plan, run_evaluation
+from backend.agent_eval.evidence import EvidenceMode, EvidenceState, EvidenceVerdict
+from backend.agent_eval.runner import (
+    build_plan,
+    preliminary_evidence_results,
+    run_evaluation,
+)
 from backend.agent_eval.task import load_task
 from backend.agent_launch.opencode_bin import (
     SUPPORTED_OPENCODE_VERSION,
@@ -146,6 +151,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--run-id", default=None)
     parser.add_argument(
+        "--mode",
+        choices=("verified", "diagnostic"),
+        default="verified",
+        help="verified fails closed; diagnostic artifacts are always invalid",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate identities and boundaries without creating files or model tokens.",
@@ -153,10 +164,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _dry_report(plan) -> dict[str, Any]:
+def _unready_controls(verdict: EvidenceVerdict) -> list[str]:
+    names = [
+        item.name
+        for item in verdict.results
+        if item.state is not EvidenceState.PASS
+    ]
+    return names + [name for name in verdict.missing if name not in names]
+
+
+def _dry_report(plan, mode: EvidenceMode) -> dict[str, Any]:
+    verdict = EvidenceVerdict.from_results(mode, preliminary_evidence_results())
     return {
         "ok": True,
         "dry_run": True,
+        "mode": mode.value,
         "task": plan.task.id,
         "models": {
             "raw": plan.base_model,
@@ -177,15 +199,10 @@ def _dry_report(plan) -> dict[str, Any]:
         "network": "loopback_ollama_only",
         "os_egress_enforced": False,
         "evidence_ready": False,
-        "evidence_blockers": [
-            "runtime_dependency_provenance",
-            "os_loopback_only_egress",
-            "immutable_ollama_model_lineage",
-            "sealed_fixture_materialization",
-            "windows_process_tree_containment",
-            "bounded_process_and_http_capture",
-            "counterbalanced_deterministic_sampling",
-        ],
+        "controls": verdict.to_dict(),
+        "artifact_valid": verdict.artifact_valid,
+        "missing_controls": _unready_controls(verdict),
+        "evidence_blockers": _unready_controls(verdict),
         "model_downloads": "forbidden",
         "runtime_dependency_bootstrap": (
             "possible_on_cold_opencode_config; source is not yet traced"
@@ -204,6 +221,7 @@ def main(
 ) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
     try:
+        mode = EvidenceMode(args.mode)
         task = load_task(args.task, SUITE_ROOT)
         installed = _model_names(
             (list_models_fn or _default_list_models)()
@@ -221,9 +239,29 @@ def main(
             source_root=ROOT,
         )
         if args.dry_run:
-            report = _dry_report(plan)
+            report = _dry_report(plan, mode)
             out(json.dumps(report, indent=2, sort_keys=True))
             return 0
+
+        preliminary_results = preliminary_evidence_results()
+        verdict = EvidenceVerdict.from_results(mode, preliminary_results)
+        missing_controls = _unready_controls(verdict)
+        if mode is EvidenceMode.VERIFIED and missing_controls:
+            out(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "mode": mode.value,
+                        "controls": verdict.to_dict(),
+                        "artifact_valid": verdict.artifact_valid,
+                        "missing_controls": missing_controls,
+                        "error": "verified evidence controls are not ready",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 2
 
         environment = (
             environment_fn()
@@ -234,11 +272,13 @@ def main(
             plan,
             run_id=args.run_id,
             environment=environment,
+            mode=mode,
+            preliminary_results=preliminary_results,
         )
         out(json.dumps(comparison, indent=2, sort_keys=True))
         return (
             0
-            if comparison.get("artifact_valid")
+            if comparison.get("evidence", {}).get("artifact_valid")
             and comparison.get("all_arms_executed")
             else 1
         )

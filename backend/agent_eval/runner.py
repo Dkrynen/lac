@@ -16,7 +16,14 @@ from backend.agent_launch.variant import (
     is_installed,
 )
 
+from .evidence import (
+    REQUIRED_CONTROLS,
+    EvidenceControlResult,
+    EvidenceMode,
+    EvidenceState,
+)
 from .opencode import run_lac, run_stock
+from .ledger import atomic_write_json, seal_evidence
 from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
 from .result import ArmResult
 from .scoring import ScoreResult, score_exact_text
@@ -24,15 +31,7 @@ from .task import EvalTask, snapshot_fixture
 
 
 _RUN_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$")
-_EVIDENCE_BLOCKERS = (
-    "runtime_dependency_provenance",
-    "os_loopback_only_egress",
-    "immutable_ollama_model_lineage",
-    "sealed_fixture_materialization",
-    "windows_process_tree_containment",
-    "bounded_process_and_http_capture",
-    "counterbalanced_deterministic_sampling",
-)
+_EVIDENCE_BLOCKERS = REQUIRED_CONTROLS[:-1]
 
 
 class EvalPlanError(ValueError):
@@ -110,14 +109,24 @@ def build_plan(
     )
 
 
-def _write_json(path: Path, value: Any) -> None:
-    path.write_text(
-        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+def preliminary_evidence_results() -> tuple[EvidenceControlResult, ...]:
+    """Report Task 1's controls as explicitly unsupported until later tasks add them."""
+    return tuple(
+        EvidenceControlResult(
+            name,
+            EvidenceState.UNSUPPORTED,
+            "not implemented in the current evidence pipeline",
+            {},
+        )
+        for name in _EVIDENCE_BLOCKERS
     )
 
 
-def _manifest(plan: EvaluationPlan, environment: dict[str, Any]) -> dict[str, Any]:
+def _manifest(
+    plan: EvaluationPlan,
+    environment: dict[str, Any],
+    mode: EvidenceMode,
+) -> dict[str, Any]:
     task_contract = {
         "schema_version": plan.task.schema_version,
         "id": plan.task.id,
@@ -178,10 +187,7 @@ def _manifest(plan: EvaluationPlan, environment: dict[str, Any]) -> dict[str, An
             ),
             "os_egress_enforced": False,
         },
-        "evidence_validity": {
-            "ready": False,
-            "blockers": list(_EVIDENCE_BLOCKERS),
-        },
+        "evidence_mode": mode.value,
         "environment": environment,
     }
 
@@ -233,6 +239,8 @@ def run_evaluation(
     stock_fn: Callable[..., ArmResult] = run_stock,
     lac_fn: Callable[..., ArmResult] = run_lac,
     environment: dict[str, Any] | None = None,
+    mode: EvidenceMode = EvidenceMode.DIAGNOSTIC,
+    preliminary_results: Iterable[EvidenceControlResult] = (),
 ) -> dict[str, Any]:
     run_id = run_id or _default_run_id()
     if not _RUN_ID.fullmatch(run_id):
@@ -245,8 +253,8 @@ def run_evaluation(
     arms_root = run_root / "arms"
     workspaces_root.mkdir(parents=True)
     arms_root.mkdir()
-    manifest = _manifest(plan, environment or {})
-    _write_json(run_root / "manifest.json", manifest)
+    manifest = _manifest(plan, environment or {}, mode)
+    atomic_write_json(run_root / "manifest.json", manifest)
 
     results: dict[str, ArmResult] = {}
     scores: dict[str, ScoreResult] = {}
@@ -289,7 +297,7 @@ def run_evaluation(
         )
         (arm_dir / "stdout.log").write_text(result.raw_stdout, encoding="utf-8")
         (arm_dir / "stderr.log").write_text(result.raw_stderr, encoding="utf-8")
-        _write_json(
+        atomic_write_json(
             arm_dir / "result.json",
             {"result": asdict(result), "score": asdict(score)},
         )
@@ -299,7 +307,6 @@ def run_evaluation(
         "run_id": run_id,
         "run_root": str(run_root),
         "artifact_written": True,
-        "artifact_valid": False,
         "evidence_blockers": list(_EVIDENCE_BLOCKERS),
         "all_arms_executed": all(result.completed for result in results.values()),
         "all_arms_passed": all(score.passed for score in scores.values()),
@@ -308,5 +315,6 @@ def run_evaluation(
         "models": {arm: result.model for arm, result in results.items()},
         "fixture_sha256": plan.fixture_sha256,
     }
-    _write_json(run_root / "comparison.json", comparison)
-    return comparison
+    atomic_write_json(run_root / "comparison.json", comparison)
+    evidence = seal_evidence(run_root, mode, preliminary_results)
+    return {**comparison, "evidence": evidence}
