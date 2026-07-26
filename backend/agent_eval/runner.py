@@ -368,12 +368,13 @@ def run_evaluation(
                 fixture_controls.append(
                     EvidenceControlResult(
                         "sealed_fixture_materialization", EvidenceState.FAIL,
-                        f"{arm} materialization failed: {type(exc).__name__}: {exc}", {},
+                        f"{arm} materialization failed: {type(exc).__name__}: {exc}",
+                        {"arm": arm, "acl_hardened": False},
                     )
                 )
             arm_task = replace(plan.task, fixture_root=workspace)
             try:
-                if seal is None or not seal.ok:
+                if seal is None or not seal.ok or not seal.acl_hardened:
                     raise EvalPlanError("sealed fixture materialization was not available")
                 if arm == "raw":
                     candidate = adapter(arm_task, model, plan.ollama_host)
@@ -402,9 +403,13 @@ def run_evaluation(
             results[arm] = result
             scores[arm] = score
 
-            effective_prompt = (
-                build_raw_prompt(arm_task) if arm == "raw" else arm_task.prompt
-            )
+            if arm == "raw":
+                try:
+                    effective_prompt = build_raw_prompt(arm_task)
+                except Exception:
+                    effective_prompt = arm_task.prompt
+            else:
+                effective_prompt = arm_task.prompt
             (arm_dir / "prompt.txt").write_text(
                 effective_prompt, encoding="utf-8"
             )
@@ -421,24 +426,41 @@ def run_evaluation(
             verification = verify_materialized_fixture(plan.fixture_manifest, workspace)
             atomic_write_json(
                 arm_dir / "fixture-manifest.after.json",
-                plan.fixture_manifest.to_dict() if verification.ok else {
-                    **plan.fixture_manifest.to_dict(), "verification_error": verification.reason
+                {
+                    "expected": plan.fixture_manifest.to_dict(),
+                    "observed": verification.observed_dict(),
+                    "verification": {
+                        "ok": verification.ok,
+                        "reason": verification.reason,
+                    },
                 },
             )
-            if seal is not None and seal.ok and verification.ok:
+            if (
+                seal is not None
+                and seal.ok
+                and seal.acl_hardened
+                and verification.ok
+            ):
                 fixture_controls.append(
                     EvidenceControlResult(
                         "sealed_fixture_materialization", EvidenceState.PASS,
                         f"{arm} fixture matched its sealed manifest",
-                        {"aggregate_sha256": verification.aggregate_sha256, "acl_hardened": seal.acl_hardened},
+                        {
+                            "arm": arm,
+                            "aggregate_sha256": verification.aggregate_sha256,
+                            "acl_hardened": seal.acl_hardened,
+                        },
                     )
                 )
             elif seal is not None:
                 fixture_controls.append(
                     EvidenceControlResult(
                         "sealed_fixture_materialization", EvidenceState.FAIL,
-                        f"{arm} fixture changed after materialization: {verification.reason}",
-                        {"acl_hardened": seal.acl_hardened},
+                        (
+                            f"{arm} fixture seal or verification failed: "
+                            f"{seal.reason or verification.reason}"
+                        ),
+                        {"arm": arm, "acl_hardened": seal.acl_hardened},
                     )
                 )
 

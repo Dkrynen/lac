@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import backend.agent_eval.identity as identity_module
+import backend.agent_eval.fixture as fixture_module
 import backend.agent_eval.opencode as opencode_module
 from backend.agent_eval.evidence import (
     EvidenceControlResult,
@@ -19,6 +21,7 @@ from backend.agent_eval.identity import (
     file_identity,
 )
 from backend.agent_eval.result import ArmResult
+from backend.agent_eval.fixture import FixtureSealResult
 from backend.agent_eval.runner import (
     EvalPlanError,
     build_plan,
@@ -119,6 +122,17 @@ class _NoopIdentityLease:
 
 def _noop_identity_lease(_snapshot):
     return _NoopIdentityLease()
+
+
+@pytest.fixture(autouse=True)
+def _restore_workspace_acls_after_test(tmp_path):
+    yield
+    evidence_root = tmp_path / "evidence"
+    if not evidence_root.exists():
+        return
+    for workspace in evidence_root.glob("*/workspaces/*"):
+        if workspace.is_dir():
+            fixture_module._restore_fixture_access(workspace)
 
 
 def test_build_plan_is_dry_and_records_exact_identities(tmp_path):
@@ -281,7 +295,121 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
         arm_dir = run_root / "arms" / name
         before = json.loads((arm_dir / "fixture-manifest.before.json").read_text(encoding="utf-8"))
         after = json.loads((arm_dir / "fixture-manifest.after.json").read_text(encoding="utf-8"))
-        assert before == after
+        assert after["expected"] == before
+        assert after["verification"] == {"ok": True, "reason": None}
+        assert after["observed"]["entries"] == before["entries"]
+        assert after["observed"]["aggregate_sha256"] == before["aggregate_sha256"]
+        assert after["observed"]["directories"] == []
+
+
+@pytest.mark.parametrize("change", ["mutation", "addition", "deletion"])
+def test_run_evaluation_after_artifact_records_observed_drift(
+    tmp_path, monkeypatch, change
+):
+    monkeypatch.setattr(
+        fixture_module,
+        "mark_fixture_read_only",
+        lambda _destination: FixtureSealResult(True, True),
+    )
+
+    def mutate(task, model, host, workspace):
+        target = task.fixture_root / "stats_service.py"
+        if change == "mutation":
+            target.write_bytes(b"mutated\n")
+        elif change == "addition":
+            (task.fixture_root / "unexpected.txt").write_text(
+                "added\n", encoding="utf-8"
+            )
+        else:
+            target.unlink()
+        return _result("stock", model, "ZeroDivisionError")
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id=f"observed-after-{change}",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=mutate,
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+    )
+
+    arm_dir = (
+        tmp_path
+        / "evidence"
+        / f"observed-after-{change}"
+        / "arms"
+        / "stock"
+    )
+    before = json.loads(
+        (arm_dir / "fixture-manifest.before.json").read_text(encoding="utf-8")
+    )
+    after = json.loads(
+        (arm_dir / "fixture-manifest.after.json").read_text(encoding="utf-8")
+    )
+    observed = after["observed"]["entries"]
+    expected = after["expected"]["entries"]
+    assert after["verification"]["ok"] is False
+    assert after["expected"] == before
+    observed_paths = {entry["path"] for entry in observed}
+    expected_paths = {entry["path"] for entry in expected}
+    if change == "mutation":
+        assert observed[0]["sha256"] == hashlib.sha256(b"mutated\n").hexdigest()
+        assert observed[0]["sha256"] != expected[0]["sha256"]
+    elif change == "addition":
+        assert observed_paths == {"stats_service.py", "unexpected.txt"}
+        assert expected_paths == {"stats_service.py"}
+    else:
+        assert observed_paths == set()
+        assert expected_paths == {"stats_service.py"}
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "sealed_fixture_materialization"
+    )
+    assert control["state"] == "fail"
+
+
+def test_runner_rejects_unverified_acl_seal_before_adapter(
+    tmp_path, monkeypatch
+):
+    called = []
+
+    def unverified_materialize(manifest, source, destination):
+        destination.mkdir()
+        for entry in manifest.entries:
+            target = destination / entry.path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((Path(source) / entry.path).read_bytes())
+        return FixtureSealResult(True, False, "ACL verification unavailable")
+
+    monkeypatch.setattr(
+        "backend.agent_eval.runner.materialize_fixture",
+        unverified_materialize,
+    )
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="unverified-acl",
+        raw_fn=lambda *_args: called.append("raw"),
+        stock_fn=lambda *_args: called.append("stock"),
+        lac_fn=lambda *_args: called.append("lac"),
+    )
+
+    assert called == []
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "sealed_fixture_materialization"
+    )
+    assert control["state"] == "fail"
+    assert all(
+        arm["acl_hardened"] is False
+        for arm in control["details"]["arms"]
+        if "acl_hardened" in arm
+    )
 
 
 def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
