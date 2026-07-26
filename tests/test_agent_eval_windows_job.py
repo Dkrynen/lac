@@ -358,11 +358,60 @@ def test_close_failure_remains_truthful_on_repeated_close(fake_win32):
 
     with pytest.raises(WindowsJobError, match="close_handle"):
         process.close()
-    calls_after_first_close = list(fake_win32.calls)
     with pytest.raises(WindowsJobError, match="close_handle"):
         process.close()
 
-    assert fake_win32.calls == calls_after_first_close
+    assert fake_win32.calls.count(("close_handle", process_handle)) == 2
+    assert process._process_handle == process_handle
+    assert process._closed is False
+
+
+def test_transient_process_handle_close_is_retried_without_reclosing_job(
+    fake_win32,
+):
+    process = fake_started_job(fake_win32)
+    process_handle = process._process_handle
+    job_handle = process._job_handle
+    fake_win32.fail_once[f"close_handle:{process_handle}"] = OSError(
+        "transient process close failure"
+    )
+
+    with pytest.raises(WindowsJobError, match="close_handle"):
+        process.close()
+    assert process._process_handle == process_handle
+    assert process._job_handle is None
+    assert process._closed is False
+
+    process.close()
+    assert process._process_handle is None
+    assert process._job_handle is None
+    assert process._closed is True
+    assert fake_win32.calls.count(("close_handle", process_handle)) == 2
+    assert fake_win32.calls.count(("close_handle", job_handle)) == 1
+
+
+def test_transient_job_handle_close_is_retried_without_reclosing_process(
+    fake_win32,
+):
+    process = fake_started_job(fake_win32)
+    process_handle = process._process_handle
+    job_handle = process._job_handle
+    fake_win32.fail_once[f"close_handle:{job_handle}"] = OSError(
+        "transient job close failure"
+    )
+
+    with pytest.raises(WindowsJobError, match="close_handle"):
+        process.close()
+    assert process._process_handle is None
+    assert process._job_handle == job_handle
+    assert process._closed is False
+
+    process.close()
+    assert process._process_handle is None
+    assert process._job_handle is None
+    assert process._closed is True
+    assert fake_win32.calls.count(("close_handle", process_handle)) == 1
+    assert fake_win32.calls.count(("close_handle", job_handle)) == 2
 
 
 def test_transient_termination_uncertainty_is_never_converted_to_close_success(

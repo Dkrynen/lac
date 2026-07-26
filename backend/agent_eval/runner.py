@@ -322,9 +322,19 @@ def _windows_containment_result(
             "handles_closed": True,
             "cleanup_certain": True,
         }
+        boolean_fields = {
+            "real_windows_job",
+            "assignment_proven",
+            "kill_on_close",
+            "resume_after_assignment",
+            "handles_closed",
+            "cleanup_certain",
+        }
         for name, value in expected.items():
             observed = measured.get(name)
-            if name in {
+            if name in boolean_fields and type(observed) is not bool:
+                invalid.append(f"{arm}: {name} is not an exact boolean")
+            elif name in {
                 "active_process_limit",
                 "final_active_processes",
             } and type(observed) is not int:

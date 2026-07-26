@@ -586,6 +586,7 @@ class WindowsJobProcess:
         self._final_active_processes: int | None = None
         self._terminated = False
         self._closed = False
+        self._cleanup_error: WindowsJobError | None = None
         self._close_error: WindowsJobError | None = None
 
     @classmethod
@@ -810,8 +811,8 @@ class WindowsJobProcess:
         if type(exit_code) is not int or not 0 <= exit_code <= 0xFFFFFFFF:
             raise ValueError("exit_code must be an unsigned 32-bit integer")
         if self._terminated:
-            if self._close_error is not None:
-                raise self._close_error
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
             return
         job, process = self._ensure_open_handle()
         try:
@@ -854,7 +855,8 @@ class WindowsJobProcess:
             self.returncode = observed_exit
             self._terminated = True
         except WindowsJobError as exc:
-            self._close_error = exc
+            if self._cleanup_error is None:
+                self._cleanup_error = exc
             raise
 
     def terminate_tree(self) -> None:
@@ -868,8 +870,8 @@ class WindowsJobProcess:
 
     def active_processes(self) -> int:
         if self._closed:
-            if self._close_error is not None:
-                raise self._close_error
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
             if self._final_active_processes != 0:
                 raise WindowsJobError("final active process count is uncertain")
             return 0
@@ -886,22 +888,22 @@ class WindowsJobProcess:
 
     def close(self) -> None:
         if self._closed:
-            if self._close_error is not None:
-                raise self._close_error
+            if self._cleanup_error is not None:
+                raise self._cleanup_error
             return
-        prior_error = self._close_error
-        errors: list[WindowsJobError] = []
-        if not self._terminated:
+        close_errors: list[WindowsJobError] = []
+        if (
+            not self._terminated
+            and self._process_handle is not None
+            and self._job_handle is not None
+        ):
             try:
                 self.terminate(1)
             except WindowsJobError as exc:
-                errors.append(exc)
-        self._closed = True
-        process_handle = self._process_handle
-        job_handle = self._job_handle
-        self._process_handle = None
-        self._job_handle = None
-        for handle in (process_handle, job_handle):
+                if self._cleanup_error is None:
+                    self._cleanup_error = exc
+        for field_name in ("_process_handle", "_job_handle"):
+            handle = getattr(self, field_name)
             if handle is None:
                 continue
             try:
@@ -910,27 +912,51 @@ class WindowsJobProcess:
                     lambda handle=handle: self._api.close_handle(handle),
                 )
             except WindowsJobError as exc:
-                errors.append(exc)
+                close_errors.append(exc)
+            else:
+                setattr(self, field_name, None)
         for stream in (self.stdout, self.stderr):
             if getattr(stream, "closed", False):
                 continue
             try:
                 _call("close_stream", stream.close)
             except WindowsJobError as exc:
-                errors.append(exc)
-        if prior_error is not None:
-            errors.append(prior_error)
-        if errors:
+                close_errors.append(exc)
+        resources_closed = (
+            self._process_handle is None
+            and self._job_handle is None
+            and all(
+                getattr(stream, "closed", False)
+                for stream in (self.stdout, self.stderr)
+            )
+        )
+        self._closed = resources_closed
+        if close_errors:
             self._close_error = WindowsJobError(
+                "; ".join(str(error) for error in close_errors)
+            )
+        else:
+            self._close_error = None
+        errors = [
+            error
+            for error in (self._cleanup_error, self._close_error)
+            if error is not None
+        ]
+        if errors:
+            raise WindowsJobError(
                 "; ".join(str(error) for error in errors)
             )
-            raise self._close_error
 
     def containment_evidence(self) -> dict[str, object]:
         handles_closed = (
             self._closed
             and self._process_handle is None
             and self._job_handle is None
+            and all(
+                getattr(stream, "closed", False)
+                for stream in (self.stdout, self.stderr)
+            )
+            and self._cleanup_error is None
             and self._close_error is None
         )
         return {
@@ -944,7 +970,11 @@ class WindowsJobProcess:
             "resume_after_assignment": self._resume_after_assignment,
             "final_active_processes": self._final_active_processes,
             "handles_closed": handles_closed,
-            "cleanup_certain": self._close_error is None and handles_closed,
+            "cleanup_certain": (
+                self._cleanup_error is None
+                and self._close_error is None
+                and handles_closed
+            ),
         }
 
 

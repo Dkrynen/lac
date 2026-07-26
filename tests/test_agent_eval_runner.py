@@ -24,6 +24,7 @@ from backend.agent_eval.result import ArmResult
 from backend.agent_eval.fixture import FixtureSealResult
 from backend.agent_eval.runner import (
     EvalPlanError,
+    _windows_containment_result,
     build_plan,
     run_evaluation,
 )
@@ -891,6 +892,37 @@ def test_runner_rejects_fabricated_containment_from_injected_adapters(tmp_path):
     )
     assert control["state"] == "fail"
     assert "not produced by the measured default adapter" in control["reason"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "real_windows_job",
+        "assignment_proven",
+        "kill_on_close",
+        "resume_after_assignment",
+        "handles_closed",
+        "cleanup_certain",
+    ],
+)
+@pytest.mark.parametrize("invalid", [1, 0, "truthy", ""])
+def test_measured_containment_requires_exact_boolean_fields(field, invalid):
+    results = {
+        "raw": _result("raw", "base", "ok"),
+        "stock": _result("stock", "base", "ok"),
+        "lac": _result("lac", "lac", "ok"),
+    }
+    stock = results["stock"]
+    capture = dict(stock.capture)
+    measurement = dict(capture["windows_job"])
+    measurement[field] = invalid
+    capture["windows_job"] = measurement
+    results["stock"] = replace(stock, capture=capture)
+
+    control = _windows_containment_result(results, {"stock", "lac"})
+
+    assert control.state is EvidenceState.FAIL
+    assert f"stock: {field} is not an exact boolean" in control.reason
 
 
 @pytest.mark.parametrize(
