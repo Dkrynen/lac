@@ -199,6 +199,8 @@ def test_package_metadata_is_found_at_npm_package_root(tmp_path):
         ("NotSigned", 0, "unsigned"),
         ("HashMismatch", 0, "invalid"),
         ("", 1, "unavailable"),
+        ("Valid", 1, "unavailable"),
+        ("NotSigned", 1, "unavailable"),
     ],
 )
 def test_authenticode_status_mapping_is_truthful(

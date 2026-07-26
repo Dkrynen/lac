@@ -173,12 +173,14 @@ def _default_authenticode(path: Path) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return "unavailable"
+    if completed.returncode != 0:
+        return "unavailable"
     status = completed.stdout.strip().lower()
     if status == "valid":
         return "valid"
     if status == "notsigned":
         return "unsigned"
-    if completed.returncode == 0 and status:
+    if status:
         return "invalid"
     return "unavailable"
 
