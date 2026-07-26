@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, TYPE_CHECKING
 
 from backend.agent_launch.opencode_bin import SUPPORTED_OPENCODE_VERSION
+from backend.agent_launch.opencode_bin import _probe_version
 
 from .capture import IDENTITY_RESPONSE_MAX_BYTES, OLLAMA_RESPONSE_MAX_BYTES, bounded_http_json
 from .evidence import EvidenceControlResult, EvidenceState
@@ -171,9 +172,9 @@ def _default_authenticode(path: Path) -> str:
     status = completed.stdout.strip().lower()
     if status == "valid":
         return "valid"
-    if status in {"notsigned", "unknownerror", "nottrusted"}:
+    if status == "notsigned":
         return "unsigned"
-    if status:
+    if completed.returncode == 0 and status:
         return "invalid"
     return "unavailable"
 
@@ -209,9 +210,11 @@ def _model_from_show(name: str, tag: dict[str, Any], show: dict[str, Any]) -> Mo
         raise IdentityError(f"model {name} has no full lowercase sha256 digest")
     if type(size) is not int or size < 0:
         raise IdentityError(f"model {name} has an invalid size")
-    selected = {field: show.get(field) for field in _SHOW_FIELDS}
-    if not isinstance(selected["modelfile"], str) or not isinstance(selected["parameters"], str):
+    if set(_SHOW_FIELDS) - set(show):
         raise IdentityError(f"model {name} show response is incomplete")
+    selected = {field: show[field] for field in _SHOW_FIELDS}
+    if not isinstance(selected["modelfile"], str) or not isinstance(selected["parameters"], str) or not isinstance(selected["template"], str) or not isinstance(selected["model_info"], dict) or not isinstance(selected["capabilities"], list):
+        raise IdentityError(f"model {name} show response has invalid field types")
     if not isinstance(selected["details"], dict):
         raise IdentityError(f"model {name} show details are invalid")
     match = _FROM_DIGEST.search(selected["modelfile"])
@@ -245,6 +248,8 @@ def capture_model_identities(base_name: str, lac_name: str, *, fetch_fn: Callabl
     base, lac = selected
     if lac.parent_model != base_name:
         raise IdentityError(f"LAC model parent must be exactly {base_name}")
+    if lac.from_blob_sha256 != base.from_blob_sha256:
+        raise IdentityError("LAC model FROM digest must match base immutable lineage")
     return ModelIdentities(base, lac)
 
 
@@ -263,6 +268,29 @@ def _package_metadata(binary: Path) -> Path | None:
     return None
 
 
+def _reject_unsafe_components(path: Path) -> None:
+    for component in (path, *path.parents):
+        if component == component.parent:
+            break
+        if os.path.lexists(component):
+            _reject_link(component)
+
+
+def _wrapper_target(wrapper: Path) -> Path:
+    _reject_unsafe_components(wrapper)
+    payload = wrapper.read_bytes()
+    if len(payload) > 128 * 1024:
+        raise IdentityError("OpenCode wrapper is too large")
+    match = re.search(rb"(?im)%~?dp0%?\\?node_modules\\opencode-ai\\bin\\opencode\.exe", payload)
+    if match is None:
+        raise IdentityError("OpenCode wrapper has no supported executable target")
+    target = wrapper.parent / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    _reject_unsafe_components(target)
+    if not target.is_file():
+        raise IdentityError("OpenCode wrapper target is missing")
+    return target
+
+
 def capture_preflight_identities(plan: "EvaluationPlan") -> EvaluationIdentitySnapshot:
     if plan.opencode_version != SUPPORTED_OPENCODE_VERSION:
         raise IdentityError(f"unsupported OpenCode version: {plan.opencode_version}")
@@ -276,14 +304,20 @@ def capture_preflight_identities(plan: "EvaluationPlan") -> EvaluationIdentitySn
         raise IdentityError("Ollama version response is invalid")
     opencode_path = Path(plan.opencode_binary)
     wrapper_path = opencode_path if opencode_path.suffix.lower() in {".cmd", ".bat"} else None
-    executable_path = opencode_path.with_suffix(".exe") if wrapper_path and opencode_path.with_suffix(".exe").is_file() else opencode_path
+    executable_path = _wrapper_target(wrapper_path) if wrapper_path else opencode_path
+    try:
+        actual_opencode_version = _probe_version(executable_path)
+    except RuntimeError as exc:
+        raise IdentityError(f"unable to prove OpenCode version: {exc}") from exc
+    if actual_opencode_version != SUPPORTED_OPENCODE_VERSION:
+        raise IdentityError(f"unsupported OpenCode version: {actual_opencode_version}")
     package = _package_metadata(executable_path)
     lac_path = Path(sys.executable)
     return EvaluationIdentitySnapshot(
         lac=file_identity(lac_path, version=None),
         ollama=file_identity(_ollama_executable(), version=version),
-        opencode=file_identity(executable_path, version=plan.opencode_version),
-        opencode_wrapper=file_identity(wrapper_path, version=None) if wrapper_path and wrapper_path != executable_path else None,
+        opencode=file_identity(executable_path, version=actual_opencode_version),
+        opencode_wrapper=file_identity(wrapper_path, version=None) if wrapper_path else None,
         package_metadata=file_identity(package, version=None) if package else None,
         ollama_version=version,
         config_sha256=MappingProxyType({

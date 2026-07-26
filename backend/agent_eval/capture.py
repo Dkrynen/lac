@@ -55,10 +55,19 @@ def bounded_http_json(
     _validate_url(url)
     if type(max_bytes) is not int or max_bytes < 0:
         raise ValueError("max_bytes must be a non-negative integer")
-    if method not in {"GET", "POST"}:
-        raise ValueError("unsupported capture HTTP method")
-    if method == "GET" and body is not None:
-        raise ValueError("GET capture requests cannot include a body")
+    expected = {
+        "/api/version": ("GET", None),
+        "/api/tags": ("GET", None),
+        "/api/show": ("POST", {"verbose": False}),
+    }
+    expected_method, expected_body = expected[urlsplit(url).path]
+    if method != expected_method:
+        raise ValueError("capture method is invalid for endpoint")
+    if expected_body is None:
+        if body is not None:
+            raise ValueError("GET capture requests cannot include a body")
+    elif not isinstance(body, dict) or set(body) != {"model", "verbose"} or not isinstance(body.get("model"), str) or not body["model"] or body.get("verbose") is not False:
+        raise ValueError("show capture body must be an exact model/verbose object")
     payload = None
     headers = {"Accept": "application/json"}
     if body is not None:
@@ -68,7 +77,25 @@ def bounded_http_json(
         headers["Content-Type"] = "application/json"
     request = Request(url, data=payload, method=method, headers=headers)
     with open_fn(request, timeout) as response:
-        raw = response.read(max_bytes + 1)
+        final_url = getattr(response, "geturl", lambda: url)()
+        if final_url != url:
+            raise ValueError("capture redirect is not allowed")
+        content_length = getattr(response, "headers", {}).get("Content-Length")
+        if content_length is not None:
+            try:
+                if int(content_length) > max_bytes:
+                    raise CaptureLimitExceeded(f"response exceeds {max_bytes} byte capture limit")
+            except ValueError as exc:
+                raise ValueError("response Content-Length is invalid") from exc
+        chunks = bytearray()
+        while True:
+            chunk = response.read(min(64 * 1024, max_bytes + 1 - len(chunks)))
+            if not chunk:
+                break
+            chunks.extend(chunk)
+            if len(chunks) > max_bytes:
+                raise CaptureLimitExceeded(f"response exceeds {max_bytes} byte capture limit")
+        raw = bytes(chunks)
     if len(raw) > max_bytes:
         raise CaptureLimitExceeded(f"response exceeds {max_bytes} byte capture limit")
     try:

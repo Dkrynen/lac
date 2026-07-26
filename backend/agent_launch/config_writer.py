@@ -4,6 +4,12 @@ project's `.opencode/` dir. We never edit OpenCode itself -- only its config."""
 import copy
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
+
+
+def _evaluation_loopback_host(host: str) -> bool:
+    parsed = urlsplit(host)
+    return parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"} and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
 
 _FAIL_CLOSED_PERMISSIONS = {
     "*": "ask",
@@ -73,6 +79,8 @@ def build_opencode_config(
     evaluation: bool = False,
 ) -> dict:
     base_url = ollama_host.rstrip("/") + "/v1"
+    if evaluation and not _evaluation_loopback_host(ollama_host):
+        raise ValueError("evaluation config requires an unauthenticated loopback Ollama host")
     config = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {

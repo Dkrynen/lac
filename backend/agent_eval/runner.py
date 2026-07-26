@@ -335,6 +335,22 @@ def run_evaluation(
                 EvidenceControlResult("immutable_ollama_model_lineage", EvidenceState.FAIL, reason, {}),
             )
 
+    config_evidence: dict[str, Any] = {}
+    config_ok = True
+    for arm in ("stock", "lac"):
+        measured = results[arm].metrics.get("opencode_config_identity")
+        config_evidence[arm] = measured
+        if not isinstance(measured, dict) or measured.get("before") != measured.get("after"):
+            config_ok = False
+    identity_root = run_root / "identities"
+    identity_root.mkdir(exist_ok=True)
+    atomic_write_json(identity_root / "opencode-configs.json", config_evidence)
+    if not config_ok:
+        identity_results = tuple(
+            EvidenceControlResult(item.name, EvidenceState.FAIL, "actual OpenCode config identity is missing or drifted", {"configs": config_evidence}) if item.name == "runtime_dependency_provenance" else item
+            for item in identity_results
+        )
+
     identity_valid = all(
         item.state is EvidenceState.PASS for item in identity_results
     )
@@ -355,6 +371,7 @@ def run_evaluation(
             {"name": item.name, "state": item.state.value, "reason": item.reason}
             for item in identity_results
         ],
+        "opencode_config_identities": config_evidence,
     }
     atomic_write_json(run_root / "comparison.json", comparison)
     carried_results = [

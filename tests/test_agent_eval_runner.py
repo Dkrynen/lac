@@ -34,6 +34,10 @@ def _task(tmp_path: Path) -> EvalTask:
 
 
 def _result(arm: str, model: str, response: str) -> ArmResult:
+    metrics = {"eval_count": 3}
+    if arm in {"stock", "lac"}:
+        config = {"path": f"C:/test/{arm}/opencode.json", "size": 1, "sha256": "a" * 64}
+        metrics["opencode_config_identity"] = {"before": config, "after": dict(config)}
     return ArmResult(
         arm=arm,
         model=model,
@@ -42,7 +46,7 @@ def _result(arm: str, model: str, response: str) -> ArmResult:
         timed_out=False,
         response=response,
         wall_time_ms=12.5,
-        metrics={"eval_count": 3},
+        metrics=metrics,
         raw_stdout=f"{arm}-stdout",
         raw_stderr=f"{arm}-stderr",
     )
@@ -241,7 +245,7 @@ def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
         identity_capture_fn=capture, identity_compare_fn=compare,
     )
     identity_root = tmp_path / "evidence" / "identity-run" / "identities"
-    assert {path.name for path in identity_root.iterdir()} == {"lac.json", "ollama.json", "opencode.json", "models.json"}
+    assert {path.name for path in identity_root.iterdir()} == {"lac.json", "ollama.json", "opencode.json", "opencode-configs.json", "models.json"}
     states = {item["name"]: item["state"] for item in comparison["evidence"]["controls"]["results"]}
     assert states["runtime_dependency_provenance"] == "pass"
     assert states["immutable_ollama_model_lineage"] == "pass"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import time
@@ -193,6 +194,7 @@ def _failure(
     exit_code: int | None = None,
     stdout: str = "",
     stderr: str = "",
+    metrics: dict[str, Any] | None = None,
 ) -> ArmResult:
     return ArmResult(
         arm=arm,
@@ -202,11 +204,25 @@ def _failure(
         timed_out=timed_out,
         response="",
         wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
-        errors=errors,
+        errors=errors, metrics=metrics or {},
         exit_code=exit_code,
         raw_stdout=stdout,
         raw_stderr=stderr,
     )
+
+
+def _config_identity(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("evaluation config is missing or linked")
+    before = path.stat()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(64 * 1024), b""):
+            digest.update(chunk)
+    after = path.stat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise ValueError("evaluation config changed during identity capture")
+    return {"path": str(path.resolve()), "size": before.st_size, "sha256": digest.hexdigest()}
 
 
 def _isolated_environment(
@@ -301,6 +317,7 @@ def _run_opencode(
             permission=permission,
             tools=_READ_ONLY_EVAL_TOOLS,
         )
+        config_before = _config_identity(config_path)
         environment = _isolated_environment(
             workspace_path, runtime_root, config_path, ollama_host
         )
@@ -335,6 +352,7 @@ def _run_opencode(
             env=environment,
         )
     except subprocess.TimeoutExpired as exc:
+        config_after = _config_identity(config_path)
         return _failure(
             arm,
             model,
@@ -343,11 +361,16 @@ def _run_opencode(
             timed_out=True,
             stdout=_as_text(exc.output),
             stderr=_as_text(exc.stderr),
+            metrics={"opencode_config_identity": {"before": config_before, "after": config_after}},
         )
     except Exception as exc:
+        config_after = _config_identity(config_path)
         return _failure(
-            arm, model, started, (f"{type(exc).__name__}: {exc}",)
+            arm, model, started, (f"{type(exc).__name__}: {exc}",), metrics={"opencode_config_identity": {"before": config_before, "after": config_after}},
         )
+
+    config_after = _config_identity(config_path)
+    config_metrics = {"opencode_config_identity": {"before": config_before, "after": config_after}}
 
     stdout = _as_text(getattr(process, "stdout", ""))
     stderr = _as_text(getattr(process, "stderr", ""))
@@ -361,11 +384,13 @@ def _run_opencode(
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
+            metrics=config_metrics,
         )
 
     parsed = parse_opencode_jsonl(stdout)
     metrics = dict(parsed.metrics)
     metrics["approval_mode"] = "auto_disposable_workspace"
+    metrics.update(config_metrics)
     return ArmResult(
         arm=arm,
         model=model,
