@@ -1,5 +1,6 @@
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,22 @@ def test_atomic_write_refuses_existing_destination(tmp_path):
 
     with pytest.raises(FileExistsError):
         atomic_write_json(target, {"second": True})
+
+
+def test_atomic_write_preserves_unowned_existing_temporary_sibling(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "result.bin"
+    temporary = tmp_path / ".result.bin.fixed.tmp"
+    temporary.write_bytes(b"attacker-sentinel")
+    monkeypatch.setattr(ledger.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed"))
+
+    with pytest.raises(FileExistsError):
+        atomic_write_bytes(target, b"intended")
+
+    assert not target.exists()
+    assert temporary.exists()
+    assert temporary.read_bytes() == b"attacker-sentinel"
 
 
 def test_atomic_write_is_create_only_when_two_writers_reach_promotion_together(
@@ -111,6 +128,64 @@ def test_verify_rejects_tampered_diagnostic_validity_metadata(tmp_path):
     assert "artifact_valid" in (verification.reason or "")
 
 
+@pytest.mark.parametrize("bad_count", [999, True])
+def test_verify_rejects_tampered_or_boolean_ledger_artifact_count(
+    tmp_path, bad_count
+):
+    run = tmp_path / "run"
+    run.mkdir()
+    atomic_write_json(run / "manifest.json", {"schema_version": 2})
+    seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
+
+    evidence_path = run / "evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["controls"]["results"][-1]["details"]["artifact_count"] = bad_count
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    verification = verify_evidence(run)
+    assert verification.ok is False
+    assert "artifact_count" in (verification.reason or "")
+
+
+def test_verify_rejects_duplicate_artifact_ledger_control(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    atomic_write_json(run / "manifest.json", {"schema_version": 2})
+    seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
+
+    evidence_path = run / "evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    ledger_result = evidence["controls"]["results"][-1]
+    evidence["controls"]["results"].append(ledger_result)
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    verification = verify_evidence(run)
+    assert verification.ok is False
+    assert "artifact_ledger_integrity" in (verification.reason or "")
+
+
+def test_verify_rejects_duplicate_top_level_json_key(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    atomic_write_json(run / "manifest.json", {"schema_version": 2})
+    seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
+
+    evidence_path = run / "evidence.json"
+    serialized = evidence_path.read_text(encoding="utf-8")
+    evidence_path.write_text(
+        serialized.replace(
+            '  "artifact_valid": false,',
+            '  "artifact_valid": true,\n  "artifact_valid": false,',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    verification = verify_evidence(run)
+    assert verification.ok is False
+    assert "duplicate JSON key" in (verification.reason or "")
+
+
 def test_seal_refuses_unknown_temporary_or_partial_files(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -174,6 +249,24 @@ def test_seal_rejects_temporary_excluded_root_name(tmp_path):
             preliminary_results=[],
             excluded_roots=("workspaces.tmp",),
         )
+
+
+def test_seal_rejects_reserved_absent_evidence_output_exclusion(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    atomic_write_json(run / "manifest.json", {"schema_version": 2})
+    evidence_path = run / "evidence.json"
+    assert not evidence_path.exists()
+
+    with pytest.raises(ArtifactLedgerError, match="reserved evidence output"):
+        seal_evidence(
+            run,
+            EvidenceMode.DIAGNOSTIC,
+            preliminary_results=[],
+            excluded_roots=("evidence.json",),
+        )
+
+    assert not evidence_path.exists()
 
 
 def test_evidence_root_hash_is_independent_of_artifact_creation_order(tmp_path):

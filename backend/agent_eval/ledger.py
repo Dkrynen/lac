@@ -39,12 +39,14 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
 
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     descriptor: int | None = None
+    temporary_owned = False
     try:
         descriptor = os.open(
             temporary,
             os.O_CREAT | os.O_EXCL | os.O_WRONLY,
             0o600,
         )
+        temporary_owned = True
         with os.fdopen(descriptor, "wb") as handle:
             descriptor = None
             handle.write(payload)
@@ -54,10 +56,11 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
     finally:
         if descriptor is not None:
             os.close(descriptor)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        if temporary_owned:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -92,6 +95,8 @@ def _validate_excluded_roots(run_root: Path, excluded_roots: tuple[str, ...]) ->
             or root_name in {".", ".."}
         ):
             raise ArtifactLedgerError(f"invalid excluded root: {root_name!r}")
+        if root_name == "evidence.json":
+            raise ArtifactLedgerError("reserved evidence output cannot be excluded")
         if root_name.endswith(".tmp"):
             raise ArtifactLedgerError(
                 f"temporary artifact is not allowed: {root_name}"
@@ -188,7 +193,9 @@ def seal_evidence(
     return evidence
 
 
-def _verified_verdict(evidence: dict[str, Any]) -> EvidenceVerdict:
+def _verified_verdict(
+    evidence: dict[str, Any],
+) -> tuple[EvidenceVerdict, EvidenceControlResult]:
     if evidence.get("schema_version") != 2:
         raise ArtifactLedgerError("unsupported evidence schema version")
     raw_mode = evidence.get("mode")
@@ -226,6 +233,19 @@ def _verified_verdict(evidence: dict[str, Any]) -> EvidenceVerdict:
             raise ArtifactLedgerError(f"unknown evidence control state: {state!r}") from exc
         results.append(EvidenceControlResult(name, typed_state, reason, details))
 
+    ledger_results = [
+        result
+        for result in results
+        if result.name == "artifact_ledger_integrity"
+    ]
+    if len(ledger_results) != 1:
+        raise ArtifactLedgerError(
+            "evidence must contain exactly one artifact_ledger_integrity control"
+        )
+    artifact_count = ledger_results[0].details.get("artifact_count")
+    if type(artifact_count) is not int:
+        raise ArtifactLedgerError("artifact_count must be an integer")
+
     try:
         verdict = EvidenceVerdict.from_results(mode, results)
     except ValueError as exc:
@@ -241,7 +261,16 @@ def _verified_verdict(evidence: dict[str, Any]) -> EvidenceVerdict:
         or top_level_valid is not verdict.artifact_valid
     ):
         raise ArtifactLedgerError("top-level artifact_valid does not match derived verdict")
-    return verdict
+    return verdict, ledger_results[0]
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ArtifactLedgerError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 def verify_evidence(run_root: Path) -> LedgerVerification:
@@ -251,10 +280,10 @@ def verify_evidence(run_root: Path) -> LedgerVerification:
     try:
         _reject_unsafe_path(evidence_path)
         with evidence_path.open(encoding="utf-8") as handle:
-            evidence = json.load(handle)
+            evidence = json.load(handle, object_pairs_hook=_reject_duplicate_json_keys)
         if not isinstance(evidence, dict):
             return LedgerVerification(False, "evidence JSON must be an object")
-        _verified_verdict(evidence)
+        _verdict, ledger_result = _verified_verdict(evidence)
         expected_hashes = evidence.get("artifacts")
         if not isinstance(expected_hashes, dict) or not all(
             isinstance(path, str) and isinstance(digest, str)
@@ -272,6 +301,8 @@ def verify_evidence(run_root: Path) -> LedgerVerification:
 
     if actual_hashes != expected_hashes:
         return LedgerVerification(False, "artifact hashes do not match the ledger")
+    if ledger_result.details["artifact_count"] != len(actual_hashes):
+        return LedgerVerification(False, "artifact_count does not match artifact ledger")
     if evidence.get("evidence_root_sha256") != _root_hash(actual_hashes):
         return LedgerVerification(False, "evidence root hash does not match the ledger")
     return LedgerVerification(True)
