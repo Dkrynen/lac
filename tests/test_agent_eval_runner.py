@@ -723,3 +723,32 @@ def test_run_evaluation_refuses_to_overwrite_existing_run(tmp_path):
 
     with pytest.raises(EvalPlanError, match="already exists"):
         run_evaluation(plan, run_id="same-run")
+
+
+def test_runner_can_carry_passing_bounded_capture_control(tmp_path):
+    control = EvidenceControlResult(
+        "bounded_process_and_http_capture",
+        EvidenceState.PASS,
+        "all adapters reported bounded capture",
+    )
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="bounded-capture-control",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=lambda task, model, host, workspace: _result(
+            "stock", model, "ZeroDivisionError"
+        ),
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+        preliminary_results=(control,),
+    )
+
+    carried = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "bounded_process_and_http_capture"
+    )
+    assert carried["state"] == "pass"

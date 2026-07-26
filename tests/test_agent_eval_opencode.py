@@ -14,6 +14,10 @@ from backend.agent_eval.opencode import (
     run_lac,
     run_stock,
 )
+from backend.agent_eval.capture import (
+    DEFAULT_CAPTURE_LIMITS,
+    CapturedProcess,
+)
 from backend.agent_eval.task import EvalScorer, EvalTask
 
 
@@ -222,6 +226,30 @@ def test_parse_opencode_jsonl_records_error_event():
     assert parsed.errors == ("opencode_error: ProviderError: boom",)
 
 
+def test_parse_opencode_jsonl_fails_on_line_byte_ceiling():
+    parsed = parse_opencode_jsonl(
+        b'{"type":"text","part":{"text":"' + b"x" * 64 + b'"}}\n',
+        max_line_bytes=32,
+        max_events=10,
+    )
+
+    assert parsed.completed is False
+    assert parsed.errors == ("jsonl_line_limit_exceeded:1",)
+    assert parsed.events == ()
+
+
+def test_parse_opencode_jsonl_fails_on_event_ceiling():
+    parsed = parse_opencode_jsonl(
+        b'{"type":"reasoning","part":{}}\n' * 4,
+        max_line_bytes=256,
+        max_events=3,
+    )
+
+    assert parsed.completed is False
+    assert parsed.errors == ("jsonl_event_limit_exceeded:4",)
+    assert len(parsed.events) == 3
+
+
 def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     workspace = tmp_path / "stock"
     workspace.mkdir()
@@ -256,12 +284,9 @@ def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     ]
     assert captured["kwargs"] == {
         "cwd": str(workspace.resolve()),
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
         "timeout": 180,
         "env": captured["kwargs"]["env"],
+        "limits": DEFAULT_CAPTURE_LIMITS,
     }
     env = captured["kwargs"]["env"]
     config_path = Path(env["OPENCODE_CONFIG"])
@@ -586,6 +611,47 @@ def test_run_opencode_records_nonzero_exit_and_stderr(tmp_path):
     assert result.exit_code == 7
     assert result.raw_stderr == "provider failed"
     assert result.errors == ("exit_code:7",)
+    _assert_config_identity_complete_and_released(result)
+
+
+def test_run_opencode_persists_exact_capture_overflow_reason(tmp_path):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=lambda *_a, **_kw: CapturedProcess(
+            exit_code=1,
+            stdout="x" * 128,
+            stderr="",
+            completed=False,
+            timed_out=False,
+            overflowed=True,
+            observed_stdout_bytes=129,
+            observed_stderr_bytes=0,
+            limits=DEFAULT_CAPTURE_LIMITS,
+            errors=("stdout_capture_limit_exceeded",),
+            temporary_paths=(),
+            raw_stdout=b"x" * 128,
+            raw_stderr=b"",
+        ),
+        capture_limits=opencode_module.CaptureLimits(
+            stdout_bytes=128,
+            stderr_bytes=128,
+        ),
+    )
+
+    assert result.completed is False
+    assert result.errors == ("stdout_capture_limit_exceeded",)
+    assert result.capture["stdout"] == {
+        "allowed_bytes": 128,
+        "observed_bytes": 129,
+        "overflowed": True,
+    }
     _assert_config_identity_complete_and_released(result)
 
 

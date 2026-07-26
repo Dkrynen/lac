@@ -1,8 +1,16 @@
 import io
+import subprocess
+import sys
 
 import pytest
 
-from backend.agent_eval.capture import CaptureLimitExceeded, bounded_http_json
+from backend.agent_eval.capture import (
+    CaptureLimitExceeded,
+    CaptureLimits,
+    bounded_http_json,
+    capture_bounded_response,
+    run_bounded_process,
+)
 
 
 class Response:
@@ -183,3 +191,147 @@ def test_bounded_http_json_enforces_endpoint_method_and_body_contract(
             max_bytes=64,
             open_fn=lambda *_args, **_kwargs: pytest.fail("must not open"),
         )
+
+
+def test_bounded_process_captures_stdout_stderr_and_exit_code(tmp_path):
+    result = run_bounded_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('out'); print('err', file=sys.stderr)",
+        ],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(stdout_bytes=1024, stderr_bytes=1024),
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "out"
+    assert result.stderr.strip() == "err"
+    assert result.overflowed is False
+    assert result.completed is True
+    assert result.limits == CaptureLimits(stdout_bytes=1024, stderr_bytes=1024)
+    assert result.observed_stdout_bytes == len(b"out\r\n")
+    assert result.observed_stderr_bytes == len(b"err\r\n")
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_bounded_process_terminates_on_stream_overflow(tmp_path, stream):
+    target = "sys.stdout.buffer" if stream == "stdout" else "sys.stderr.buffer"
+    result = run_bounded_process(
+        [sys.executable, "-c", f"import sys,time; {target}.write(b'x'*4096); {target}.flush(); time.sleep(30)"],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(stdout_bytes=128, stderr_bytes=128),
+    )
+
+    assert result.overflowed is True
+    assert result.completed is False
+    assert result.timed_out is False
+    assert result.errors == (f"{stream}_capture_limit_exceeded",)
+    observed = getattr(result, f"observed_{stream}_bytes")
+    assert observed == 129
+    assert len(getattr(result, stream).encode("utf-8")) <= 128
+
+
+def test_bounded_process_terminates_on_timeout(tmp_path):
+    result = run_bounded_process(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=tmp_path,
+        env={},
+        timeout=0.1,
+        limits=CaptureLimits(stdout_bytes=128, stderr_bytes=128),
+    )
+
+    assert result.completed is False
+    assert result.timed_out is True
+    assert result.errors == ("timeout:0.1s",)
+    assert result.exit_code is not None
+
+
+def test_bounded_process_replaces_invalid_utf8_and_closes_stdin(tmp_path):
+    result = run_bounded_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys; data=sys.stdin.buffer.read(); sys.stdout.buffer.write(b'\\xff'+str(len(data)).encode())",
+        ],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(stdout_bytes=128, stderr_bytes=128),
+    )
+
+    assert result.completed is True
+    assert result.stdout == "\ufffd0"
+
+
+def test_bounded_process_drains_stdout_and_stderr_concurrently(tmp_path):
+    result = run_bounded_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys; "
+            "[ (sys.stdout.buffer.write(b'o'*4096), sys.stdout.buffer.flush(), "
+            "sys.stderr.buffer.write(b'e'*4096), sys.stderr.buffer.flush()) "
+            "for _ in range(32) ]",
+        ],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(stdout_bytes=256 * 1024, stderr_bytes=256 * 1024),
+    )
+
+    assert result.completed is True
+    assert result.observed_stdout_bytes == 128 * 1024
+    assert result.observed_stderr_bytes == 128 * 1024
+
+
+def test_bounded_process_removes_exclusive_temporary_logs(tmp_path):
+    result = run_bounded_process(
+        [sys.executable, "-c", "print('done')"],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(stdout_bytes=128, stderr_bytes=128),
+    )
+
+    assert result.temporary_paths
+    assert all(not path.exists() for path in result.temporary_paths)
+
+
+def test_optional_launcher_receives_binary_pipe_contract(tmp_path):
+    calls = []
+
+    def launcher(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.Popen(argv, **kwargs)
+
+    result = run_bounded_process(
+        [sys.executable, "-c", "print('launched')"],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(stdout_bytes=128, stderr_bytes=128),
+        launcher=launcher,
+    )
+
+    assert result.completed is True
+    kwargs = calls[0][1]
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.PIPE
+    assert kwargs["stderr"] is subprocess.PIPE
+    assert kwargs["text"] is False
+
+
+def test_capture_bounded_response_accumulates_short_reads_and_reports_overflow():
+    response = Response(b"x" * 9, max_chunk=2)
+
+    with pytest.raises(CaptureLimitExceeded) as raised:
+        capture_bounded_response(response, 8)
+
+    assert raised.value.allowed_bytes == 8
+    assert raised.value.observed_bytes == 9
+    assert response.read_sizes[0] == 9

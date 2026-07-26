@@ -19,8 +19,13 @@ from backend.agent_launch.config_writer import (
     write_opencode_config_file,
 )
 from backend.agent_launch.opencode_bin import resolve_opencode_binary
-from backend.cookbook.proc import run as run_process
 
+from .capture import (
+    DEFAULT_CAPTURE_LIMITS,
+    CaptureLimits,
+    CapturedProcess,
+    run_bounded_process,
+)
 from .raw_ollama import _is_loopback_ollama_host
 from .result import ArmResult
 from .task import EvalTask
@@ -71,6 +76,9 @@ class _ProcessOutcome:
     stderr: str
     timed_out: bool
     errors: tuple[str, ...]
+    raw_stdout: bytes
+    raw_stderr: bytes
+    capture: dict[str, Any]
 
 
 def _nonnegative_number(value: Any) -> float | int | None:
@@ -91,7 +99,16 @@ def _error_text(event: dict[str, Any]) -> str:
     return f"{name}: {message or 'unknown error'}"
 
 
-def parse_opencode_jsonl(stdout: str) -> ParsedOpenCode:
+def parse_opencode_jsonl(
+    stdout: str | bytes,
+    *,
+    max_line_bytes: int = DEFAULT_CAPTURE_LIMITS.jsonl_line_bytes,
+    max_events: int = DEFAULT_CAPTURE_LIMITS.jsonl_events,
+) -> ParsedOpenCode:
+    if type(max_line_bytes) is not int or max_line_bytes < 0:
+        raise ValueError("max_line_bytes must be a non-negative integer")
+    if type(max_events) is not int or max_events < 0:
+        raise ValueError("max_events must be a non-negative integer")
     events: list[dict[str, Any]] = []
     current_text_parts: list[str] = []
     terminal_text_parts: list[str] = []
@@ -110,8 +127,18 @@ def parse_opencode_jsonl(stdout: str) -> ParsedOpenCode:
         "tool_errors": 0,
     }
 
-    for line_number, raw_line in enumerate(str(stdout).splitlines(), start=1):
-        line = raw_line.strip()
+    payload = stdout if isinstance(stdout, bytes) else stdout.encode("utf-8")
+    for line_number, raw_line in enumerate(payload.splitlines(), start=1):
+        line_bytes = raw_line.strip()
+        if len(line_bytes) > max_line_bytes:
+            errors.append(f"jsonl_line_limit_exceeded:{line_number}")
+            break
+        if not line_bytes:
+            continue
+        if len(events) >= max_events:
+            errors.append(f"jsonl_event_limit_exceeded:{line_number}")
+            break
+        line = line_bytes.decode("utf-8", errors="replace")
         if not line:
             continue
         try:
@@ -215,6 +242,7 @@ def _failure(
     stdout: str = "",
     stderr: str = "",
     metrics: dict[str, Any] | None = None,
+    capture: dict[str, Any] | None = None,
 ) -> ArmResult:
     return ArmResult(
         arm=arm,
@@ -228,6 +256,7 @@ def _failure(
         exit_code=exit_code,
         raw_stdout=stdout,
         raw_stderr=stderr,
+        capture=capture or {},
     )
 
 
@@ -332,30 +361,84 @@ def _run_process_outcome(
     workspace_path: Path,
     timeout_seconds: int,
     environment: dict[str, str],
+    limits: CaptureLimits,
+    launcher: Callable[..., object] | None,
 ) -> _ProcessOutcome:
     try:
-        process = run_fn(
-            argv,
-            cwd=str(workspace_path),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
-            env=environment,
-        )
+        kwargs: dict[str, Any] = {
+            "cwd": str(workspace_path),
+            "env": environment,
+            "timeout": timeout_seconds,
+            "limits": limits,
+        }
+        if launcher is not None:
+            kwargs["launcher"] = launcher
+        process = run_fn(argv, **kwargs)
+        if isinstance(process, CapturedProcess):
+            capture = {
+                "stdout": {
+                    "allowed_bytes": limits.stdout_bytes,
+                    "observed_bytes": process.observed_stdout_bytes,
+                    "overflowed": process.observed_stdout_bytes
+                    > limits.stdout_bytes,
+                },
+                "stderr": {
+                    "allowed_bytes": limits.stderr_bytes,
+                    "observed_bytes": process.observed_stderr_bytes,
+                    "overflowed": process.observed_stderr_bytes
+                    > limits.stderr_bytes,
+                },
+            }
+            return _ProcessOutcome(
+                process.exit_code,
+                process.stdout,
+                process.stderr,
+                process.timed_out,
+                process.errors,
+                process.raw_stdout,
+                process.raw_stderr,
+                capture,
+            )
         exit_code = int(getattr(process, "returncode", 1))
         stdout = _as_text(getattr(process, "stdout", ""))
         stderr = _as_text(getattr(process, "stderr", ""))
+        raw_stdout = stdout.encode("utf-8")
+        raw_stderr = stderr.encode("utf-8")
         errors = () if exit_code == 0 else (f"exit_code:{exit_code}",)
-        return _ProcessOutcome(exit_code, stdout, stderr, False, errors)
+        capture = {
+            "stdout": {
+                "allowed_bytes": limits.stdout_bytes,
+                "observed_bytes": len(raw_stdout),
+                "overflowed": False,
+            },
+            "stderr": {
+                "allowed_bytes": limits.stderr_bytes,
+                "observed_bytes": len(raw_stderr),
+                "overflowed": False,
+            },
+        }
+        return _ProcessOutcome(
+            exit_code,
+            stdout,
+            stderr,
+            False,
+            errors,
+            raw_stdout,
+            raw_stderr,
+            capture,
+        )
     except subprocess.TimeoutExpired as exc:
+        stdout = _as_text(exc.output)
+        stderr = _as_text(exc.stderr)
         return _ProcessOutcome(
             None,
-            _as_text(exc.output),
-            _as_text(exc.stderr),
+            stdout,
+            stderr,
             True,
             (f"timeout:{timeout_seconds}s",),
+            stdout.encode("utf-8"),
+            stderr.encode("utf-8"),
+            {},
         )
     except Exception as exc:
         return _ProcessOutcome(
@@ -364,6 +447,9 @@ def _run_process_outcome(
             "",
             False,
             (f"{type(exc).__name__}: {exc}",),
+            b"",
+            b"",
+            {},
         )
 
 
@@ -434,7 +520,9 @@ def _run_opencode(
     arm: str,
     *,
     resolve_bin_fn: Callable[[], Path] = resolve_opencode_binary,
-    run_fn: Callable[..., Any] = run_process,
+    run_fn: Callable[..., Any] = run_bounded_process,
+    capture_limits: CaptureLimits = DEFAULT_CAPTURE_LIMITS,
+    launcher: Callable[..., object] | None = None,
 ) -> ArmResult:
     started = time.perf_counter()
     workspace_path = Path(workspace).resolve()
@@ -507,6 +595,9 @@ def _run_opencode(
                 "",
                 False,
                 (f"config_pre_measurement_failed:{type(exc).__name__}: {exc}",),
+                b"",
+                b"",
+                {},
             )
         else:
             outcome = _run_process_outcome(
@@ -515,6 +606,8 @@ def _run_opencode(
                 workspace_path=workspace_path,
                 timeout_seconds=task.timeout_seconds,
                 environment=environment,
+                limits=capture_limits,
+                launcher=launcher,
             )
     finally:
         try:
@@ -540,6 +633,9 @@ def _run_opencode(
             "",
             False,
             ("config_process_outcome_missing",),
+            b"",
+            b"",
+            {},
         )
     outcome_errors = (*outcome.errors, *lifecycle_errors)
     if outcome_errors:
@@ -553,9 +649,14 @@ def _run_opencode(
             stdout=outcome.stdout,
             stderr=outcome.stderr,
             metrics=config_metrics,
+            capture=outcome.capture,
         )
 
-    parsed = parse_opencode_jsonl(outcome.stdout)
+    parsed = parse_opencode_jsonl(
+        outcome.raw_stdout,
+        max_line_bytes=capture_limits.jsonl_line_bytes,
+        max_events=capture_limits.jsonl_events,
+    )
     metrics = dict(parsed.metrics)
     metrics["approval_mode"] = "auto_disposable_workspace"
     metrics.update(config_metrics)
@@ -574,6 +675,7 @@ def _run_opencode(
         raw_stderr=outcome.stderr,
         events=parsed.events,
         unknown_event_types=parsed.unknown_event_types,
+        capture=outcome.capture,
     )
 
 

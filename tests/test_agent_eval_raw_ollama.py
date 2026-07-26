@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import backend.agent_eval.raw_ollama as raw_module
 from backend.agent_eval.raw_ollama import build_raw_prompt, run_raw
 from backend.agent_eval.task import EvalScorer, EvalTask
 
@@ -50,7 +51,8 @@ def test_run_raw_sends_bounded_fixture_prompt_without_tools(tmp_path):
     assert captured["timeout"] == 180
     assert captured["body"]["model"] == "gpt-oss:20b"
     assert captured["body"]["stream"] is False
-    assert set(captured["body"]) == {"model", "messages", "stream"}
+    assert captured["body"]["options"] == {"seed": 0, "temperature": 0}
+    assert set(captured["body"]) == {"model", "messages", "stream", "options"}
     assert len(captured["body"]["messages"]) == 1
     prompt = captured["body"]["messages"][0]["content"]
     assert "Name the exception" in prompt
@@ -71,6 +73,12 @@ def test_run_raw_sends_bounded_fixture_prompt_without_tools(tmp_path):
     assert result.metrics["eval_duration_ms"] == 1500.0
     assert result.metrics["total_duration_ms"] == 2000.0
     assert result.metrics["load_duration_ms"] == 100.0
+    assert result.request_metadata == {
+        "stream": False,
+        "options": {"seed": 0, "temperature": 0},
+        "response_max_bytes": 8 * 1024 * 1024,
+    }
+    assert result.capture["response"]["overflowed"] is False
 
 
 def test_raw_prompt_builder_exposes_the_exact_auditable_input(tmp_path):
@@ -145,3 +153,47 @@ def test_run_raw_refuses_non_loopback_ollama_before_request(tmp_path):
     assert called is False
     assert result.completed is False
     assert result.errors == ("non_loopback_ollama_host",)
+
+
+def test_run_raw_records_response_overflow_without_retaining_body(
+    tmp_path, monkeypatch
+):
+    max_bytes = 8 * 1024 * 1024
+
+    class OverflowResponse:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return "http://127.0.0.1:11434/api/chat"
+
+        def read(self, size):
+            assert size == max_bytes + 1
+            return b"x" * size
+
+    monkeypatch.setattr(
+        raw_module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: OverflowResponse(),
+    )
+
+    result = run_raw(
+        _task(tmp_path),
+        "gpt-oss:20b",
+        "http://127.0.0.1:11434",
+    )
+
+    assert result.completed is False
+    assert result.errors == ("response_body_overflow",)
+    assert result.response == ""
+    assert result.raw_stdout == ""
+    assert result.capture["response"] == {
+        "allowed_bytes": max_bytes,
+        "observed_bytes": max_bytes + 1,
+        "overflowed": True,
+    }

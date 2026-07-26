@@ -1,12 +1,16 @@
 """Raw-model evaluation arm using only a loopback Ollama endpoint."""
 from __future__ import annotations
 
-import json
 import time
 import urllib.request
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from .capture import (
+    OLLAMA_RESPONSE_MAX_BYTES,
+    CaptureLimitExceeded,
+    bounded_http_json,
+)
 from .result import ArmResult
 from .task import EvalTask, snapshot_fixture
 
@@ -18,17 +22,14 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 def _request_json(
     ollama_host: str, body: dict[str, Any], timeout: int
 ) -> dict[str, Any]:
-    request = urllib.request.Request(
+    return bounded_http_json(
         ollama_host.rstrip("/") + "/api/chat",
-        data=json.dumps(body).encode("utf-8"),
         method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "LAC-agent-eval/1",
-        },
+        body=body,
+        timeout=timeout,
+        max_bytes=OLLAMA_RESPONSE_MAX_BYTES,
+        open_fn=urllib.request.urlopen,
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def _is_loopback_ollama_host(value: str) -> bool:
@@ -94,6 +95,11 @@ def run_raw(
     request_fn: RequestFn = _request_json,
 ) -> ArmResult:
     started = time.perf_counter()
+    request_metadata = {
+        "stream": False,
+        "options": {"seed": 0, "temperature": 0},
+        "response_max_bytes": OLLAMA_RESPONSE_MAX_BYTES,
+    }
     if not _is_loopback_ollama_host(ollama_host):
         return ArmResult(
             arm="raw",
@@ -104,15 +110,36 @@ def run_raw(
             response="",
             wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
             errors=("non_loopback_ollama_host",),
+            request_metadata=request_metadata,
         )
 
     body = {
         "model": model,
         "messages": [{"role": "user", "content": build_raw_prompt(task)}],
         "stream": False,
+        "options": {"seed": 0, "temperature": 0},
     }
     try:
         data = request_fn(ollama_host.rstrip("/"), body, task.timeout_seconds)
+    except CaptureLimitExceeded as exc:
+        return ArmResult(
+            arm="raw",
+            model=model,
+            runtime="ollama",
+            completed=False,
+            timed_out=False,
+            response="",
+            wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
+            errors=("response_body_overflow",),
+            capture={
+                "response": {
+                    "allowed_bytes": exc.allowed_bytes,
+                    "observed_bytes": exc.observed_bytes,
+                    "overflowed": True,
+                }
+            },
+            request_metadata=request_metadata,
+        )
     except TimeoutError as exc:
         return ArmResult(
             arm="raw",
@@ -123,6 +150,7 @@ def run_raw(
             response="",
             wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
             errors=(f"timeout: {exc}",),
+            request_metadata=request_metadata,
         )
     except Exception as exc:
         return ArmResult(
@@ -134,6 +162,7 @@ def run_raw(
             response="",
             wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
             errors=(f"{type(exc).__name__}: {exc}",),
+            request_metadata=request_metadata,
         )
 
     message = data.get("message") if isinstance(data, dict) else None
@@ -158,4 +187,12 @@ def run_raw(
         wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
         metrics=_metrics(data if isinstance(data, dict) else {}),
         errors=errors,
+        capture={
+            "response": {
+                "allowed_bytes": OLLAMA_RESPONSE_MAX_BYTES,
+                "observed_bytes": None,
+                "overflowed": False,
+            }
+        },
+        request_metadata=request_metadata,
     )

@@ -21,3 +21,5 @@ class ArmResult:
     raw_stderr: str = ""
     events: tuple[dict[str, Any], ...] = ()
     unknown_event_types: tuple[str, ...] = ()
+    capture: dict[str, Any] = field(default_factory=dict)
+    request_metadata: dict[str, Any] = field(default_factory=dict)
