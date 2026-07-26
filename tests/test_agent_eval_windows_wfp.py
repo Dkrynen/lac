@@ -1,8 +1,12 @@
+import base64
 import ctypes
 import hashlib
 import importlib.util
 import inspect
+import io
 import os
+import re
+import struct
 import sys
 import uuid
 from dataclasses import replace
@@ -448,9 +452,198 @@ def test_live_design_proves_reachability_before_installing_wfp():
     assert source.index("_prove_uncontained_baseline(") < source.index(
         "WindowsWfpSession.open("
     )
+    assert source.index("_prove_direct_dns_baseline(") < source.index(
+        "WindowsWfpSession.open("
+    ) < source.index("_prove_direct_dns_blocked(")
+    assert source.count("dns_identity.path") == 2
+    assert "[identity, dns_identity]" in source
+    assert '"DNS hostname"' not in source
     assert "198.51.100.1" not in source
     assert "2001:db8::1" not in source
     assert ".invalid" not in source
+
+
+def test_live_dns_design_uses_fresh_direct_queries_for_same_app_and_target(
+    tmp_path,
+    monkeypatch,
+):
+    path = (
+        Path(__file__).resolve().parent
+        / "test_agent_eval_live_containment.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "agent_eval_live_dns_design",
+        path,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    executable = Path(
+        "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    packets: list[bytes] = []
+    commands: list[tuple[str, ...]] = []
+    scripts: list[str] = []
+
+    class FakeProcess:
+        def __init__(self, returncode, stdout, stderr):
+            self.returncode = returncode
+            self.stdout = io.BytesIO(stdout)
+            self.stderr = io.BytesIO(stderr)
+
+        def wait(self, timeout):
+            assert timeout == 6
+            return self.returncode
+
+        def close(self):
+            self.stdout.close()
+            self.stderr.close()
+
+    def fake_start(argv, *, cwd, env):
+        commands.append(tuple(argv))
+        script = base64.b64decode(argv[-1]).decode("utf-16-le")
+        scripts.append(script)
+        match = re.search(r'FromBase64String\("([^"]+)"\)', script)
+        assert match
+        packet = base64.b64decode(match.group(1))
+        packets.append(packet)
+        if len(packets) == 1:
+            transaction_id = packet[:2]
+            response = (
+                transaction_id
+                + struct.pack("!HHHHH", 0x8183, 0, 0, 0, 0)
+            )
+            encoded = base64.b64encode(response) + b"\r\n"
+            return FakeProcess(0, encoded, b"")
+        return FakeProcess(28, b"", b"timed out")
+
+    monkeypatch.setattr(module.WindowsJobProcess, "start", fake_start)
+
+    baseline = module._prove_direct_dns_baseline(
+        executable,
+        "9.9.9.9",
+        53,
+        tmp_path,
+    )
+    contained = module._prove_direct_dns_blocked(
+        executable,
+        "9.9.9.9",
+        53,
+        tmp_path,
+        baseline,
+    )
+
+    assert [command[0] for command in commands] == [
+        str(executable),
+        str(executable),
+    ]
+    assert all("-EncodedCommand" in command for command in commands)
+    assert all("UdpClient" in script for script in scripts)
+    assert all('IPAddress]::Parse("9.9.9.9")' in script for script in scripts)
+    assert all("$port = 53" in script for script in scripts)
+    assert all("telnet://" not in script for script in scripts)
+    transaction_ids = [
+        int.from_bytes(packet[:2], "big")
+        for packet in packets
+    ]
+    query_names = []
+    for packet in packets:
+        offset = 12
+        labels = []
+        while packet[offset]:
+            length = packet[offset]
+            offset += 1
+            labels.append(packet[offset : offset + length].decode("ascii"))
+            offset += length
+        query_names.append(".".join(labels))
+    assert transaction_ids[0] != transaction_ids[1]
+    assert query_names[0] != query_names[1]
+    assert baseline.transaction_id == transaction_ids[0]
+    assert contained.transaction_id == transaction_ids[1]
+
+
+def test_live_dns_target_must_be_explicit_literal_port_53(monkeypatch):
+    path = (
+        Path(__file__).resolve().parent
+        / "test_agent_eval_live_containment.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "agent_eval_live_dns_target",
+        path,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.delenv("LAC_WFP_LIVE_DNS_SERVER", raising=False)
+
+    with pytest.raises(
+        pytest.fail.Exception,
+        match="precondition unavailable.*LAC_WFP_LIVE_DNS_SERVER",
+    ):
+        module._required_dns_target()
+
+
+@pytest.mark.parametrize(
+    ("response_id", "rcode"),
+    [(0x1235, 3), (0x1234, 1)],
+)
+def test_direct_dns_response_rejects_wrong_id_or_bad_rcode(
+    response_id,
+    rcode,
+):
+    path = (
+        Path(__file__).resolve().parent
+        / "test_agent_eval_live_containment.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "agent_eval_live_dns_response",
+        path,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    response = (
+        struct.pack("!H", response_id)
+        + struct.pack("!HHHHH", 0x8180 | rcode, 0, 0, 0, 0)
+    )
+
+    with pytest.raises(ValueError, match="transaction ID|rcode"):
+        module._validate_dns_response(response, 0x1234)
+
+
+def test_direct_dns_contained_probe_rejects_nontransport_failure(
+    tmp_path,
+    monkeypatch,
+):
+    path = (
+        Path(__file__).resolve().parent
+        / "test_agent_eval_live_containment.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "agent_eval_live_dns_failure",
+        path,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    baseline = module._new_dns_attempt(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "_run_direct_dns_attempt",
+        lambda *_args: (1, None, b"PowerShell failed"),
+    )
+
+    with pytest.raises(
+        pytest.fail.Exception,
+        match="DNS proof unavailable.*exit 1",
+    ):
+        module._prove_direct_dns_blocked(
+            Path("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+            "9.9.9.9",
+            53,
+            tmp_path,
+            baseline,
+        )
 
 
 def test_diagnostic_provider_is_explicitly_unsupported():
