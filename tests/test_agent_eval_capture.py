@@ -1,6 +1,8 @@
 import io
 import subprocess
 import sys
+import threading
+import time
 
 import pytest
 
@@ -335,3 +337,144 @@ def test_capture_bounded_response_accumulates_short_reads_and_reports_overflow()
     assert raised.value.allowed_bytes == 8
     assert raised.value.observed_bytes == 9
     assert response.read_sizes[0] == 9
+
+
+@pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -float("inf")])
+def test_capture_limits_rejects_invalid_cleanup_grace(value):
+    with pytest.raises(ValueError, match="cleanup_grace_seconds"):
+        CaptureLimits(cleanup_grace_seconds=value)
+
+
+@pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -float("inf")])
+def test_bounded_process_rejects_invalid_timeout_before_launch(tmp_path, value):
+    with pytest.raises(ValueError, match="timeout"):
+        run_bounded_process(
+            [sys.executable, "-c", "print('must not launch')"],
+            cwd=tmp_path,
+            env={},
+            timeout=value,
+            limits=CaptureLimits(),
+            launcher=lambda *_args, **_kwargs: pytest.fail("must not launch"),
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, 0, -1, float("nan"), float("inf"), -float("inf")],
+)
+def test_bounded_http_json_rejects_invalid_timeout_before_open(value):
+    with pytest.raises(ValueError, match="timeout"):
+        bounded_http_json(
+            "http://127.0.0.1:11434/api/version",
+            method="GET",
+            body=None,
+            timeout=value,
+            max_bytes=64,
+            open_fn=lambda *_args, **_kwargs: pytest.fail("must not open"),
+        )
+
+
+def test_bounded_process_reports_inherited_pipe_handles_without_closing_live_readers(
+    tmp_path, monkeypatch
+):
+    release = threading.Event()
+
+    class BlockingStream:
+        def __init__(self):
+            self.close_calls = 0
+
+        def read(self, _size):
+            release.wait(2)
+            return b""
+
+        def close(self):
+            self.close_calls += 1
+            if not release.is_set():
+                raise AssertionError("live reader pipe was closed")
+
+    class ExitedParent:
+        def __init__(self):
+            self.stdout = BlockingStream()
+            self.stderr = BlockingStream()
+            self.returncode = 0
+
+        def poll(self):
+            return 0
+
+    parent = ExitedParent()
+    capture_root = tmp_path / "capture-root"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        "backend.agent_eval.capture.tempfile.mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+    started = time.monotonic()
+    try:
+        result = run_bounded_process(
+            ["fake-parent"],
+            cwd=tmp_path,
+            env={},
+            timeout=1,
+            limits=CaptureLimits(cleanup_grace_seconds=0.05),
+            launcher=lambda *_args, **_kwargs: parent,
+        )
+    finally:
+        elapsed = time.monotonic() - started
+        release.set()
+
+    assert elapsed < 0.5
+    assert result.completed is False
+    assert result.cleanup_complete is False
+    assert result.errors == (
+        "capture_cleanup_incomplete:task5_containment_required",
+    )
+    assert parent.stdout.close_calls == 0
+    assert parent.stderr.close_calls == 0
+    assert capture_root.exists()
+
+
+def test_bounded_process_never_uses_unbounded_wait_when_termination_is_ineffective(
+    tmp_path,
+):
+    class IneffectiveProcess:
+        def __init__(self):
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.returncode = None
+            self.wait_timeouts = []
+
+        def poll(self):
+            return None
+
+        def terminate_tree(self):
+            return None
+
+        def kill_tree(self):
+            return None
+
+        def wait(self, timeout=None):
+            self.wait_timeouts.append(timeout)
+            if timeout is None:
+                time.sleep(0.5)
+            raise subprocess.TimeoutExpired("fake", timeout)
+
+    process = IneffectiveProcess()
+    started = time.monotonic()
+    result = run_bounded_process(
+        ["fake-child"],
+        cwd=tmp_path,
+        env={},
+        timeout=0.01,
+        limits=CaptureLimits(cleanup_grace_seconds=0.05),
+        launcher=lambda *_args, **_kwargs: process,
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert result.cleanup_complete is False
+    assert result.errors == (
+        "timeout:0.01s",
+        "process_cleanup_incomplete",
+    )
+    assert process.wait_timeouts
+    assert all(value is not None for value in process.wait_timeouts)

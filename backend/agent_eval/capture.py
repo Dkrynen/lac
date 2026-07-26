@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import shutil
 import subprocess
 import tempfile
@@ -39,6 +40,7 @@ class CaptureLimits:
         if (
             isinstance(self.cleanup_grace_seconds, bool)
             or not isinstance(self.cleanup_grace_seconds, (int, float))
+            or not math.isfinite(float(self.cleanup_grace_seconds))
             or self.cleanup_grace_seconds < 0
         ):
             raise ValueError("cleanup_grace_seconds must be non-negative")
@@ -62,6 +64,7 @@ class CapturedProcess:
     temporary_paths: tuple[Path, ...]
     raw_stdout: bytes = b""
     raw_stderr: bytes = b""
+    cleanup_complete: bool = True
 
 
 class CaptureLimitExceeded(ValueError):
@@ -93,21 +96,55 @@ def capture_bounded_response(response: object, max_bytes: int) -> bytes:
     return bytes(chunks)
 
 
-def _terminate_process(process: object, grace_seconds: float) -> None:
+def _remaining(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
+def _bounded_call(
+    function: Callable[[], object],
+    deadline: float,
+) -> tuple[bool, object | None, BaseException | None]:
+    state: dict[str, object] = {}
+
+    def invoke() -> None:
+        try:
+            state["value"] = function()
+        except BaseException as exc:
+            state["error"] = exc
+
+    thread = threading.Thread(target=invoke, daemon=True, name="agent-eval-cleanup")
+    thread.start()
+    thread.join(_remaining(deadline))
+    if thread.is_alive():
+        return False, None, None
+    return True, state.get("value"), state.get("error")  # type: ignore[arg-type]
+
+
+def _bounded_wait(process: object, deadline: float) -> bool:
+    remaining = _remaining(deadline)
+    if remaining <= 0:
+        return False
+    completed, _value, error = _bounded_call(
+        lambda: process.wait(timeout=remaining),
+        deadline,
+    )
+    return completed and error is None
+
+
+def _terminate_process(process: object, deadline: float) -> bool:
     terminate_tree = getattr(process, "terminate_tree", None)
-    if callable(terminate_tree):
-        terminate_tree()
-    else:
-        process.terminate()
-    try:
-        process.wait(timeout=grace_seconds)
-    except subprocess.TimeoutExpired:
-        kill_tree = getattr(process, "kill_tree", None)
-        if callable(kill_tree):
-            kill_tree()
-        else:
-            process.kill()
-        process.wait()
+    terminate = terminate_tree if callable(terminate_tree) else process.terminate
+    completed, _value, error = _bounded_call(terminate, deadline)
+    if not completed or error is not None:
+        return False
+    if _bounded_wait(process, deadline):
+        return True
+    kill_tree = getattr(process, "kill_tree", None)
+    kill = kill_tree if callable(kill_tree) else process.kill
+    completed, _value, error = _bounded_call(kill, deadline)
+    if not completed or error is not None:
+        return False
+    return _bounded_wait(process, deadline)
 
 
 def _drain_stream(
@@ -134,7 +171,20 @@ def _drain_stream(
         state["reader_error"] = f"{type(exc).__name__}: {exc}"
         overflow_event.set()
     finally:
-        destination.flush()
+        try:
+            destination.flush()
+        except Exception as exc:
+            state.setdefault(
+                "reader_error",
+                f"{type(exc).__name__}: {exc}",
+            )
+        try:
+            destination.close()
+        except Exception as exc:
+            state.setdefault(
+                "reader_error",
+                f"{type(exc).__name__}: {exc}",
+            )
         state["observed"] = min(observed, limit + 1)
 
 
@@ -153,6 +203,7 @@ def run_bounded_process(
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
+        or not math.isfinite(float(timeout))
         or timeout <= 0
     ):
         raise ValueError("timeout must be positive")
@@ -167,8 +218,19 @@ def run_bounded_process(
     overflow_event = threading.Event()
     timed_out = False
     threads: list[threading.Thread] = []
+    stdout_file: BinaryIO | None = None
+    stderr_file: BinaryIO | None = None
+    readers_started = False
+    cleanup_complete = True
+    process_cleanup_complete = True
+    reader_cleanup_complete = True
+    pipe_cleanup_complete = True
+    temporary_cleanup_complete = True
+    cleanup_deadline: float | None = None
     try:
-        with stdout_path.open("xb") as stdout_file, stderr_path.open("xb") as stderr_file:
+        stdout_file = stdout_path.open("xb")
+        stderr_file = stderr_path.open("xb")
+        try:
             process = launch(
                 list(argv),
                 cwd=cwd,
@@ -208,27 +270,103 @@ def run_bounded_process(
             ]
             for thread in threads:
                 thread.start()
+            readers_started = True
+            stdout_file = None
+            stderr_file = None
 
             deadline = time.monotonic() + float(timeout)
             while process.poll() is None:
                 if overflow_event.wait(timeout=min(0.01, max(0.0, deadline - time.monotonic()))):
-                    _terminate_process(process, float(limits.cleanup_grace_seconds))
+                    cleanup_deadline = (
+                        time.monotonic() + float(limits.cleanup_grace_seconds)
+                    )
+                    process_cleanup_complete = _terminate_process(
+                        process,
+                        cleanup_deadline,
+                    )
                     break
                 if time.monotonic() >= deadline:
                     timed_out = True
-                    _terminate_process(process, float(limits.cleanup_grace_seconds))
+                    cleanup_deadline = (
+                        time.monotonic() + float(limits.cleanup_grace_seconds)
+                    )
+                    process_cleanup_complete = _terminate_process(
+                        process,
+                        cleanup_deadline,
+                    )
                     break
-            if process.poll() is None:
-                process.wait()
-            for thread in threads:
-                thread.join(timeout=float(limits.cleanup_grace_seconds))
-            if any(thread.is_alive() for thread in threads):
-                raise RuntimeError("capture reader did not stop during cleanup")
+            if cleanup_deadline is None:
+                cleanup_deadline = (
+                    time.monotonic() + float(limits.cleanup_grace_seconds)
+                )
 
-        with stdout_path.open("rb") as captured_stdout:
-            raw_stdout = captured_stdout.read(limits.stdout_bytes)
-        with stderr_path.open("rb") as captured_stderr:
-            raw_stderr = captured_stderr.read(limits.stderr_bytes)
+            probe_seconds = min(
+                0.05,
+                float(limits.cleanup_grace_seconds) / 4,
+            )
+            probe_deadline = min(
+                cleanup_deadline,
+                time.monotonic() + probe_seconds,
+            )
+            for thread in threads:
+                thread.join(_remaining(probe_deadline))
+            if any(thread.is_alive() for thread in threads):
+                terminate_tree = getattr(process, "terminate_tree", None)
+                if process.poll() is not None and callable(terminate_tree):
+                    process_cleanup_complete = (
+                        _terminate_process(process, cleanup_deadline)
+                        and process_cleanup_complete
+                    )
+                for thread in threads:
+                    thread.join(_remaining(cleanup_deadline))
+            reader_cleanup_complete = not any(
+                thread.is_alive() for thread in threads
+            )
+
+            if reader_cleanup_complete:
+                for pipe_name in ("stdout", "stderr"):
+                    pipe = getattr(process, pipe_name, None)
+                    if pipe is not None:
+                        completed, _value, error = _bounded_call(
+                            pipe.close,
+                            cleanup_deadline,
+                        )
+                        if not completed or error is not None:
+                            pipe_cleanup_complete = False
+            else:
+                pipe_cleanup_complete = False
+
+            raw_stdout = b""
+            raw_stderr = b""
+            if reader_cleanup_complete:
+                with stdout_path.open("rb") as captured_stdout:
+                    raw_stdout = captured_stdout.read(limits.stdout_bytes)
+                with stderr_path.open("rb") as captured_stderr:
+                    raw_stderr = captured_stderr.read(limits.stderr_bytes)
+
+            if reader_cleanup_complete and pipe_cleanup_complete:
+                completed, _value, error = _bounded_call(
+                    lambda: shutil.rmtree(temporary_root),
+                    cleanup_deadline,
+                )
+                temporary_cleanup_complete = completed and error is None
+            else:
+                temporary_cleanup_complete = False
+        except Exception:
+            if not readers_started:
+                for destination in (stdout_file, stderr_file):
+                    if destination is not None:
+                        destination.close()
+                if temporary_root.exists():
+                    shutil.rmtree(temporary_root)
+            raise
+
+        cleanup_complete = (
+            process_cleanup_complete
+            and reader_cleanup_complete
+            and pipe_cleanup_complete
+            and temporary_cleanup_complete
+        )
         observed_stdout = int(stdout_state["observed"])
         observed_stderr = int(stderr_state["observed"])
         stdout_overflow = observed_stdout > limits.stdout_bytes
@@ -241,8 +379,18 @@ def run_bounded_process(
         if not errors and timed_out:
             errors.append(f"timeout:{timeout}s")
         for state in (stdout_state, stderr_state):
-            if state.get("reader_error") and not errors:
+            if state.get("reader_error"):
                 errors.append(f"capture_reader_error:{state['reader_error']}")
+        if not process_cleanup_complete:
+            errors.append("process_cleanup_incomplete")
+        if not reader_cleanup_complete:
+            errors.append(
+                "capture_cleanup_incomplete:task5_containment_required"
+            )
+        elif not pipe_cleanup_complete:
+            errors.append("capture_pipe_cleanup_incomplete")
+        if not temporary_cleanup_complete and reader_cleanup_complete:
+            errors.append("temporary_capture_cleanup_incomplete")
         exit_code = process.returncode
         if not errors and exit_code != 0:
             errors.append(f"exit_code:{exit_code}")
@@ -260,15 +408,10 @@ def run_bounded_process(
             temporary_paths=temporary_paths,
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
+            cleanup_complete=cleanup_complete,
         )
     finally:
-        if process is not None:
-            for pipe_name in ("stdout", "stderr"):
-                pipe = getattr(process, pipe_name, None)
-                if pipe is not None:
-                    pipe.close()
-        if temporary_root.exists():
-            shutil.rmtree(temporary_root)
+        pass
 
 def _is_loopback(hostname: str | None) -> bool:
     if hostname is None:
@@ -304,9 +447,17 @@ def bounded_http_json(
     timeout: float,
     max_bytes: int,
     open_fn=urlopen,
+    capture_metadata: dict[str, object] | None = None,
 ) -> dict:
     """Fetch one local JSON object without ever performing an unbounded read."""
     _validate_url(url)
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(float(timeout))
+        or timeout <= 0
+    ):
+        raise ValueError("timeout must be positive and finite")
     if type(max_bytes) is not int or max_bytes < 0:
         raise ValueError("max_bytes must be a non-negative integer")
     expected = {
@@ -378,6 +529,14 @@ def bounded_http_json(
                     observed_bytes=max_bytes + 1,
                 )
         raw = capture_bounded_response(response, max_bytes)
+    if capture_metadata is not None:
+        capture_metadata.update(
+            {
+                "allowed_bytes": max_bytes,
+                "observed_bytes": len(raw),
+                "overflowed": False,
+            }
+        )
     try:
         decoded = raw.decode("utf-8")
         value = json.loads(decoded)

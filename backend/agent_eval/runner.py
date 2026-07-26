@@ -238,6 +238,52 @@ def _score_result(result: ArmResult, expected: str) -> ScoreResult:
     )
 
 
+def _valid_capture_record(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    allowed = value.get("allowed_bytes")
+    observed = value.get("observed_bytes")
+    return (
+        type(allowed) is int
+        and allowed >= 0
+        and type(observed) is int
+        and 0 <= observed <= allowed
+        and value.get("overflowed") is False
+    )
+
+
+def _bounded_capture_result(
+    results: dict[str, ArmResult],
+) -> EvidenceControlResult:
+    invalid: list[str] = []
+    details: dict[str, Any] = {}
+    for arm in ("raw", "stock", "lac"):
+        capture = results[arm].capture
+        details[arm] = capture
+        if not isinstance(capture, dict):
+            invalid.append(f"{arm}: capture evidence is not an object")
+            continue
+        if arm == "raw":
+            if not _valid_capture_record(capture.get("response")):
+                invalid.append(f"{arm}: response capture is missing or invalid")
+            continue
+        if capture.get("cleanup_complete") is not True:
+            invalid.append(f"{arm}: capture cleanup was not complete")
+        for stream in ("stdout", "stderr"):
+            if not _valid_capture_record(capture.get(stream)):
+                invalid.append(f"{arm}: {stream} capture is missing or invalid")
+    return EvidenceControlResult(
+        "bounded_process_and_http_capture",
+        EvidenceState.FAIL if invalid else EvidenceState.PASS,
+        (
+            "; ".join(invalid)
+            if invalid
+            else "all arms supplied bounded, non-overflowed capture evidence"
+        ),
+        {"arms": details},
+    )
+
+
 def _complete_config_identity(value: Any) -> bool:
     return (
         isinstance(value, dict)
@@ -537,6 +583,7 @@ def run_evaluation(
             "runtime_dependency_provenance",
             "immutable_ollama_model_lineage",
             "sealed_fixture_materialization",
+            "bounded_process_and_http_capture",
         }
     ]
     fixture_ok = len(fixture_controls) == 3 and all(
@@ -548,5 +595,15 @@ def run_evaluation(
         "all arms received distinct post-verified sealed fixtures" if fixture_ok else "one or more sealed fixture checks failed",
         {"arms": [item.details for item in fixture_controls]},
     )
-    evidence = seal_evidence(run_root, mode, [*carried_results, *identity_results, fixture_result])
+    capture_result = _bounded_capture_result(results)
+    evidence = seal_evidence(
+        run_root,
+        mode,
+        [
+            *carried_results,
+            *identity_results,
+            fixture_result,
+            capture_result,
+        ],
+    )
     return {**comparison, "evidence": evidence}

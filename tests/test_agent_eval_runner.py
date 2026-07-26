@@ -48,11 +48,40 @@ def _task(tmp_path: Path) -> EvalTask:
     )
 
 
-def _result(arm: str, model: str, response: str) -> ArmResult:
+def _result(
+    arm: str,
+    model: str,
+    response: str,
+    *,
+    capture_valid: bool = True,
+) -> ArmResult:
     metrics = {"eval_count": 3}
     if arm in {"stock", "lac"}:
         config = {"path": f"C:/test/{arm}/opencode.json", "size": 1, "sha256": "a" * 64}
         metrics["opencode_config_identity"] = {"before": config, "after": dict(config)}
+    capture = {}
+    if capture_valid and arm == "raw":
+        capture = {
+            "response": {
+                "allowed_bytes": 8 * 1024 * 1024,
+                "observed_bytes": 512,
+                "overflowed": False,
+            }
+        }
+    elif capture_valid:
+        capture = {
+            "cleanup_complete": True,
+            "stdout": {
+                "allowed_bytes": 4 * 1024 * 1024,
+                "observed_bytes": 512,
+                "overflowed": False,
+            },
+            "stderr": {
+                "allowed_bytes": 1024 * 1024,
+                "observed_bytes": 0,
+                "overflowed": False,
+            },
+        }
     return ArmResult(
         arm=arm,
         model=model,
@@ -64,6 +93,7 @@ def _result(arm: str, model: str, response: str) -> ArmResult:
         metrics=metrics,
         raw_stdout=f"{arm}-stdout",
         raw_stderr=f"{arm}-stderr",
+        capture=capture,
     )
 
 
@@ -725,7 +755,7 @@ def test_run_evaluation_refuses_to_overwrite_existing_run(tmp_path):
         run_evaluation(plan, run_id="same-run")
 
 
-def test_runner_can_carry_passing_bounded_capture_control(tmp_path):
+def test_runner_replaces_injected_capture_pass_when_arm_evidence_is_missing(tmp_path):
     control = EvidenceControlResult(
         "bounded_process_and_http_capture",
         EvidenceState.PASS,
@@ -735,7 +765,7 @@ def test_runner_can_carry_passing_bounded_capture_control(tmp_path):
         _plan(tmp_path),
         run_id="bounded-capture-control",
         raw_fn=lambda task, model, host: _result(
-            "raw", model, "ZeroDivisionError"
+            "raw", model, "ZeroDivisionError", capture_valid=False
         ),
         stock_fn=lambda task, model, host, workspace: _result(
             "stock", model, "ZeroDivisionError"
@@ -751,4 +781,58 @@ def test_runner_can_carry_passing_bounded_capture_control(tmp_path):
         for item in comparison["evidence"]["controls"]["results"]
         if item["name"] == "bounded_process_and_http_capture"
     )
-    assert carried["state"] == "pass"
+    assert carried["state"] == "fail"
+    assert "raw" in carried["reason"]
+
+
+@pytest.mark.parametrize(
+    ("arm", "capture"),
+    [
+        ("raw", {"response": {"allowed_bytes": "8MiB", "observed_bytes": 1, "overflowed": False}}),
+        (
+            "stock",
+            {
+                "cleanup_complete": True,
+                "stdout": {"allowed_bytes": 128, "observed_bytes": 129, "overflowed": True},
+                "stderr": {"allowed_bytes": 128, "observed_bytes": 0, "overflowed": False},
+            },
+        ),
+        (
+            "lac",
+            {
+                "cleanup_complete": False,
+                "stdout": {"allowed_bytes": 128, "observed_bytes": 1, "overflowed": False},
+                "stderr": {"allowed_bytes": 128, "observed_bytes": 0, "overflowed": False},
+            },
+        ),
+    ],
+)
+def test_runner_fails_closed_on_malformed_or_overflowed_capture_evidence(
+    tmp_path, arm, capture
+):
+    control = EvidenceControlResult(
+        "bounded_process_and_http_capture",
+        EvidenceState.PASS,
+        "caller assertion must be ignored",
+    )
+
+    def result_for(candidate, model):
+        result = _result(candidate, model, "ZeroDivisionError")
+        return replace(result, capture=capture) if candidate == arm else result
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id=f"invalid-capture-{arm}",
+        raw_fn=lambda task, model, host: result_for("raw", model),
+        stock_fn=lambda task, model, host, workspace: result_for("stock", model),
+        lac_fn=lambda task, model, host, workspace: result_for("lac", model),
+        preliminary_results=(control,),
+    )
+
+    carried = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "bounded_process_and_http_capture"
+    )
+    assert carried["state"] == "fail"
+    assert arm in carried["reason"]

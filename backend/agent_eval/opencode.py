@@ -129,10 +129,10 @@ def parse_opencode_jsonl(
 
     payload = stdout if isinstance(stdout, bytes) else stdout.encode("utf-8")
     for line_number, raw_line in enumerate(payload.splitlines(), start=1):
-        line_bytes = raw_line.strip()
-        if len(line_bytes) > max_line_bytes:
+        if len(raw_line) > max_line_bytes:
             errors.append(f"jsonl_line_limit_exceeded:{line_number}")
             break
+        line_bytes = raw_line.strip()
         if not line_bytes:
             continue
         if len(events) >= max_events:
@@ -376,6 +376,7 @@ def _run_process_outcome(
         process = run_fn(argv, **kwargs)
         if isinstance(process, CapturedProcess):
             capture = {
+                "cleanup_complete": process.cleanup_complete,
                 "stdout": {
                     "allowed_bytes": limits.stdout_bytes,
                     "observed_bytes": process.observed_stdout_bytes,

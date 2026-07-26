@@ -20,7 +20,11 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def _request_json(
-    ollama_host: str, body: dict[str, Any], timeout: int
+    ollama_host: str,
+    body: dict[str, Any],
+    timeout: int,
+    *,
+    capture_metadata: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     return bounded_http_json(
         ollama_host.rstrip("/") + "/api/chat",
@@ -29,6 +33,7 @@ def _request_json(
         timeout=timeout,
         max_bytes=OLLAMA_RESPONSE_MAX_BYTES,
         open_fn=urllib.request.urlopen,
+        capture_metadata=capture_metadata,
     )
 
 
@@ -119,8 +124,25 @@ def run_raw(
         "stream": False,
         "options": {"seed": 0, "temperature": 0},
     }
+    response_capture: dict[str, object] = {
+        "allowed_bytes": OLLAMA_RESPONSE_MAX_BYTES,
+        "observed_bytes": None,
+        "overflowed": False,
+    }
     try:
-        data = request_fn(ollama_host.rstrip("/"), body, task.timeout_seconds)
+        if request_fn is _request_json:
+            data = _request_json(
+                ollama_host.rstrip("/"),
+                body,
+                task.timeout_seconds,
+                capture_metadata=response_capture,
+            )
+        else:
+            data = request_fn(
+                ollama_host.rstrip("/"),
+                body,
+                task.timeout_seconds,
+            )
     except CaptureLimitExceeded as exc:
         return ArmResult(
             arm="raw",
@@ -188,11 +210,7 @@ def run_raw(
         metrics=_metrics(data if isinstance(data, dict) else {}),
         errors=errors,
         capture={
-            "response": {
-                "allowed_bytes": OLLAMA_RESPONSE_MAX_BYTES,
-                "observed_bytes": None,
-                "overflowed": False,
-            }
+            "response": response_capture
         },
         request_metadata=request_metadata,
     )

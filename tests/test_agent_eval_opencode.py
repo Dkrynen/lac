@@ -238,6 +238,18 @@ def test_parse_opencode_jsonl_fails_on_line_byte_ceiling():
     assert parsed.events == ()
 
 
+def test_parse_opencode_jsonl_counts_whitespace_in_physical_line_ceiling():
+    parsed = parse_opencode_jsonl(
+        b" " * 64 + b'{"type":"reasoning","part":{}}' + b" " * 64 + b"\n",
+        max_line_bytes=64,
+        max_events=10,
+    )
+
+    assert parsed.completed is False
+    assert parsed.errors == ("jsonl_line_limit_exceeded:1",)
+    assert parsed.events == ()
+
+
 def test_parse_opencode_jsonl_fails_on_event_ceiling():
     parsed = parse_opencode_jsonl(
         b'{"type":"reasoning","part":{}}\n' * 4,
