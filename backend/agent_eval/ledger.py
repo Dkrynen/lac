@@ -44,7 +44,10 @@ class _ExcludedRoot:
 
 
 def _name_key(name: str) -> str:
-    return os.path.normcase(name)
+    normalized = os.path.normcase(name)
+    if os.name == "nt":
+        normalized = normalized.rstrip(". ")
+    return normalized
 
 
 def _is_temporary_name(name: str) -> bool:
@@ -76,6 +79,40 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         if written <= 0:
             raise OSError("failed to write temporary artifact")
         view = view[written:]
+
+
+def _mark_raw_handle_for_delete(handle: int) -> None:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+    )
+    set_information.restype = ctypes.c_int
+    delete_file = ctypes.c_ubyte(1)
+    result = set_information(
+        ctypes.c_void_p(handle),
+        4,
+        ctypes.byref(delete_file),
+        ctypes.sizeof(delete_file),
+    )
+    if not result:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _close_raw_handle(handle: int) -> None:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (ctypes.c_void_p,)
+    close_handle.restype = ctypes.c_int
+    if not close_handle(ctypes.c_void_p(handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 def _open_owned_temporary(path: Path) -> int:
@@ -111,32 +148,30 @@ def _open_owned_temporary(path: Path) -> int:
         if ctypes.get_last_error() in {80, 183}:
             raise FileExistsError(path)
         raise ctypes.WinError(ctypes.get_last_error())
-    return msvcrt.open_osfhandle(handle, os.O_WRONLY)
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_WRONLY)
+    except Exception:
+        cleanup_error: Exception | None = None
+        try:
+            _mark_raw_handle_for_delete(handle)
+        except Exception as exc:
+            cleanup_error = exc
+        try:
+            _close_raw_handle(handle)
+        except Exception as exc:
+            if cleanup_error is None:
+                cleanup_error = exc
+        if cleanup_error is not None:
+            raise ArtifactLedgerError(
+                "unable to clean raw temporary handle after descriptor transfer failure"
+            ) from cleanup_error
+        raise
 
 
 def _delete_owned_temporary(descriptor: int) -> None:
-    import ctypes
     import msvcrt
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    set_information = kernel32.SetFileInformationByHandle
-    set_information.argtypes = (
-        ctypes.c_void_p,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-    )
-    set_information.restype = ctypes.c_int
-    delete_file = ctypes.c_ubyte(1)
-    handle = msvcrt.get_osfhandle(descriptor)
-    result = set_information(
-        ctypes.c_void_p(handle),
-        4,
-        ctypes.byref(delete_file),
-        ctypes.sizeof(delete_file),
-    )
-    if not result:
-        raise ctypes.WinError(ctypes.get_last_error())
+    _mark_raw_handle_for_delete(msvcrt.get_osfhandle(descriptor))
 
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:

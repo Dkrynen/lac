@@ -1,4 +1,6 @@
+import ctypes
 import json
+import msvcrt
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +44,37 @@ def test_atomic_write_preserves_unowned_existing_temporary_sibling(
     assert not target.exists()
     assert temporary.exists()
     assert temporary.read_bytes() == b"attacker-sentinel"
+
+
+def test_open_owned_temporary_cleans_raw_handle_when_descriptor_transfer_fails(
+    tmp_path, monkeypatch
+):
+    temporary = tmp_path / ".result.json.transfer.tmp"
+    close_calls = []
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (ctypes.c_void_p,)
+    close_handle.restype = ctypes.c_int
+
+    def injected_close(handle):
+        close_calls.append(handle)
+        assert close_handle(ctypes.c_void_p(handle))
+
+    monkeypatch.setattr(
+        msvcrt,
+        "open_osfhandle",
+        lambda *_args: (_ for _ in ()).throw(OSError("injected transfer failure")),
+    )
+    monkeypatch.setattr(ledger, "_close_raw_handle", injected_close, raising=False)
+
+    try:
+        with pytest.raises(OSError, match="injected transfer failure"):
+            ledger._open_owned_temporary(temporary)
+        assert len(close_calls) == 1
+        assert not temporary.exists()
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def test_atomic_write_rejects_source_path_replacement_before_promotion(
@@ -323,11 +356,36 @@ def test_seal_rejects_case_insensitive_reserved_evidence_output_alias(tmp_path):
         )
 
 
+@pytest.mark.parametrize("alias", ["evidence.json.", "evidence.json "])
+def test_seal_rejects_win32_trailing_reserved_output_alias(tmp_path, alias):
+    run = tmp_path / "run"
+    run.mkdir()
+
+    with pytest.raises(ArtifactLedgerError, match="reserved evidence output"):
+        seal_evidence(
+            run,
+            EvidenceMode.DIAGNOSTIC,
+            preliminary_results=[],
+            excluded_roots=(alias,),
+        )
+
+    assert not (run / "evidence.json").exists()
+
+
 @pytest.mark.parametrize("name", ["partial.TMP", "partial.Tmp"])
 def test_seal_rejects_case_insensitive_temporary_artifact_suffix(tmp_path, name):
     run = tmp_path / "run"
     run.mkdir()
     (run / name).write_text("partial")
+
+    with pytest.raises(ArtifactLedgerError, match="temporary artifact"):
+        seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
+
+
+def test_seal_rejects_win32_trailing_temporary_artifact_alias(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "partial.TMP. ").write_text("partial")
 
     with pytest.raises(ArtifactLedgerError, match="temporary artifact"):
         seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
@@ -361,6 +419,23 @@ def test_seal_rejects_case_insensitive_duplicate_excluded_root_alias(tmp_path):
             preliminary_results=[],
             excluded_roots=("workspaces", "WORKSPACES"),
         )
+
+
+def test_seal_normalizes_win32_trailing_excluded_root_alias(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    workspace = run / "workspaces"
+    workspace.mkdir()
+    (workspace / "fixture.txt").write_text("excluded")
+
+    evidence = seal_evidence(
+        run,
+        EvidenceMode.DIAGNOSTIC,
+        preliminary_results=[],
+        excluded_roots=("workspaces. ",),
+    )
+
+    assert "workspaces/fixture.txt" not in evidence["artifacts"]
 
 
 def test_seal_rejects_excluded_root_swapped_after_initial_validation(
