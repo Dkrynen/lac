@@ -282,8 +282,19 @@ try {{
         [Convert]::ToBase64String($response)
     )
 }} catch [System.Net.Sockets.SocketException] {{
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 28
+    $socketError = $_.Exception.SocketErrorCode
+    $nativeError = $_.Exception.NativeErrorCode
+    [Console]::Error.WriteLine(
+        "SocketException|{{0}}|{{1}}" -f $socketError, $nativeError
+    )
+    if (
+        $socketError -eq
+            [System.Net.Sockets.SocketError]::TimedOut -and
+        $nativeError -eq 10060
+    ) {{
+        exit 28
+    }}
+    exit 29
 }} finally {{
     $client.Dispose()
 }}
@@ -327,6 +338,24 @@ try {{
     else:
         rcode = None
     return returncode, rcode, stderr
+
+
+def _parsed_socket_error(stderr: bytes) -> tuple[str, int] | None:
+    try:
+        fields = stderr.decode("ascii").strip().split("|")
+    except UnicodeDecodeError:
+        return None
+    if (
+        len(fields) != 3
+        or fields[0] != "SocketException"
+        or not fields[1].isalpha()
+        or not fields[2].isdigit()
+    ):
+        return None
+    native_code = int(fields[2])
+    if not 0 <= native_code <= 0x7FFFFFFF:
+        return None
+    return fields[1], native_code
 
 
 def _prove_direct_dns_baseline(
@@ -388,16 +417,31 @@ def _prove_direct_dns_blocked(
             f"{server}:{port} returned rcode {rcode}",
             pytrace=False,
         )
-    if returncode != 28:
-        detail = stderr.decode("utf-8", errors="replace").strip()
+    socket_error = _parsed_socket_error(stderr)
+    if returncode == 28:
+        if socket_error == ("TimedOut", 10060):
+            return attempt
+        classification = (
+            "malformed socket classification"
+            if socket_error is None
+            else f"{socket_error[0]}/{socket_error[1]}"
+        )
         pytest.fail(
-            "live containment DNS proof unavailable: direct DNS probe "
-            f"returned unexpected exit {returncode} without a validated "
-            "response"
-            + (f": {detail}" if detail else ""),
+            "live containment DNS proof unavailable: timeout sentinel "
+            f"carried {classification}",
             pytrace=False,
         )
-    return attempt
+    classification = (
+        ""
+        if socket_error is None
+        else f" for {socket_error[0]}/{socket_error[1]}"
+    )
+    pytest.fail(
+        "live containment DNS proof unavailable: direct DNS probe "
+        f"returned unexpected exit {returncode}{classification} "
+        "without a validated response",
+        pytrace=False,
+    )
 
 
 def _forced_session_worker() -> None:

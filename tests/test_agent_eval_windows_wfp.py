@@ -515,7 +515,11 @@ def test_live_dns_design_uses_fresh_direct_queries_for_same_app_and_target(
             )
             encoded = base64.b64encode(response) + b"\r\n"
             return FakeProcess(0, encoded, b"")
-        return FakeProcess(28, b"", b"timed out")
+        return FakeProcess(
+            28,
+            b"",
+            b"SocketException|TimedOut|10060\r\n",
+        )
 
     monkeypatch.setattr(module.WindowsJobProcess, "start", fake_start)
 
@@ -542,6 +546,18 @@ def test_live_dns_design_uses_fresh_direct_queries_for_same_app_and_target(
     assert all('IPAddress]::Parse("9.9.9.9")' in script for script in scripts)
     assert all("$port = 53" in script for script in scripts)
     assert all("telnet://" not in script for script in scripts)
+    assert all("SocketErrorCode" in script for script in scripts)
+    assert all("NativeErrorCode" in script for script in scripts)
+    assert all("SocketError]::TimedOut" in script for script in scripts)
+    assert all("10060" in script for script in scripts)
+    assert all("exit 29" in script for script in scripts)
+    assert all("Exception.Message" not in script for script in scripts)
+    for script in scripts:
+        assert script.count("exit 28") == 1
+        assert script.index("SocketError]::TimedOut") < script.index(
+            "exit 28"
+        ) < script.index("exit 29")
+        assert "SocketException|{0}|{1}" in script
     transaction_ids = [
         int.from_bytes(packet[:2], "big")
         for packet in packets
@@ -636,6 +652,55 @@ def test_direct_dns_contained_probe_rejects_nontransport_failure(
     with pytest.raises(
         pytest.fail.Exception,
         match="DNS proof unavailable.*exit 1",
+    ):
+        module._prove_direct_dns_blocked(
+            Path("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+            "9.9.9.9",
+            53,
+            tmp_path,
+            baseline,
+        )
+
+
+@pytest.mark.parametrize(
+    ("socket_error", "native_code"),
+    [
+        ("AccessDenied", 10013),
+        ("NetworkUnreachable", 10051),
+        ("AddressNotAvailable", 10049),
+        ("NoBufferSpaceAvailable", 10055),
+    ],
+)
+def test_direct_dns_contained_probe_rejects_non_timeout_socket_error(
+    tmp_path,
+    monkeypatch,
+    socket_error,
+    native_code,
+):
+    path = (
+        Path(__file__).resolve().parent
+        / "test_agent_eval_live_containment.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "agent_eval_live_dns_socket_error",
+        path,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    baseline = module._new_dns_attempt(tmp_path)
+    sanitized_error = (
+        f"SocketException|{socket_error}|{native_code}\r\n"
+    ).encode("ascii")
+    monkeypatch.setattr(
+        module,
+        "_run_direct_dns_attempt",
+        lambda *_args: (28, None, sanitized_error),
+    )
+
+    with pytest.raises(
+        pytest.fail.Exception,
+        match=rf"DNS proof unavailable.*{socket_error}.*{native_code}",
     ):
         module._prove_direct_dns_blocked(
             Path("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
