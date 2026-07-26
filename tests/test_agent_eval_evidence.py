@@ -33,6 +33,14 @@ def test_verified_verdict_fails_closed_for_missing_duplicate_or_failed_control()
             EvidenceMode.VERIFIED, [passed(REQUIRED_CONTROLS[0])] * 2
         )
 
+    failed = [passed(name) for name in REQUIRED_CONTROLS]
+    failed[0] = EvidenceControlResult(
+        REQUIRED_CONTROLS[0], EvidenceState.FAIL, "measurement failed", {}
+    )
+    failed_verdict = EvidenceVerdict.from_results(EvidenceMode.VERIFIED, failed)
+    assert failed_verdict.missing == ()
+    assert failed_verdict.artifact_valid is False
+
 
 def test_diagnostic_mode_can_never_be_valid():
     results = [passed(name) for name in REQUIRED_CONTROLS]

@@ -39,7 +39,6 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
 
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     descriptor: int | None = None
-    promoted = False
     try:
         descriptor = os.open(
             temporary,
@@ -51,18 +50,14 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        if os.path.lexists(destination):
-            raise FileExistsError(destination)
-        os.replace(temporary, destination)
-        promoted = True
+        os.link(temporary, destination)
     finally:
         if descriptor is not None:
             os.close(descriptor)
-        if not promoted:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -87,12 +82,40 @@ def _reject_unsafe_path(path: Path) -> None:
         raise ArtifactLedgerError(f"reparse-point artifact is not allowed: {path}")
 
 
+def _validate_excluded_roots(run_root: Path, excluded_roots: tuple[str, ...]) -> set[str]:
+    names: set[str] = set()
+    for root_name in excluded_roots:
+        if (
+            not isinstance(root_name, str)
+            or not root_name
+            or Path(root_name).name != root_name
+            or root_name in {".", ".."}
+        ):
+            raise ArtifactLedgerError(f"invalid excluded root: {root_name!r}")
+        if root_name.endswith(".tmp"):
+            raise ArtifactLedgerError(
+                f"temporary artifact is not allowed: {root_name}"
+            )
+        if root_name in names:
+            raise ArtifactLedgerError(f"duplicate excluded root: {root_name}")
+        names.add(root_name)
+        path = run_root / root_name
+        if not os.path.lexists(path):
+            continue
+        _reject_unsafe_path(path)
+        if not stat.S_ISDIR(path.lstat().st_mode):
+            raise ArtifactLedgerError(
+                f"excluded root must be a directory: {root_name}"
+            )
+    return names
+
+
 def _artifact_hashes(run_root: Path, excluded_roots: tuple[str, ...]) -> dict[str, str]:
     if not run_root.is_dir():
         raise ArtifactLedgerError(f"run root is not a directory: {run_root}")
     _reject_unsafe_path(run_root)
 
-    excluded = set(excluded_roots)
+    excluded = _validate_excluded_roots(run_root, excluded_roots)
     hashes: dict[str, str] = {}
 
     def visit(directory: Path, relative: Path) -> None:
@@ -165,6 +188,62 @@ def seal_evidence(
     return evidence
 
 
+def _verified_verdict(evidence: dict[str, Any]) -> EvidenceVerdict:
+    if evidence.get("schema_version") != 2:
+        raise ArtifactLedgerError("unsupported evidence schema version")
+    raw_mode = evidence.get("mode")
+    if not isinstance(raw_mode, str):
+        raise ArtifactLedgerError("evidence mode must be a string")
+    try:
+        mode = EvidenceMode(raw_mode)
+    except ValueError as exc:
+        raise ArtifactLedgerError(f"unknown evidence mode: {raw_mode}") from exc
+
+    controls = evidence.get("controls")
+    if not isinstance(controls, dict):
+        raise ArtifactLedgerError("evidence controls must be an object")
+    if controls.get("mode") != mode.value:
+        raise ArtifactLedgerError("nested evidence mode does not match top-level mode")
+    raw_results = controls.get("results")
+    if not isinstance(raw_results, list):
+        raise ArtifactLedgerError("evidence control results must be a list")
+
+    results: list[EvidenceControlResult] = []
+    for raw_result in raw_results:
+        if not isinstance(raw_result, dict):
+            raise ArtifactLedgerError("evidence control result must be an object")
+        name = raw_result.get("name")
+        state = raw_result.get("state")
+        reason = raw_result.get("reason")
+        details = raw_result.get("details")
+        if not isinstance(name, str) or not isinstance(reason, str):
+            raise ArtifactLedgerError("evidence control name and reason must be strings")
+        if not isinstance(details, dict):
+            raise ArtifactLedgerError("evidence control details must be an object")
+        try:
+            typed_state = EvidenceState(state)
+        except (TypeError, ValueError) as exc:
+            raise ArtifactLedgerError(f"unknown evidence control state: {state!r}") from exc
+        results.append(EvidenceControlResult(name, typed_state, reason, details))
+
+    try:
+        verdict = EvidenceVerdict.from_results(mode, results)
+    except ValueError as exc:
+        raise ArtifactLedgerError(str(exc)) from exc
+    if controls.get("missing") != list(verdict.missing):
+        raise ArtifactLedgerError("nested missing controls do not match derived verdict")
+    nested_valid = controls.get("artifact_valid")
+    if not isinstance(nested_valid, bool) or nested_valid is not verdict.artifact_valid:
+        raise ArtifactLedgerError("nested artifact_valid does not match derived verdict")
+    top_level_valid = evidence.get("artifact_valid")
+    if (
+        not isinstance(top_level_valid, bool)
+        or top_level_valid is not verdict.artifact_valid
+    ):
+        raise ArtifactLedgerError("top-level artifact_valid does not match derived verdict")
+    return verdict
+
+
 def verify_evidence(run_root: Path) -> LedgerVerification:
     """Recompute the declared ledger and report whether its artifacts match."""
     root = Path(run_root)
@@ -175,6 +254,7 @@ def verify_evidence(run_root: Path) -> LedgerVerification:
             evidence = json.load(handle)
         if not isinstance(evidence, dict):
             return LedgerVerification(False, "evidence JSON must be an object")
+        _verified_verdict(evidence)
         expected_hashes = evidence.get("artifacts")
         if not isinstance(expected_hashes, dict) or not all(
             isinstance(path, str) and isinstance(digest, str)
