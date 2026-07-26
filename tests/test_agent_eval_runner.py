@@ -6,13 +6,18 @@ from pathlib import Path
 
 import pytest
 
+import backend.agent_eval.identity as identity_module
 import backend.agent_eval.opencode as opencode_module
 from backend.agent_eval.evidence import (
     EvidenceControlResult,
     EvidenceMode,
     EvidenceState,
 )
-from backend.agent_eval.identity import EvaluationIdentitySnapshot
+from backend.agent_eval.identity import (
+    EvaluationIdentitySnapshot,
+    IdentityError,
+    file_identity,
+)
 from backend.agent_eval.result import ArmResult
 from backend.agent_eval.runner import (
     EvalPlanError,
@@ -73,6 +78,47 @@ def _plan(tmp_path: Path):
         opencode_version="1.18.4",
         source_root=source,
     )
+
+
+def _runtime_snapshot(tmp_path):
+    runtime = tmp_path / "runtime.exe"
+    runtime.write_bytes(b"runtime")
+    measured = file_identity(
+        runtime,
+        version="1.18.4",
+        authenticode_fn=lambda _path: "unsigned",
+    )
+    snapshot = EvaluationIdentitySnapshot.for_test()
+    return runtime, replace(
+        snapshot,
+        lac=replace(measured, version=None),
+        ollama=replace(measured, version="0.1"),
+        opencode=measured,
+    )
+
+
+def _passing_identity_compare(*_args):
+    return (
+        EvidenceControlResult(
+            "runtime_dependency_provenance",
+            EvidenceState.PASS,
+            "unchanged",
+        ),
+        EvidenceControlResult(
+            "immutable_ollama_model_lineage",
+            EvidenceState.PASS,
+            "unchanged",
+        ),
+    )
+
+
+class _NoopIdentityLease:
+    def close(self):
+        return None
+
+
+def _noop_identity_lease(_snapshot):
+    return _NoopIdentityLease()
 
 
 def test_build_plan_is_dry_and_records_exact_identities(tmp_path):
@@ -246,7 +292,9 @@ def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
         raw_fn=lambda task, model, host: _result("raw", model, "ZeroDivisionError"),
         stock_fn=lambda task, model, host, workspace: _result("stock", model, "ZeroDivisionError"),
         lac_fn=lambda task, model, host, workspace: _result("lac", model, "ZeroDivisionError"),
-        identity_capture_fn=capture, identity_compare_fn=compare,
+        identity_capture_fn=capture,
+        identity_compare_fn=compare,
+        identity_lease_fn=_noop_identity_lease,
     )
     identity_root = tmp_path / "evidence" / "identity-run" / "identities"
     assert {path.name for path in identity_root.iterdir()} == {"lac.json", "ollama.json", "opencode.json", "opencode-configs.json", "models.json"}
@@ -277,6 +325,7 @@ def test_missing_or_drifted_arm_config_fails_runtime_provenance(tmp_path):
             EvidenceControlResult("runtime_dependency_provenance", EvidenceState.PASS, "unchanged"),
             EvidenceControlResult("immutable_ollama_model_lineage", EvidenceState.PASS, "unchanged"),
         ),
+        identity_lease_fn=_noop_identity_lease,
     )
     control = next(item for item in comparison["evidence"]["controls"]["results"] if item["name"] == "runtime_dependency_provenance")
     assert control["state"] == "fail"
@@ -322,6 +371,7 @@ def test_missing_before_or_post_config_identity_fails_closed(tmp_path, measureme
                 "unchanged",
             ),
         ),
+        identity_lease_fn=_noop_identity_lease,
     )
 
     control = next(
@@ -368,9 +418,136 @@ def test_default_opencode_arms_execute_exact_preflight_target(
                 "unchanged",
             ),
         ),
+        identity_lease_fn=_noop_identity_lease,
     )
 
     assert executed == {"stock": target, "lac": target}
+
+
+def test_runtime_files_cannot_be_mutated_during_runner_execution(tmp_path):
+    runtime, snapshot = _runtime_snapshot(tmp_path)
+    observed = []
+
+    def stock(task, model, host, workspace):
+        try:
+            runtime.write_bytes(b"changed")
+        except OSError:
+            observed.append("denied")
+        else:
+            observed.append("mutated")
+        return _result("stock", model, "ZeroDivisionError")
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="runtime-lease-window",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=stock,
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=identity_module.acquire_runtime_identity_leases,
+    )
+
+    assert observed == ["denied"]
+    assert comparison["identity_valid"] is True
+    runtime.write_bytes(b"changed")
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    ["arm_exception", "arm_timeout", "postflight_failure"],
+)
+def test_runtime_lease_closes_once_across_failure_paths(
+    tmp_path, failure_mode
+):
+    _, snapshot = _runtime_snapshot(tmp_path)
+
+    class Lease:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    lease = Lease()
+    capture_calls = 0
+
+    def capture(_plan):
+        nonlocal capture_calls
+        capture_calls += 1
+        if failure_mode == "postflight_failure" and capture_calls == 2:
+            raise IdentityError("postflight failed")
+        return snapshot
+
+    def stock(task, model, host, workspace):
+        if failure_mode == "arm_exception":
+            raise RuntimeError("arm failed")
+        result = _result("stock", model, "ZeroDivisionError")
+        if failure_mode == "arm_timeout":
+            return replace(
+                result,
+                completed=False,
+                timed_out=True,
+                errors=("timeout:180s",),
+            )
+        return result
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="lease-close-" + failure_mode,
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=stock,
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+        identity_capture_fn=capture,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=lambda _snapshot: lease,
+    )
+
+    assert lease.close_calls == 1
+    if failure_mode == "postflight_failure":
+        assert comparison["identity_valid"] is False
+
+
+def test_runtime_lease_release_failure_fails_provenance_closed(tmp_path):
+    _, snapshot = _runtime_snapshot(tmp_path)
+
+    class Lease:
+        def close(self):
+            raise OSError("lease release failed")
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="lease-release-failure",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=lambda task, model, host, workspace: _result(
+            "stock", model, "ZeroDivisionError"
+        ),
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=lambda _snapshot: Lease(),
+    )
+
+    runtime_control = next(
+        item
+        for item in comparison["identity_controls"]
+        if item["name"] == "runtime_dependency_provenance"
+    )
+    assert comparison["identity_valid"] is False
+    assert runtime_control["state"] == "fail"
+    assert "release" in runtime_control["reason"]
 
 
 def test_run_evaluation_persists_partial_arm_failure(tmp_path):

@@ -30,6 +30,7 @@ from .scoring import ScoreResult, score_exact_text
 from .task import EvalTask, snapshot_fixture
 from .identity import (
     EvaluationIdentitySnapshot,
+    acquire_runtime_identity_leases,
     capture_preflight_identities,
     compare_postflight_identities,
 )
@@ -245,6 +246,54 @@ def _complete_config_identity(value: Any) -> bool:
     )
 
 
+def _identity_failures(reason: str) -> tuple[EvidenceControlResult, ...]:
+    return (
+        EvidenceControlResult(
+            "runtime_dependency_provenance",
+            EvidenceState.FAIL,
+            reason,
+            {},
+        ),
+        EvidenceControlResult(
+            "immutable_ollama_model_lineage",
+            EvidenceState.FAIL,
+            reason,
+            {},
+        ),
+    )
+
+
+def _fail_runtime_provenance(
+    results: tuple[EvidenceControlResult, ...],
+    reason: str,
+) -> tuple[EvidenceControlResult, ...]:
+    updated = []
+    found = False
+    for item in results:
+        if item.name == "runtime_dependency_provenance":
+            updated.append(
+                EvidenceControlResult(
+                    item.name,
+                    EvidenceState.FAIL,
+                    reason,
+                    item.details,
+                )
+            )
+            found = True
+        else:
+            updated.append(item)
+    if not found:
+        updated.append(
+            EvidenceControlResult(
+                "runtime_dependency_provenance",
+                EvidenceState.FAIL,
+                reason,
+                {},
+            )
+        )
+    return tuple(updated)
+
+
 def _default_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -261,6 +310,7 @@ def run_evaluation(
     preliminary_results: Iterable[EvidenceControlResult] = (),
     identity_capture_fn: Callable[[EvaluationPlan], EvaluationIdentitySnapshot] = capture_preflight_identities,
     identity_compare_fn: Callable[[EvaluationIdentitySnapshot, EvaluationIdentitySnapshot], tuple[EvidenceControlResult, EvidenceControlResult]] = compare_postflight_identities,
+    identity_lease_fn: Callable[[EvaluationIdentitySnapshot], Any] = acquire_runtime_identity_leases,
 ) -> dict[str, Any]:
     run_id = run_id or _default_run_id()
     if not _RUN_ID.fullmatch(run_id):
@@ -278,78 +328,100 @@ def run_evaluation(
 
     identity_results: tuple[EvidenceControlResult, ...]
     preflight: EvaluationIdentitySnapshot | None = None
+    runtime_leases: Any | None = None
     try:
         preflight = identity_capture_fn(plan)
         identity_root = run_root / "identities"
         identity_root.mkdir()
         for name, payload in preflight.artifact_payloads().items():
             atomic_write_json(identity_root / f"{name}.json", payload)
-        identity_results = ()
+        runtime_leases = identity_lease_fn(preflight)
+        identity_results = _identity_failures(
+            "identity postflight was not completed"
+        )
     except Exception as exc:
         reason = f"identity preflight failed: {type(exc).__name__}: {exc}"
-        identity_results = (
-            EvidenceControlResult("runtime_dependency_provenance", EvidenceState.FAIL, reason, {}),
-            EvidenceControlResult("immutable_ollama_model_lineage", EvidenceState.FAIL, reason, {}),
-        )
+        identity_results = _identity_failures(reason)
 
     results: dict[str, ArmResult] = {}
     scores: dict[str, ScoreResult] = {}
-    for arm, model, adapter in (
-        ("raw", plan.base_model, raw_fn),
-        ("stock", plan.base_model, stock_fn),
-        ("lac", plan.lac_model, lac_fn),
-    ):
-        workspace = workspaces_root / arm
-        shutil.copytree(plan.task.fixture_root, workspace)
-        arm_task = replace(plan.task, fixture_root=workspace)
-        try:
-            if arm == "raw":
-                candidate = adapter(arm_task, model, plan.ollama_host)
-            else:
-                adapter_kwargs = {}
-                if adapter in (run_stock, run_lac):
-                    if preflight is None:
-                        raise EvalPlanError("OpenCode executable identity was not captured")
-                    # Execute the exact version-probed target, never the npm shim.
-                    adapter_kwargs["resolve_bin_fn"] = lambda: preflight.opencode.path
-                candidate = adapter(
-                    arm_task,
-                    model,
-                    plan.ollama_host,
-                    workspace,
-                    **adapter_kwargs,
-                )
-            result = _validated_result(arm, model, candidate)
-        except Exception as exc:
-            result = _adapter_failure(arm, model, exc)
-        score = _score_result(result, plan.task.scorer.expected)
-        results[arm] = result
-        scores[arm] = score
+    try:
+        for arm, model, adapter in (
+            ("raw", plan.base_model, raw_fn),
+            ("stock", plan.base_model, stock_fn),
+            ("lac", plan.lac_model, lac_fn),
+        ):
+            workspace = workspaces_root / arm
+            shutil.copytree(plan.task.fixture_root, workspace)
+            arm_task = replace(plan.task, fixture_root=workspace)
+            try:
+                if arm == "raw":
+                    candidate = adapter(arm_task, model, plan.ollama_host)
+                else:
+                    adapter_kwargs = {}
+                    if adapter in (run_stock, run_lac):
+                        if preflight is None or runtime_leases is None:
+                            raise EvalPlanError(
+                                "OpenCode executable identity lease was not acquired"
+                            )
+                        # Execute the exact version-probed and retained target.
+                        adapter_kwargs["resolve_bin_fn"] = (
+                            lambda: preflight.opencode.path
+                        )
+                    candidate = adapter(
+                        arm_task,
+                        model,
+                        plan.ollama_host,
+                        workspace,
+                        **adapter_kwargs,
+                    )
+                result = _validated_result(arm, model, candidate)
+            except Exception as exc:
+                result = _adapter_failure(arm, model, exc)
+            score = _score_result(result, plan.task.scorer.expected)
+            results[arm] = result
+            scores[arm] = score
 
-        arm_dir = arms_root / arm
-        arm_dir.mkdir()
-        effective_prompt = (
-            build_raw_prompt(arm_task) if arm == "raw" else arm_task.prompt
-        )
-        (arm_dir / "prompt.txt").write_text(
-            effective_prompt, encoding="utf-8"
-        )
-        (arm_dir / "stdout.log").write_text(result.raw_stdout, encoding="utf-8")
-        (arm_dir / "stderr.log").write_text(result.raw_stderr, encoding="utf-8")
-        atomic_write_json(
-            arm_dir / "result.json",
-            {"result": asdict(result), "score": asdict(score)},
-        )
-
-    if preflight is not None:
-        try:
-            identity_results = identity_compare_fn(preflight, identity_capture_fn(plan))
-        except Exception as exc:
-            reason = f"identity postflight failed: {type(exc).__name__}: {exc}"
-            identity_results = (
-                EvidenceControlResult("runtime_dependency_provenance", EvidenceState.FAIL, reason, {}),
-                EvidenceControlResult("immutable_ollama_model_lineage", EvidenceState.FAIL, reason, {}),
+            arm_dir = arms_root / arm
+            arm_dir.mkdir()
+            effective_prompt = (
+                build_raw_prompt(arm_task) if arm == "raw" else arm_task.prompt
             )
+            (arm_dir / "prompt.txt").write_text(
+                effective_prompt, encoding="utf-8"
+            )
+            (arm_dir / "stdout.log").write_text(
+                result.raw_stdout, encoding="utf-8"
+            )
+            (arm_dir / "stderr.log").write_text(
+                result.raw_stderr, encoding="utf-8"
+            )
+            atomic_write_json(
+                arm_dir / "result.json",
+                {"result": asdict(result), "score": asdict(score)},
+            )
+
+        if preflight is not None and runtime_leases is not None:
+            try:
+                identity_results = identity_compare_fn(
+                    preflight,
+                    identity_capture_fn(plan),
+                )
+            except Exception as exc:
+                reason = (
+                    f"identity postflight failed: {type(exc).__name__}: {exc}"
+                )
+                identity_results = _identity_failures(reason)
+    finally:
+        if runtime_leases is not None:
+            try:
+                runtime_leases.close()
+            except Exception as exc:
+                identity_results = _fail_runtime_provenance(
+                    identity_results,
+                    f"runtime identity lease release failed: "
+                    f"{type(exc).__name__}: {exc}",
+                )
 
     config_evidence: dict[str, Any] = {}
     config_ok = True

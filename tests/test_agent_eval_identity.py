@@ -63,18 +63,102 @@ def test_file_identity_rejects_link(tmp_path):
         file_identity(link, version="1.18.4")
 
 
-def test_file_identity_rejects_replacement_between_stat_and_hash(tmp_path, monkeypatch):
+def test_file_identity_denies_same_metadata_replacement_during_signature_capture(
+    tmp_path,
+):
     binary = tmp_path / "replace.exe"
     binary.write_bytes(b"before")
-    original_open = Path.open
-    def replace_after_open(*args, **kwargs):
-        handle = original_open(*args, **kwargs)
-        if Path(args[0]) == binary and args[1:2] == ("rb",):
-            binary.write_bytes(b"after!")
-        return handle
-    monkeypatch.setattr(Path, "open", replace_after_open)
-    with pytest.raises(IdentityError, match="changed"):
-        file_identity(binary, version="1.18.4")
+    original = binary.stat()
+    replacement = tmp_path / "replacement.exe"
+    replacement.write_bytes(b"after!")
+    replacement.touch()
+    replacement_time = original.st_mtime_ns
+    import os
+
+    os.utime(
+        replacement,
+        ns=(replacement_time, replacement_time),
+    )
+    observed = []
+
+    def replace_during_signature(_path):
+        try:
+            replacement.replace(binary)
+        except OSError:
+            observed.append("denied")
+        else:
+            observed.append("replaced")
+        return "unsigned"
+
+    rejected = False
+    try:
+        file_identity(
+            binary,
+            version="1.18.4",
+            authenticode_fn=replace_during_signature,
+        )
+    except IdentityError:
+        rejected = True
+
+    assert observed == ["denied"] or rejected
+
+
+def test_file_identity_holds_lock_during_version_probe(tmp_path):
+    binary = tmp_path / "opencode.exe"
+    binary.write_bytes(b"before")
+    replacement = tmp_path / "replacement.exe"
+    replacement.write_bytes(b"after!")
+    observed = []
+
+    def probe(_path):
+        try:
+            replacement.replace(binary)
+        except OSError:
+            observed.append("denied")
+        else:
+            observed.append("replaced")
+        return "1.18.4"
+
+    identity = file_identity(
+        binary,
+        version=None,
+        version_fn=probe,
+        authenticode_fn=lambda _path: "unsigned",
+    )
+
+    assert observed == ["denied"]
+    assert identity.version == "1.18.4"
+
+
+def test_runtime_lease_acquisition_closes_prior_files_on_failure(
+    monkeypatch,
+):
+    snapshot = identity_module.EvaluationIdentitySnapshot.for_test()
+    closed = []
+    calls = 0
+
+    class Lease:
+        def close(self):
+            closed.append("closed")
+
+    def acquire(_expected):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise IdentityError("second lease failed")
+        return Lease()
+
+    monkeypatch.setattr(
+        identity_module,
+        "_acquire_file_lease",
+        acquire,
+        raising=False,
+    )
+
+    with pytest.raises(IdentityError, match="second lease failed"):
+        identity_module.acquire_runtime_identity_leases(snapshot)
+
+    assert closed == ["closed"]
 
 
 def test_model_identity_requires_full_digest_and_exact_variant_parent():
