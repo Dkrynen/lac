@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,113 @@ class LedgerVerification:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class _ObjectIdentity:
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class _ExcludedRoot:
+    identity: _ObjectIdentity | None
+
+
+def _name_key(name: str) -> str:
+    return os.path.normcase(name)
+
+
+def _is_temporary_name(name: str) -> bool:
+    return _name_key(name).endswith(_name_key(".tmp"))
+
+
+def _object_identity(stat_result: os.stat_result) -> _ObjectIdentity:
+    if not stat_result.st_ino:
+        raise ArtifactLedgerError("filesystem object identity is unavailable")
+    return _ObjectIdentity(stat_result.st_dev, stat_result.st_ino)
+
+
+def _path_identity(path: Path) -> _ObjectIdentity | None:
+    try:
+        return _object_identity(path.lstat())
+    except FileNotFoundError:
+        return None
+
+
+def _require_path_identity(path: Path, identity: _ObjectIdentity, message: str) -> None:
+    if _path_identity(path) != identity:
+        raise ArtifactLedgerError(message)
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("failed to write temporary artifact")
+        view = view[written:]
+
+
+def _open_owned_temporary(path: Path) -> int:
+    if os.name != "nt":
+        raise ArtifactLedgerError(
+            "identity-bound temporary creation is only supported on Windows"
+        )
+    import ctypes
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_void_p,
+    )
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(
+        str(path),
+        0x40010000,
+        0x00000007,
+        None,
+        1,
+        0x00000080,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        if ctypes.get_last_error() in {80, 183}:
+            raise FileExistsError(path)
+        raise ctypes.WinError(ctypes.get_last_error())
+    return msvcrt.open_osfhandle(handle, os.O_WRONLY)
+
+
+def _delete_owned_temporary(descriptor: int) -> None:
+    import ctypes
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+    )
+    set_information.restype = ctypes.c_int
+    delete_file = ctypes.c_ubyte(1)
+    handle = msvcrt.get_osfhandle(descriptor)
+    result = set_information(
+        ctypes.c_void_p(handle),
+        4,
+        ctypes.byref(delete_file),
+        ctypes.sizeof(delete_file),
+    )
+    if not result:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
     """Create an immutable artifact after flushing it to disk."""
     destination = Path(path)
@@ -40,27 +148,37 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     descriptor: int | None = None
     temporary_owned = False
+    identity: _ObjectIdentity | None = None
     try:
-        descriptor = os.open(
-            temporary,
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-            0o600,
-        )
+        descriptor = _open_owned_temporary(temporary)
         temporary_owned = True
-        with os.fdopen(descriptor, "wb") as handle:
-            descriptor = None
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
+        identity = _object_identity(os.fstat(descriptor))
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        _require_path_identity(
+            temporary,
+            identity,
+            "temporary source identity changed before promotion",
+        )
         os.link(temporary, destination)
+        _require_path_identity(
+            destination,
+            identity,
+            "final artifact identity does not match owned temporary",
+        )
     finally:
+        cleanup_error: Exception | None = None
+        if temporary_owned and descriptor is not None:
+            try:
+                _delete_owned_temporary(descriptor)
+            except Exception as exc:
+                cleanup_error = exc
         if descriptor is not None:
             os.close(descriptor)
-        if temporary_owned:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+        if cleanup_error is not None and sys.exc_info()[0] is None:
+            raise ArtifactLedgerError(
+                "unable to safely delete owned temporary artifact"
+            ) from cleanup_error
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -85,8 +203,11 @@ def _reject_unsafe_path(path: Path) -> None:
         raise ArtifactLedgerError(f"reparse-point artifact is not allowed: {path}")
 
 
-def _validate_excluded_roots(run_root: Path, excluded_roots: tuple[str, ...]) -> set[str]:
-    names: set[str] = set()
+def _validate_excluded_roots(
+    run_root: Path,
+    excluded_roots: tuple[str, ...],
+) -> dict[str, _ExcludedRoot]:
+    names: dict[str, _ExcludedRoot] = {}
     for root_name in excluded_roots:
         if (
             not isinstance(root_name, str)
@@ -95,23 +216,26 @@ def _validate_excluded_roots(run_root: Path, excluded_roots: tuple[str, ...]) ->
             or root_name in {".", ".."}
         ):
             raise ArtifactLedgerError(f"invalid excluded root: {root_name!r}")
-        if root_name == "evidence.json":
+        normalized_name = _name_key(root_name)
+        if normalized_name == _name_key("evidence.json"):
             raise ArtifactLedgerError("reserved evidence output cannot be excluded")
-        if root_name.endswith(".tmp"):
+        if _is_temporary_name(root_name):
             raise ArtifactLedgerError(
                 f"temporary artifact is not allowed: {root_name}"
             )
-        if root_name in names:
+        if normalized_name in names:
             raise ArtifactLedgerError(f"duplicate excluded root: {root_name}")
-        names.add(root_name)
         path = run_root / root_name
         if not os.path.lexists(path):
+            names[normalized_name] = _ExcludedRoot(identity=None)
             continue
         _reject_unsafe_path(path)
-        if not stat.S_ISDIR(path.lstat().st_mode):
+        path_stat = path.lstat()
+        if not stat.S_ISDIR(path_stat.st_mode):
             raise ArtifactLedgerError(
                 f"excluded root must be a directory: {root_name}"
             )
+        names[normalized_name] = _ExcludedRoot(_object_identity(path_stat))
     return names
 
 
@@ -127,9 +251,20 @@ def _artifact_hashes(run_root: Path, excluded_roots: tuple[str, ...]) -> dict[st
         for entry in sorted(directory.iterdir(), key=lambda child: child.name):
             child_relative = relative / entry.name
             normalized = child_relative.as_posix()
-            if relative == Path(".") and entry.name in excluded:
+            excluded_root = excluded.get(_name_key(entry.name))
+            if relative == Path(".") and excluded_root is not None:
+                _reject_unsafe_path(entry)
+                entry_stat = entry.lstat()
+                if not stat.S_ISDIR(entry_stat.st_mode):
+                    raise ArtifactLedgerError(
+                        f"excluded root must be a directory: {entry.name}"
+                    )
+                if excluded_root.identity is None or _object_identity(entry_stat) != excluded_root.identity:
+                    raise ArtifactLedgerError(
+                        f"excluded root changed after validation: {entry.name}"
+                    )
                 continue
-            if entry.name.endswith(".tmp"):
+            if _is_temporary_name(entry.name):
                 raise ArtifactLedgerError(f"temporary artifact is not allowed: {normalized}")
             _reject_unsafe_path(entry)
             mode = entry.lstat().st_mode
@@ -138,7 +273,7 @@ def _artifact_hashes(run_root: Path, excluded_roots: tuple[str, ...]) -> dict[st
                 continue
             if not stat.S_ISREG(mode):
                 raise ArtifactLedgerError(f"non-regular artifact is not allowed: {normalized}")
-            if normalized == "evidence.json":
+            if _name_key(normalized) == _name_key("evidence.json"):
                 continue
             digest = hashlib.sha256()
             with entry.open("rb") as handle:
@@ -245,6 +380,10 @@ def _verified_verdict(
     artifact_count = ledger_results[0].details.get("artifact_count")
     if type(artifact_count) is not int:
         raise ArtifactLedgerError("artifact_count must be an integer")
+    if ledger_results[0].state is not EvidenceState.PASS:
+        raise ArtifactLedgerError(
+            "artifact_ledger_integrity control must be pass"
+        )
 
     try:
         verdict = EvidenceVerdict.from_results(mode, results)

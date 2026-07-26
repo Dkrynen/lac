@@ -1,5 +1,6 @@
 import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +42,30 @@ def test_atomic_write_preserves_unowned_existing_temporary_sibling(
     assert not target.exists()
     assert temporary.exists()
     assert temporary.read_bytes() == b"attacker-sentinel"
+
+
+def test_atomic_write_rejects_source_path_replacement_before_promotion(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "result.bin"
+    temporary = tmp_path / ".result.bin.fixed.tmp"
+    monkeypatch.setattr(ledger.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed"))
+    real_link = ledger.os.link
+
+    def replace_source_then_link(source, destination):
+        source_path = Path(source)
+        source_path.unlink()
+        source_path.write_bytes(b"attacker-replacement")
+        return real_link(source, destination)
+
+    monkeypatch.setattr(ledger.os, "link", replace_source_then_link)
+
+    with pytest.raises(ArtifactLedgerError, match="identity"):
+        atomic_write_bytes(target, b"intended-payload")
+
+    assert target.read_bytes() == b"attacker-replacement"
+    assert temporary.exists()
+    assert temporary.read_bytes() == b"attacker-replacement"
 
 
 def test_atomic_write_is_create_only_when_two_writers_reach_promotion_together(
@@ -126,6 +151,22 @@ def test_verify_rejects_tampered_diagnostic_validity_metadata(tmp_path):
     verification = verify_evidence(run)
     assert verification.ok is False
     assert "artifact_valid" in (verification.reason or "")
+
+
+def test_verify_rejects_failed_computed_ledger_control(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    atomic_write_json(run / "manifest.json", {"schema_version": 2})
+    seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
+
+    evidence_path = run / "evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["controls"]["results"][-1]["state"] = "fail"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    verification = verify_evidence(run)
+    assert verification.ok is False
+    assert "artifact_ledger_integrity" in (verification.reason or "")
 
 
 @pytest.mark.parametrize("bad_count", [999, True])
@@ -267,6 +308,80 @@ def test_seal_rejects_reserved_absent_evidence_output_exclusion(tmp_path):
         )
 
     assert not evidence_path.exists()
+
+
+def test_seal_rejects_case_insensitive_reserved_evidence_output_alias(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+
+    with pytest.raises(ArtifactLedgerError, match="reserved evidence output"):
+        seal_evidence(
+            run,
+            EvidenceMode.DIAGNOSTIC,
+            preliminary_results=[],
+            excluded_roots=("EVIDENCE.JSON",),
+        )
+
+
+@pytest.mark.parametrize("name", ["partial.TMP", "partial.Tmp"])
+def test_seal_rejects_case_insensitive_temporary_artifact_suffix(tmp_path, name):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / name).write_text("partial")
+
+    with pytest.raises(ArtifactLedgerError, match="temporary artifact"):
+        seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
+
+
+def test_seal_normalizes_case_insensitive_excluded_root_alias(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    workspace = run / "workspaces"
+    workspace.mkdir()
+    (workspace / "fixture.txt").write_text("excluded")
+
+    evidence = seal_evidence(
+        run,
+        EvidenceMode.DIAGNOSTIC,
+        preliminary_results=[],
+        excluded_roots=("WORKSPACES",),
+    )
+
+    assert "workspaces/fixture.txt" not in evidence["artifacts"]
+
+
+def test_seal_rejects_case_insensitive_duplicate_excluded_root_alias(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+
+    with pytest.raises(ArtifactLedgerError, match="duplicate excluded root"):
+        seal_evidence(
+            run,
+            EvidenceMode.DIAGNOSTIC,
+            preliminary_results=[],
+            excluded_roots=("workspaces", "WORKSPACES"),
+        )
+
+
+def test_seal_rejects_excluded_root_swapped_after_initial_validation(
+    tmp_path, monkeypatch
+):
+    run = tmp_path / "run"
+    run.mkdir()
+    workspace = run / "workspaces"
+    workspace.mkdir()
+    real_validate = ledger._validate_excluded_roots
+
+    def validate_then_swap(run_root, excluded_roots):
+        exclusions = real_validate(run_root, excluded_roots)
+        workspace.rmdir()
+        workspace.write_text("swapped")
+        return exclusions
+
+    monkeypatch.setattr(ledger, "_validate_excluded_roots", validate_then_swap)
+
+    with pytest.raises(ArtifactLedgerError, match="excluded root"):
+        seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
 
 
 def test_evidence_root_hash_is_independent_of_artifact_creation_order(tmp_path):
