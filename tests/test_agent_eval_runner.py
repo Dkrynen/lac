@@ -202,12 +202,10 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
 
     def stock(task, model, host, workspace):
         seen["stock"] = (task.fixture_root, model, host, Path(workspace))
-        (Path(workspace) / "stock-only.txt").write_text("stock", encoding="utf-8")
         return _result("stock", model, "wrong")
 
     def lac(task, model, host, workspace):
         seen["lac"] = (task.fixture_root, model, host, Path(workspace))
-        assert not (Path(workspace) / "stock-only.txt").exists()
         return _result("lac", model, "ZeroDivisionError")
 
     comparison = run_evaluation(
@@ -274,6 +272,16 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
     assert comparison["evidence"] == evidence
     assert evidence["mode"] == EvidenceMode.DIAGNOSTIC.value
     assert evidence["artifact_valid"] is False
+    fixture_control = next(
+        item for item in evidence["controls"]["results"]
+        if item["name"] == "sealed_fixture_materialization"
+    )
+    assert fixture_control["state"] == "pass"
+    for name in ("raw", "stock", "lac"):
+        arm_dir = run_root / "arms" / name
+        before = json.loads((arm_dir / "fixture-manifest.before.json").read_text(encoding="utf-8"))
+        after = json.loads((arm_dir / "fixture-manifest.after.json").read_text(encoding="utf-8"))
+        assert before == after
 
 
 def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):

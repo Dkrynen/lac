@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -9,8 +10,10 @@ from backend.agent_eval.task import (
     MAX_FIXTURE_FILE_BYTES,
     MAX_FIXTURE_TOTAL_BYTES,
     EvalTaskError,
+    EvalScorer,
     load_task,
     snapshot_fixture,
+    task_contract_sha256,
 )
 
 
@@ -49,6 +52,23 @@ def test_load_task_validates_and_returns_immutable_contract(tmp_path):
     assert task.scorer.expected == "ZeroDivisionError"
     with pytest.raises((AttributeError, TypeError)):
         task.id = "changed"
+
+
+def test_task_contract_hash_binds_each_current_task_contract_field(tmp_path):
+    suite = _suite(tmp_path)
+    _write_manifest(suite)
+    task = load_task("safe-task", suite)
+
+    baseline = task_contract_sha256(task)
+    assert baseline == (
+        "cce12e9ee6ac07cbc1649bba33841f928e169fd144dafcca6c4b78dfc8ac6dba"
+    )
+    assert task_contract_sha256(replace(task, id="other-task")) != baseline
+    assert task_contract_sha256(replace(task, prompt="Other prompt.")) != baseline
+    assert task_contract_sha256(replace(task, timeout_seconds=121)) != baseline
+    assert task_contract_sha256(
+        replace(task, scorer=EvalScorer("exact_text", "TypeError"))
+    ) != baseline
 
 
 @pytest.mark.parametrize(

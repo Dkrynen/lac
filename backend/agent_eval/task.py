@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import stat
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .identity import canonical_sha256
 from backend.project_security import is_sensitive_project_path
 
 
@@ -42,6 +44,25 @@ class EvalTask:
     fixture_root: Path
     timeout_seconds: int
     scorer: EvalScorer
+
+
+def task_contract_sha256(task: EvalTask) -> str:
+    """Hash the task behavior that a sealed fixture is allowed to serve."""
+
+    return canonical_sha256(
+        {
+            "schema_version": task.schema_version,
+            "id": task.id,
+            "prompt": task.prompt,
+            "timeout_seconds": task.timeout_seconds,
+            "scorer": {
+                "type": task.scorer.type,
+                "expected_sha256": hashlib.sha256(
+                    task.scorer.expected.encode("utf-8")
+                ).hexdigest(),
+            },
+        }
+    )
 
 
 def _require_exact_keys(data: dict[str, Any], allowed: frozenset[str], label: str) -> None:

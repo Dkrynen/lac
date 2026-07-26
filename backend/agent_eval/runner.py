@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-import shutil
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +25,14 @@ from .ledger import atomic_write_json, seal_evidence
 from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
 from .result import ArmResult
 from .scoring import ScoreResult, score_exact_text
-from .task import EvalTask, snapshot_fixture
+from .fixture import (
+    FixtureManifest,
+    FixtureSealError,
+    build_fixture_manifest,
+    materialize_fixture,
+    verify_materialized_fixture,
+)
+from .task import EvalTask, snapshot_fixture, task_contract_sha256
 from .identity import (
     EvaluationIdentitySnapshot,
     acquire_runtime_identity_leases,
@@ -54,6 +59,7 @@ class EvaluationPlan:
     opencode_binary: Path
     opencode_version: str
     fixture_sha256: str
+    fixture_manifest: FixtureManifest
     auto_approval_scope: str = "disposable_workspace_only"
 
 
@@ -102,7 +108,7 @@ def build_plan(
     if _inside(output, source):
         raise EvalPlanError("evaluation output must be outside the source repo")
 
-    snapshot = snapshot_fixture(task.fixture_root)
+    fixture_manifest = build_fixture_manifest(task)
     return EvaluationPlan(
         task=task,
         base_model=base_model,
@@ -111,7 +117,8 @@ def build_plan(
         output_root=output,
         opencode_binary=Path(opencode_binary),
         opencode_version=opencode_version,
-        fixture_sha256=hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
+        fixture_sha256=fixture_manifest.aggregate_sha256,
+        fixture_manifest=fixture_manifest,
     )
 
 
@@ -146,13 +153,11 @@ def _manifest(
         },
         "fixture_sha256": plan.fixture_sha256,
     }
-    contract_bytes = json.dumps(
-        task_contract, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
     return {
         "schema_version": 1,
         "task": task_contract,
-        "task_contract_sha256": hashlib.sha256(contract_bytes).hexdigest(),
+        "task_contract_sha256": task_contract_sha256(plan.task),
+        "fixture_manifest": plan.fixture_manifest.to_dict(),
         "models": {
             "raw": plan.base_model,
             "stock": plan.base_model,
@@ -345,6 +350,7 @@ def run_evaluation(
 
     results: dict[str, ArmResult] = {}
     scores: dict[str, ScoreResult] = {}
+    fixture_controls: list[EvidenceControlResult] = []
     try:
         for arm, model, adapter in (
             ("raw", plan.base_model, raw_fn),
@@ -352,9 +358,23 @@ def run_evaluation(
             ("lac", plan.lac_model, lac_fn),
         ):
             workspace = workspaces_root / arm
-            shutil.copytree(plan.task.fixture_root, workspace)
+            arm_dir = arms_root / arm
+            arm_dir.mkdir()
+            try:
+                seal = materialize_fixture(plan.fixture_manifest, plan.task.fixture_root, workspace)
+                atomic_write_json(arm_dir / "fixture-manifest.before.json", plan.fixture_manifest.to_dict())
+            except (FixtureSealError, OSError) as exc:
+                seal = None
+                fixture_controls.append(
+                    EvidenceControlResult(
+                        "sealed_fixture_materialization", EvidenceState.FAIL,
+                        f"{arm} materialization failed: {type(exc).__name__}: {exc}", {},
+                    )
+                )
             arm_task = replace(plan.task, fixture_root=workspace)
             try:
+                if seal is None or not seal.ok:
+                    raise EvalPlanError("sealed fixture materialization was not available")
                 if arm == "raw":
                     candidate = adapter(arm_task, model, plan.ollama_host)
                 else:
@@ -382,8 +402,6 @@ def run_evaluation(
             results[arm] = result
             scores[arm] = score
 
-            arm_dir = arms_root / arm
-            arm_dir.mkdir()
             effective_prompt = (
                 build_raw_prompt(arm_task) if arm == "raw" else arm_task.prompt
             )
@@ -400,6 +418,29 @@ def run_evaluation(
                 arm_dir / "result.json",
                 {"result": asdict(result), "score": asdict(score)},
             )
+            verification = verify_materialized_fixture(plan.fixture_manifest, workspace)
+            atomic_write_json(
+                arm_dir / "fixture-manifest.after.json",
+                plan.fixture_manifest.to_dict() if verification.ok else {
+                    **plan.fixture_manifest.to_dict(), "verification_error": verification.reason
+                },
+            )
+            if seal is not None and seal.ok and verification.ok:
+                fixture_controls.append(
+                    EvidenceControlResult(
+                        "sealed_fixture_materialization", EvidenceState.PASS,
+                        f"{arm} fixture matched its sealed manifest",
+                        {"aggregate_sha256": verification.aggregate_sha256, "acl_hardened": seal.acl_hardened},
+                    )
+                )
+            elif seal is not None:
+                fixture_controls.append(
+                    EvidenceControlResult(
+                        "sealed_fixture_materialization", EvidenceState.FAIL,
+                        f"{arm} fixture changed after materialization: {verification.reason}",
+                        {"acl_hardened": seal.acl_hardened},
+                    )
+                )
 
         if preflight is not None and runtime_leases is not None:
             try:
@@ -473,7 +514,17 @@ def run_evaluation(
         if item.name not in {
             "runtime_dependency_provenance",
             "immutable_ollama_model_lineage",
+            "sealed_fixture_materialization",
         }
     ]
-    evidence = seal_evidence(run_root, mode, [*carried_results, *identity_results])
+    fixture_ok = len(fixture_controls) == 3 and all(
+        item.state is EvidenceState.PASS for item in fixture_controls
+    )
+    fixture_result = EvidenceControlResult(
+        "sealed_fixture_materialization",
+        EvidenceState.PASS if fixture_ok else EvidenceState.FAIL,
+        "all arms received distinct post-verified sealed fixtures" if fixture_ok else "one or more sealed fixture checks failed",
+        {"arms": [item.details for item in fixture_controls]},
+    )
+    evidence = seal_evidence(run_root, mode, [*carried_results, *identity_results, fixture_result])
     return {**comparison, "evidence": evidence}
