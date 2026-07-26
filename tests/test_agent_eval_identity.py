@@ -1,9 +1,14 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import backend.agent_eval.identity as identity_module
 from backend.agent_eval.identity import (
     IdentityError,
+    _default_authenticode,
+    _package_metadata,
+    _wrapper_target,
     capture_model_identities,
     compare_identity_payloads,
     file_identity,
@@ -104,6 +109,111 @@ def test_model_identity_rejects_unpinned_or_wrong_lineage(mutate, message):
     mutate(responses)
     with pytest.raises(IdentityError, match=message):
         capture_model_identities("gpt-oss:20b", "gpt-oss:20b-agent", fetch_fn=lambda key: responses[key])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("modelfile", []),
+        ("parameters", {}),
+        ("template", None),
+        ("details", []),
+        ("model_info", []),
+        ("capabilities", {}),
+    ],
+)
+def test_model_identity_rejects_wrong_show_field_types(field, value):
+    responses = _responses()
+    responses["gpt-oss:20b-agent"][field] = value
+
+    with pytest.raises(IdentityError, match="invalid"):
+        capture_model_identities(
+            "gpt-oss:20b",
+            "gpt-oss:20b-agent",
+            fetch_fn=lambda key: responses[key],
+        )
+
+
+def test_model_identity_rejects_lac_from_digest_that_differs_from_base():
+    responses = _responses()
+    responses["gpt-oss:20b-agent"]["modelfile"] = "FROM sha256:" + "d" * 64
+
+    with pytest.raises(IdentityError, match="FROM digest"):
+        capture_model_identities(
+            "gpt-oss:20b",
+            "gpt-oss:20b-agent",
+            fetch_fn=lambda key: responses[key],
+        )
+
+
+def test_wrapper_target_rejects_expected_path_hidden_in_dead_comment(tmp_path):
+    wrapper = tmp_path / "opencode.cmd"
+    target = tmp_path / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"expected")
+    (tmp_path / "evil.exe").write_bytes(b"evil")
+    wrapper.write_text(
+        'REM %~dp0\\node_modules\\opencode-ai\\bin\\opencode.exe\n'
+        '"%~dp0\\evil.exe" %*\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(IdentityError, match="supported executable target"):
+        _wrapper_target(wrapper)
+
+
+@pytest.mark.parametrize("dp0", ["%~dp0", "%dp0%"])
+def test_wrapper_target_accepts_only_direct_supported_command(tmp_path, dp0):
+    wrapper = tmp_path / "opencode.cmd"
+    target = tmp_path / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"expected")
+    wrapper.write_text(
+        f'@ECHO off\n"{dp0}\\node_modules\\opencode-ai\\bin\\opencode.exe" %*\n',
+        encoding="utf-8",
+    )
+
+    assert _wrapper_target(wrapper) == target
+
+
+def test_package_metadata_is_found_at_npm_package_root(tmp_path):
+    binary = (
+        tmp_path
+        / "node_modules"
+        / "opencode-ai"
+        / "bin"
+        / "opencode.exe"
+    )
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"opencode")
+    package = binary.parent.parent / "package.json"
+    package.write_text('{"name":"opencode-ai","version":"1.18.4"}', encoding="utf-8")
+
+    assert _package_metadata(binary) == package
+
+
+@pytest.mark.parametrize(
+    ("status", "returncode", "expected"),
+    [
+        ("Valid", 0, "valid"),
+        ("NotSigned", 0, "unsigned"),
+        ("HashMismatch", 0, "invalid"),
+        ("", 1, "unavailable"),
+    ],
+)
+def test_authenticode_status_mapping_is_truthful(
+    tmp_path, monkeypatch, status, returncode, expected
+):
+    monkeypatch.setattr(
+        identity_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout=status + ("\n" if status else ""),
+            returncode=returncode,
+        ),
+    )
+
+    assert _default_authenticode(tmp_path / "runtime.exe") == expected
 
 
 def test_postflight_model_or_binary_drift_fails():

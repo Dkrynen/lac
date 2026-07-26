@@ -83,10 +83,15 @@ def bounded_http_json(
         content_length = getattr(response, "headers", {}).get("Content-Length")
         if content_length is not None:
             try:
-                if int(content_length) > max_bytes:
-                    raise CaptureLimitExceeded(f"response exceeds {max_bytes} byte capture limit")
+                declared_length = int(content_length)
             except ValueError as exc:
                 raise ValueError("response Content-Length is invalid") from exc
+            if declared_length < 0:
+                raise ValueError("response Content-Length is invalid")
+            if declared_length > max_bytes:
+                raise CaptureLimitExceeded(
+                    f"response exceeds {max_bytes} byte capture limit"
+                )
         chunks = bytearray()
         while True:
             chunk = response.read(min(64 * 1024, max_bytes + 1 - len(chunks)))

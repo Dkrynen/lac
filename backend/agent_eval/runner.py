@@ -232,6 +232,19 @@ def _score_result(result: ArmResult, expected: str) -> ScoreResult:
     )
 
 
+def _complete_config_identity(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"path", "size", "sha256"}
+        and isinstance(value["path"], str)
+        and bool(value["path"])
+        and type(value["size"]) is int
+        and value["size"] >= 0
+        and isinstance(value["sha256"], str)
+        and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
+    )
+
+
 def _default_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -295,7 +308,10 @@ def run_evaluation(
             else:
                 adapter_kwargs = {}
                 if adapter in (run_stock, run_lac):
-                    adapter_kwargs["resolve_bin_fn"] = lambda: plan.opencode_binary
+                    if preflight is None:
+                        raise EvalPlanError("OpenCode executable identity was not captured")
+                    # Execute the exact version-probed target, never the npm shim.
+                    adapter_kwargs["resolve_bin_fn"] = lambda: preflight.opencode.path
                 candidate = adapter(
                     arm_task,
                     model,
@@ -340,7 +356,12 @@ def run_evaluation(
     for arm in ("stock", "lac"):
         measured = results[arm].metrics.get("opencode_config_identity")
         config_evidence[arm] = measured
-        if not isinstance(measured, dict) or measured.get("before") != measured.get("after"):
+        if (
+            not isinstance(measured, dict)
+            or not _complete_config_identity(measured.get("before"))
+            or not _complete_config_identity(measured.get("after"))
+            or measured["before"] != measured["after"]
+        ):
             config_ok = False
     identity_root = run_root / "identities"
     identity_root.mkdir(exist_ok=True)

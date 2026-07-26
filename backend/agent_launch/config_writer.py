@@ -9,7 +9,15 @@ from urllib.parse import urlsplit
 
 def _evaluation_loopback_host(host: str) -> bool:
     parsed = urlsplit(host)
-    return parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"} and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        and not parsed.username
+        and not parsed.password
+        and not parsed.path.rstrip("/")
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 _FAIL_CLOSED_PERMISSIONS = {
     "*": "ask",

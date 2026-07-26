@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 _REPARSE_POINT = 0x0400
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _FROM_DIGEST = re.compile(r"(?im)^FROM\s+.*(?:sha256[:-])([0-9a-f]{64})\s*$")
+_WRAPPER_COMMAND = re.compile(
+    rb'(?im)^\s*(?:"%(?:~dp0|dp0%)\\node_modules\\opencode-ai\\bin\\opencode\.exe"'
+    rb'|%(?:~dp0|dp0%)\\node_modules\\opencode-ai\\bin\\opencode\.exe)\s+%\*\s*$'
+)
 _SHOW_FIELDS = ("modelfile", "parameters", "template", "details", "model_info", "capabilities")
 
 
@@ -261,10 +265,14 @@ def _ollama_executable() -> Path:
 
 
 def _package_metadata(binary: Path) -> Path | None:
-    for name in ("package.json", "package-lock.json"):
-        candidate = binary.parent / name
-        if candidate.is_file():
-            return candidate
+    roots = [binary.parent]
+    if binary.parent.name.casefold() == "bin":
+        roots.insert(0, binary.parent.parent)
+    for root in roots:
+        for name in ("package.json", "package-lock.json"):
+            candidate = root / name
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -281,8 +289,7 @@ def _wrapper_target(wrapper: Path) -> Path:
     payload = wrapper.read_bytes()
     if len(payload) > 128 * 1024:
         raise IdentityError("OpenCode wrapper is too large")
-    match = re.search(rb"(?im)%~?dp0%?\\?node_modules\\opencode-ai\\bin\\opencode\.exe", payload)
-    if match is None:
+    if _WRAPPER_COMMAND.search(payload) is None:
         raise IdentityError("OpenCode wrapper has no supported executable target")
     target = wrapper.parent / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
     _reject_unsafe_components(target)

@@ -1,16 +1,18 @@
 import json
 from fnmatch import fnmatchcase
+
+import pytest
+
 from backend.agent_launch.config_writer import (
     build_opencode_config,
     write_agent_commands,
     write_opencode_config,
+    write_opencode_config_file,
     write_stock_opencode_config,
 )
 
 
 def test_evaluation_config_is_local_only_and_disables_ambient_features(tmp_path):
-    from backend.agent_launch.config_writer import write_opencode_config_file
-
     out = write_opencode_config_file(
         tmp_path / "runtime" / "opencode.json", "gpt-oss:20b", "http://127.0.0.1:11434"
     )
@@ -24,6 +26,26 @@ def test_evaluation_config_is_local_only_and_disables_ambient_features(tmp_path)
     assert cfg["instructions"] == []
     assert cfg["formatter"] is False
     assert cfg["snapshot"] is False
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://127.0.0.1:11434",
+        "http://user:pass@127.0.0.1:11434",
+        "http://127.0.0.1:11434/base",
+        "http://127.0.0.1:11434?query=1",
+        "http://127.0.0.1:11434#fragment",
+        "http://127.0.0.1.evil:11434",
+    ],
+)
+def test_evaluation_config_rejects_noncanonical_or_nonloopback_host(tmp_path, host):
+    with pytest.raises(ValueError, match="loopback"):
+        write_opencode_config_file(
+            tmp_path / "runtime" / "opencode.json",
+            "gpt-oss:20b",
+            host,
+        )
 
 
 def test_write_opencode_config_points_at_ollama_and_model(tmp_path):

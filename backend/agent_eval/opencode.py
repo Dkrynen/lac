@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import msvcrt
+import ctypes
 import os
+import stat
 import subprocess
 import time
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -40,6 +44,13 @@ _ENV_ALLOWLIST = (
     "SYSTEMROOT",
     "WINDIR",
 )
+_GENERIC_READ = 0x80000000
+_FILE_SHARE_READ = 0x00000001
+_OPEN_EXISTING = 3
+_FILE_ATTRIBUTE_NORMAL = 0x00000080
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_REPARSE_POINT = 0x0400
+_INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 
 
 @dataclass(frozen=True)
@@ -51,6 +62,15 @@ class ParsedOpenCode:
     errors: tuple[str, ...]
     events: tuple[dict[str, Any], ...]
     unknown_event_types: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ProcessOutcome:
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool
+    errors: tuple[str, ...]
 
 
 def _nonnegative_number(value: Any) -> float | int | None:
@@ -211,18 +231,140 @@ def _failure(
     )
 
 
-def _config_identity(path: Path) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("evaluation config is missing or linked")
-    before = path.stat()
+def _config_identity(fd: int, path: Path) -> dict[str, Any]:
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("evaluation config handle is not a regular file")
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(64 * 1024), b""):
-            digest.update(chunk)
-    after = path.stat()
-    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+    measured_size = 0
+    os.lseek(fd, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            break
+        measured_size += len(chunk)
+        digest.update(chunk)
+    after = os.fstat(fd)
+    before_token = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_token = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if before_token != after_token or measured_size != before.st_size:
         raise ValueError("evaluation config changed during identity capture")
-    return {"path": str(path.resolve()), "size": before.st_size, "sha256": digest.hexdigest()}
+    return {
+        "path": str(path.resolve(strict=True)),
+        "size": measured_size,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _lock_config(path: Path) -> int:
+    """Open config read-only: children may read, nobody may write/delete/replace."""
+    if not os.path.lexists(path):
+        raise ValueError("evaluation config is missing")
+    link_stat = path.lstat()
+    if (
+        path.is_symlink()
+        or getattr(link_stat, "st_file_attributes", 0) & _REPARSE_POINT
+        or not stat.S_ISREG(link_stat.st_mode)
+    ):
+        raise ValueError("evaluation config is linked or not a regular file")
+    expected = path.stat()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    raw_handle = create_file(
+        str(path),
+        _GENERIC_READ,
+        _FILE_SHARE_READ,
+        None,
+        _OPEN_EXISTING,
+        _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if raw_handle == _INVALID_HANDLE_VALUE:
+        raise OSError(ctypes.get_last_error(), "unable to lock evaluation config")
+    try:
+        fd = msvcrt.open_osfhandle(raw_handle, os.O_RDONLY | os.O_BINARY)
+    except Exception as exc:
+        if not close_handle(raw_handle):
+            raise OSError(
+                ctypes.get_last_error(),
+                "unable to close evaluation config handle after fd transfer failure",
+            ) from exc
+        raise
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+            raise ValueError("evaluation config identity changed before lock")
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _run_process_outcome(
+    run_fn: Callable[..., Any],
+    argv: list[str],
+    *,
+    workspace_path: Path,
+    timeout_seconds: int,
+    environment: dict[str, str],
+) -> _ProcessOutcome:
+    try:
+        process = run_fn(
+            argv,
+            cwd=str(workspace_path),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            env=environment,
+        )
+        exit_code = int(getattr(process, "returncode", 1))
+        stdout = _as_text(getattr(process, "stdout", ""))
+        stderr = _as_text(getattr(process, "stderr", ""))
+        errors = () if exit_code == 0 else (f"exit_code:{exit_code}",)
+        return _ProcessOutcome(exit_code, stdout, stderr, False, errors)
+    except subprocess.TimeoutExpired as exc:
+        return _ProcessOutcome(
+            None,
+            _as_text(exc.output),
+            _as_text(exc.stderr),
+            True,
+            (f"timeout:{timeout_seconds}s",),
+        )
+    except Exception as exc:
+        return _ProcessOutcome(
+            None,
+            "",
+            "",
+            False,
+            (f"{type(exc).__name__}: {exc}",),
+        )
 
 
 def _isolated_environment(
@@ -296,9 +438,15 @@ def _run_opencode(
 ) -> ArmResult:
     started = time.perf_counter()
     workspace_path = Path(workspace).resolve()
+    config_measurement: dict[str, Any] = {"before": None, "after": None}
+    config_metrics = {"opencode_config_identity": config_measurement}
     if not _is_loopback_ollama_host(ollama_host):
         return _failure(
-            arm, model, started, ("non_loopback_ollama_host",)
+            arm,
+            model,
+            started,
+            ("non_loopback_ollama_host",),
+            metrics=config_metrics,
         )
     try:
         if arm not in {"stock", "lac"}:
@@ -317,14 +465,18 @@ def _run_opencode(
             permission=permission,
             tools=_READ_ONLY_EVAL_TOOLS,
         )
-        config_before = _config_identity(config_path)
         environment = _isolated_environment(
             workspace_path, runtime_root, config_path, ollama_host
         )
         binary = resolve_bin_fn()
+        config_lock = _lock_config(config_path)
     except Exception as exc:
         return _failure(
-            arm, model, started, (f"{type(exc).__name__}: {exc}",)
+            arm,
+            model,
+            started,
+            (f"{type(exc).__name__}: {exc}",),
+            metrics=config_metrics,
         )
 
     argv = [
@@ -340,54 +492,70 @@ def _run_opencode(
         "--dir",
         str(workspace_path),
     ]
+    outcome: _ProcessOutcome | None = None
+    lifecycle_errors: list[str] = []
     try:
-        process = run_fn(
-            argv,
-            cwd=str(workspace_path),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=task.timeout_seconds,
-            env=environment,
+        try:
+            config_measurement["before"] = _config_identity(
+                config_lock,
+                config_path,
+            )
+        except Exception as exc:
+            outcome = _ProcessOutcome(
+                None,
+                "",
+                "",
+                False,
+                (f"config_pre_measurement_failed:{type(exc).__name__}: {exc}",),
+            )
+        else:
+            outcome = _run_process_outcome(
+                run_fn,
+                argv,
+                workspace_path=workspace_path,
+                timeout_seconds=task.timeout_seconds,
+                environment=environment,
+            )
+    finally:
+        try:
+            config_measurement["after"] = _config_identity(
+                config_lock,
+                config_path,
+            )
+        except Exception as exc:
+            lifecycle_errors.append(
+                f"config_post_measurement_failed:{type(exc).__name__}: {exc}"
+            )
+        try:
+            os.close(config_lock)
+        except Exception as exc:
+            lifecycle_errors.append(
+                f"config_lock_close_failed:{type(exc).__name__}: {exc}"
+            )
+
+    if outcome is None:
+        outcome = _ProcessOutcome(
+            None,
+            "",
+            "",
+            False,
+            ("config_process_outcome_missing",),
         )
-    except subprocess.TimeoutExpired as exc:
-        config_after = _config_identity(config_path)
+    outcome_errors = (*outcome.errors, *lifecycle_errors)
+    if outcome_errors:
         return _failure(
             arm,
             model,
             started,
-            (f"timeout:{task.timeout_seconds}s",),
-            timed_out=True,
-            stdout=_as_text(exc.output),
-            stderr=_as_text(exc.stderr),
-            metrics={"opencode_config_identity": {"before": config_before, "after": config_after}},
-        )
-    except Exception as exc:
-        config_after = _config_identity(config_path)
-        return _failure(
-            arm, model, started, (f"{type(exc).__name__}: {exc}",), metrics={"opencode_config_identity": {"before": config_before, "after": config_after}},
-        )
-
-    config_after = _config_identity(config_path)
-    config_metrics = {"opencode_config_identity": {"before": config_before, "after": config_after}}
-
-    stdout = _as_text(getattr(process, "stdout", ""))
-    stderr = _as_text(getattr(process, "stderr", ""))
-    exit_code = int(getattr(process, "returncode", 1))
-    if exit_code != 0:
-        return _failure(
-            arm,
-            model,
-            started,
-            (f"exit_code:{exit_code}",),
-            exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
+            outcome_errors,
+            timed_out=outcome.timed_out,
+            exit_code=outcome.exit_code,
+            stdout=outcome.stdout,
+            stderr=outcome.stderr,
             metrics=config_metrics,
         )
 
-    parsed = parse_opencode_jsonl(stdout)
+    parsed = parse_opencode_jsonl(outcome.stdout)
     metrics = dict(parsed.metrics)
     metrics["approval_mode"] = "auto_disposable_workspace"
     metrics.update(config_metrics)
@@ -401,9 +569,9 @@ def _run_opencode(
         wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
         metrics=metrics,
         errors=parsed.errors,
-        exit_code=exit_code,
-        raw_stdout=stdout,
-        raw_stderr=stderr,
+        exit_code=outcome.exit_code,
+        raw_stdout=outcome.stdout,
+        raw_stderr=outcome.stderr,
         events=parsed.events,
         unknown_event_types=parsed.unknown_event_types,
     )

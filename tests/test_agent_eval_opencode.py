@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
+import backend.agent_eval.opencode as opencode_module
 from backend.agent_eval.opencode import (
+    _lock_config,
     parse_opencode_jsonl,
     run_lac,
     run_stock,
@@ -71,6 +73,18 @@ def _successful_stdout() -> str:
                 },
             },
         },
+    )
+
+
+def _assert_config_identity_complete_and_released(result):
+    measured = result.metrics["opencode_config_identity"]
+    assert isinstance(measured["before"], dict)
+    assert isinstance(measured["after"], dict)
+    assert measured["before"] == measured["after"]
+    config_path = Path(measured["after"]["path"])
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
     )
 
 
@@ -325,15 +339,232 @@ def test_real_generated_config_is_measured_before_and_after_process(tmp_path, ar
     assert len(measured["before"]["sha256"]) == 64
 
 
-def test_real_generated_config_mutation_during_process_records_drift(tmp_path):
+def test_real_generated_config_cannot_be_mutated_deleted_or_replaced_during_process(
+    tmp_path,
+):
     workspace = tmp_path / "stock"
     workspace.mkdir()
-    def mutate(_argv, **kwargs):
-        Path(kwargs["env"]["OPENCODE_CONFIG"]).write_text('{"mutated":true}', encoding="utf-8")
+
+    denied = []
+
+    def attempt_mutation(_argv, **kwargs):
+        config_path = Path(kwargs["env"]["OPENCODE_CONFIG"])
+        original = config_path.read_text(encoding="utf-8")
+        replacement = config_path.with_suffix(".replacement")
+        replacement.write_text('{"model":"ollama/attacker"}', encoding="utf-8")
+        for operation in (
+            lambda: config_path.write_text(
+                '{"model":"ollama/attacker"}',
+                encoding="utf-8",
+            ),
+            config_path.unlink,
+            lambda: replacement.replace(config_path),
+        ):
+            with pytest.raises(OSError):
+                operation()
+            denied.append(True)
+        assert config_path.read_text(encoding="utf-8") == original
         return SimpleNamespace(returncode=0, stdout=_successful_stdout(), stderr="")
-    result = run_stock(_task(workspace), "gpt-oss:20b", "http://localhost:11434", workspace, resolve_bin_fn=lambda: Path("opencode"), run_fn=mutate)
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=attempt_mutation,
+    )
     measured = result.metrics["opencode_config_identity"]
-    assert measured["before"] != measured["after"]
+    assert denied == [True, True, True]
+    assert measured["before"] == measured["after"]
+    assert result.completed is True
+
+
+def test_binary_resolution_finishes_before_config_lock_is_acquired(tmp_path):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    config_path = workspace.parent / ".lac-eval-runtime-stock" / "opencode.json"
+
+    def resolve():
+        original = config_path.read_text(encoding="utf-8")
+        config_path.write_text(original, encoding="utf-8")
+        return Path("opencode")
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=resolve,
+        run_fn=lambda *_a, **_kw: SimpleNamespace(
+            returncode=0,
+            stdout=_successful_stdout(),
+            stderr="",
+        ),
+    )
+
+    assert result.completed is True
+    _assert_config_identity_complete_and_released(result)
+
+
+def test_lock_config_reports_closehandle_failure_during_fd_transfer(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "opencode.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    class FakeFunction:
+        def __init__(self, result):
+            self.result = result
+            self.calls = []
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            self.calls.append(args)
+            return self.result
+
+    class FakeKernel32:
+        CreateFileW = FakeFunction(123)
+        CloseHandle = FakeFunction(0)
+
+    kernel32 = FakeKernel32()
+    monkeypatch.setattr(
+        opencode_module.ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: kernel32,
+    )
+    monkeypatch.setattr(
+        opencode_module.ctypes,
+        "get_last_error",
+        lambda: 6,
+    )
+
+    def fail_transfer(*_args, **_kwargs):
+        raise RuntimeError("fd transfer failed")
+
+    monkeypatch.setattr(opencode_module.msvcrt, "open_osfhandle", fail_transfer)
+
+    with pytest.raises(OSError, match="close"):
+        _lock_config(config_path)
+
+    create_args = kernel32.CreateFileW.calls[0]
+    assert create_args[1] == 0x80000000
+    assert create_args[2] == 0x00000001
+    assert create_args[4] == 3
+    assert create_args[5] == 0x00200080
+    assert len(kernel32.CloseHandle.calls) == 1
+
+
+def test_config_lock_failure_returns_fail_closed_identity_metrics(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        opencode_module,
+        "_lock_config",
+        lambda _path: (_ for _ in ()).throw(OSError("lock denied")),
+    )
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=lambda *_a, **_kw: pytest.fail("process must not run"),
+    )
+
+    assert result.completed is False
+    assert "lock denied" in result.errors[0]
+    assert result.metrics["opencode_config_identity"] == {
+        "before": None,
+        "after": None,
+    }
+
+
+def test_pre_measurement_failure_prevents_process_and_releases_lock(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    calls = []
+
+    def fail_measurement(_fd, _path):
+        calls.append("measure")
+        raise OSError("measurement denied")
+
+    monkeypatch.setattr(opencode_module, "_config_identity", fail_measurement)
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=lambda *_a, **_kw: pytest.fail("process must not run"),
+    )
+
+    assert result.completed is False
+    assert calls == ["measure", "measure"]
+    assert result.metrics["opencode_config_identity"] == {
+        "before": None,
+        "after": None,
+    }
+    assert result.errors[0].startswith("config_pre_measurement_failed:")
+    assert result.errors[1].startswith("config_post_measurement_failed:")
+    config_path = workspace.parent / ".lac-eval-runtime-stock" / "opencode.json"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+
+def test_post_measurement_failure_invalidates_success_and_releases_lock(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    real_identity = opencode_module._config_identity
+    calls = 0
+
+    def fail_post(fd, path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("post measurement denied")
+        return real_identity(fd, path)
+
+    monkeypatch.setattr(opencode_module, "_config_identity", fail_post)
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=lambda *_a, **_kw: SimpleNamespace(
+            returncode=0,
+            stdout=_successful_stdout(),
+            stderr="",
+        ),
+    )
+
+    assert result.completed is False
+    assert result.errors == (
+        "config_post_measurement_failed:OSError: post measurement denied",
+    )
+    assert isinstance(
+        result.metrics["opencode_config_identity"]["before"],
+        dict,
+    )
+    assert result.metrics["opencode_config_identity"]["after"] is None
+    config_path = workspace.parent / ".lac-eval-runtime-stock" / "opencode.json"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
 
 def test_run_opencode_records_nonzero_exit_and_stderr(tmp_path):
@@ -355,6 +586,7 @@ def test_run_opencode_records_nonzero_exit_and_stderr(tmp_path):
     assert result.exit_code == 7
     assert result.raw_stderr == "provider failed"
     assert result.errors == ("exit_code:7",)
+    _assert_config_identity_complete_and_released(result)
 
 
 def test_run_opencode_records_timeout(tmp_path):
@@ -379,3 +611,29 @@ def test_run_opencode_records_timeout(tmp_path):
     assert result.raw_stdout == "partial"
     assert result.raw_stderr == "slow"
     assert result.errors == ("timeout:180s",)
+    _assert_config_identity_complete_and_released(result)
+
+
+def test_run_opencode_records_process_exception_with_post_identity_and_releases_lock(
+    tmp_path,
+):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+
+    def run(*_args, **_kwargs):
+        raise RuntimeError("process launch failed")
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=run,
+    )
+
+    assert result.completed is False
+    assert result.timed_out is False
+    assert result.exit_code is None
+    assert result.errors == ("RuntimeError: process launch failed",)
+    _assert_config_identity_complete_and_released(result)

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from backend.agent_eval.evidence import EvidenceMode
+import backend.agent_eval.opencode as opencode_module
+from backend.agent_eval.evidence import (
+    EvidenceControlResult,
+    EvidenceMode,
+    EvidenceState,
+)
+from backend.agent_eval.identity import EvaluationIdentitySnapshot
 from backend.agent_eval.result import ArmResult
 from backend.agent_eval.runner import (
     EvalPlanError,
@@ -224,9 +231,6 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
 
 
 def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
-    from backend.agent_eval.identity import EvaluationIdentitySnapshot
-    from backend.agent_eval.evidence import EvidenceControlResult, EvidenceState
-
     snapshot = EvaluationIdentitySnapshot.for_test()
     def capture(_plan):
         return snapshot
@@ -255,7 +259,6 @@ def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
 
 
 def test_missing_or_drifted_arm_config_fails_runtime_provenance(tmp_path):
-    from backend.agent_eval.identity import EvaluationIdentitySnapshot
     snapshot = EvaluationIdentitySnapshot.for_test()
     def bad(arm, model):
         result = _result(arm, model, "ZeroDivisionError")
@@ -277,6 +280,97 @@ def test_missing_or_drifted_arm_config_fails_runtime_provenance(tmp_path):
     )
     control = next(item for item in comparison["evidence"]["controls"]["results"] if item["name"] == "runtime_dependency_provenance")
     assert control["state"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "measurement",
+    [
+        {"before": None, "after": None},
+        {"before": {"sha256": "a" * 64}, "after": None},
+        {"before": None, "after": {"sha256": "a" * 64}},
+        {"before": {"sha256": "a" * 64}},
+    ],
+)
+def test_missing_before_or_post_config_identity_fails_closed(tmp_path, measurement):
+    snapshot = EvaluationIdentitySnapshot.for_test()
+
+    def measured_result(arm, model):
+        result = _result(arm, model, "ZeroDivisionError")
+        result.metrics["opencode_config_identity"] = measurement
+        return result
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="missing-config-" + str(abs(hash(repr(measurement)))),
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=lambda task, model, host, workspace: measured_result(
+            "stock", model
+        ),
+        lac_fn=lambda task, model, host, workspace: measured_result("lac", model),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=lambda *_: (
+            EvidenceControlResult(
+                "runtime_dependency_provenance",
+                EvidenceState.PASS,
+                "unchanged",
+            ),
+            EvidenceControlResult(
+                "immutable_ollama_model_lineage",
+                EvidenceState.PASS,
+                "unchanged",
+            ),
+        ),
+    )
+
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "runtime_dependency_provenance"
+    )
+    assert control["state"] == "fail"
+
+
+def test_default_opencode_arms_execute_exact_preflight_target(
+    tmp_path, monkeypatch
+):
+    snapshot = EvaluationIdentitySnapshot.for_test()
+    target = tmp_path / "trusted" / "opencode.exe"
+    snapshot = replace(
+        snapshot,
+        opencode=replace(snapshot.opencode, path=target),
+    )
+    executed = {}
+
+    def fake_run(task, model, host, workspace, arm, **kwargs):
+        executed[arm] = kwargs["resolve_bin_fn"]()
+        return _result(arm, model, "ZeroDivisionError")
+
+    monkeypatch.setattr(opencode_module, "_run_opencode", fake_run)
+
+    run_evaluation(
+        _plan(tmp_path),
+        run_id="direct-target",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=lambda *_: (
+            EvidenceControlResult(
+                "runtime_dependency_provenance",
+                EvidenceState.PASS,
+                "unchanged",
+            ),
+            EvidenceControlResult(
+                "immutable_ollama_model_lineage",
+                EvidenceState.PASS,
+                "unchanged",
+            ),
+        ),
+    )
+
+    assert executed == {"stock": target, "lac": target}
 
 
 def test_run_evaluation_persists_partial_arm_failure(tmp_path):
