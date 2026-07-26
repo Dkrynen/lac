@@ -2,9 +2,33 @@
 
 # LAC — local AI, sorted.
 
-**Scans your hardware. Recommends models that actually fit. LAC Pro adds local benchmark/tuning automation after activation.**
+**Give LAC a repository. It maps the project privately, proves what your
+machine can run, and prepares a local coding agent with explicit safety
+boundaries.**
 
-LAC is a local-LLM manager built around one question: *what's the best model this machine can actually run?* It scans your GPU/VRAM/RAM/CPU, ranks models against your real hardware (including multi-GPU and RAM-spill split plans), installs them via [Ollama](https://ollama.com), and tags every recommendation `measured`, `calibrated`, or `estimated` so you always know how much to trust it. **LAC Pro closes the loop** for supported installs after activation, turning recommendations into measured data points on your exact rig.
+LAC is a local-model control plane and coding-agent launcher. It scans your
+hardware, recommends models that actually fit, configures a pinned
+[OpenCode](https://github.com/anomalyco/opencode) runtime, and records truthful
+local evidence. Ollama remains the inference runtime; LAC supplies the hardware
+intelligence, model profile, containment policy, and receipts.
+
+## First private win
+
+From a repository:
+
+```bash
+lac doctor .       # readiness evidence; never installs or downloads
+lac inspect .      # local-only repository map + durable JSON receipt
+lac agent .        # launch the supported local-model agent when ready
+```
+
+`lac inspect .` does not execute project code, package scripts, tests, or
+network requests. It discovers supported stacks, entry points, repository
+instructions, and candidate checks while excluding secret-shaped files,
+dependency trees, VCS internals, build outputs, and symlinks. Candidate checks
+are reported as **discovered, not executed**.
+
+See [Getting Started](docs/GETTING_STARTED.md) for setup and recovery.
 
 ## Features
 
@@ -13,22 +37,43 @@ LAC is a local-LLM manager built around one question: *what's the best model thi
 - **Real-speed calibration** — recs are tagged `measured` / `calibrated` / `estimated` with confidence bands; LAC Pro can feed the `measured` tier for supported installs after activation
 - **What-if controls** — toggle GPUs on/off, allow/deny RAM spill, and watch the recommendations recompute live in the web UI
 - **Model management + chat** — install, run, delete; streaming chat with session persistence; full TUI
+- **Local-agent doctor** — structured hardware, disk, Ollama, installed-model,
+  OpenCode, PATH, and receipt-store evidence with exact remediation
+- **Private repository receipt** — bounded read-only mapping with no project
+  execution or network access
+- **Terminal agent** — LAC selects an installed model that fits the machine,
+  prepares its local agent profile, and launches the pinned OpenCode runtime
 
 ## Install
 
 ### Windows (recommended)
 
-Download the latest published `LAC-Setup-x.x.x.exe` from [Releases](https://github.com/Dkrynen/lac/releases) and run it. Local development builds may be ahead of the public Releases page.
+Download the latest published `LAC-Setup-x.x.x.exe` from
+[Releases](https://github.com/Dkrynen/lac/releases). Installer builds that
+offer **Add LAC to PATH** should be run with that task selected. Open a new
+terminal, enter your repository, and run:
+
+```powershell
+lac doctor .
+lac inspect .
+```
+
+The v2.7.0 source installer is designed to add only its own directory to PATH
+and remove that exact installer-owned entry after a successful uninstall. That
+lifecycle remains a clean-machine release gate; do not assume an older
+published installer contains it. Local development builds may be ahead of the
+public Releases page.
 
 ### Any platform (CLI via pipx)
 
 ```bash
 # Requires Python 3.10+ and Ollama (https://ollama.com/download)
 pipx install git+https://github.com/Dkrynen/lac
-lac scan          # what am I working with?
-lac recommend     # what should I run on it?
-lac pull llama3.2:3b        # installs it -- LAC Pro can tune supported installs when licensed
-lac chat          # TUI chat
+lac doctor .      # what is missing before useful local-agent work?
+lac inspect .     # map this repository privately
+lac recommend --use-case agent
+lac pull <the-model-you-explicitly-chose>
+lac agent .
 ```
 
 ### macOS & Linux apps
@@ -82,11 +127,16 @@ cd web && npm ci && npm run dev       # Vite dev server (proxies /api)
 
 Plugins mount via the `lac.plugins` entry-point group — see [docs/PLUGINS.md](docs/PLUGINS.md). Contributions welcome: [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Upstream runtime and research provenance is tracked in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the machine-readable
+[`upstream-components.json`](docs/third-party/upstream-components.json).
+
 ## System requirements
 
 - **OS**: Windows 10+, macOS 13+, Linux (x86_64)
 - **Python**: 3.10+ (CLI/source installs)
-- **Ollama**: required for model install, chat, and benchmarking
+- **Ollama**: required for model install, chat, benchmarking, and the coding agent
+- **OpenCode**: exactly `1.18.4` for the current verified agent adapter
 - **GPU**: optional — CPU-only and Apple Silicon fully supported
 
 ## License

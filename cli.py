@@ -9,9 +9,11 @@ Subcommands:
   pull <model>          Download a model
   delete <model>        Delete a model
   ps                    Show running models
-  inspect <model>       Show model details
+  doctor [dir]          Check local-agent readiness
+  inspect <target>      Inspect a repository or show model details
   scan                  Scan hardware
   recommend             Get model recommendations
+  agent [dir]           Launch the local-model coding agent
   browse [query]        Browse model library
   workspace             Manage workspaces
   config                View/set configuration
@@ -27,6 +29,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import asdict
 from pathlib import Path
 
 try:
@@ -515,6 +518,50 @@ def cmd_ps(args):
 
 def cmd_inspect(args):
     model = args.model
+    candidate = Path(model).expanduser()
+    if candidate.is_dir():
+        from backend.first_win import inspect_repository
+
+        receipt, receipt_path = inspect_repository(candidate)
+        payload = asdict(receipt)
+        payload["receipt_path"] = str(receipt_path)
+        if getattr(args, "json", False):
+            print(json.dumps(payload, sort_keys=True))
+            return
+
+        print_header("Private Repository Inspection")
+        print(
+            f"  {C['green']}Local only{C['reset']} · no network · "
+            "no commands executed · repository unchanged"
+        )
+        print(f"  {C['bold']}Repository:{C['reset']} {receipt.repository}")
+        print(
+            f"  {C['bold']}Stack:{C['reset']} "
+            f"{', '.join(receipt.stack) or 'not recognized'}"
+        )
+        print(
+            f"  {C['bold']}Entry points:{C['reset']} "
+            f"{', '.join(receipt.entry_points) or 'none recognized'}"
+        )
+        print(
+            f"  {C['bold']}Instructions:{C['reset']} "
+            f"{', '.join(receipt.instruction_files) or 'none found'}"
+        )
+        print(f"\n  {C['bold']}Checks discovered, not executed:{C['reset']}")
+        if receipt.check_candidates:
+            for command in receipt.check_candidates:
+                print(f"    - {command}")
+        else:
+            print("    - none recognized")
+        if receipt.findings:
+            print(f"\n  {C['bold']}Findings:{C['reset']}")
+            for finding in receipt.findings:
+                print(
+                    f"    - [{finding.severity}] {finding.summary}"
+                )
+        print(f"\n  {C['bold']}Receipt:{C['reset']} {receipt_path}\n")
+        return
+
     result = ollama("POST", f"/api/show", {"name": model})
     if "error" in result:
         eprint(f"{C['red']}{result['error']}{C['reset']}")
@@ -552,6 +599,43 @@ def cmd_inspect(args):
     for label, value in info_rows:
         print(f"  {C['bold']}{label}:{C['reset']} {value}")
     print()
+
+
+def cmd_doctor(args):
+    from backend.first_win import run_doctor
+
+    report = run_doctor(project_dir=Path(args.dir))
+    payload = asdict(report)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print_header("LAC Doctor")
+        markers = {"pass": "OK", "warn": "WARN", "fail": "FAIL"}
+        colors = {
+            "pass": C["green"],
+            "warn": C["yellow"],
+            "fail": C["red"],
+        }
+        for check in report.checks:
+            marker = markers[check.status]
+            color = colors[check.status]
+            print(
+                f"  {color}[{marker}]{C['reset']} "
+                f"{C['bold']}{check.name}{C['reset']}: {check.summary}"
+            )
+            if check.evidence:
+                print(
+                    f"         {C['dim']}"
+                    f"{json.dumps(check.evidence, sort_keys=True)}"
+                    f"{C['reset']}"
+                )
+            if check.remediation:
+                print(f"         Next: {check.remediation}")
+        state = "READY" if report.ready else "NOT READY"
+        color = C["green"] if report.ready else C["red"]
+        print(f"\n  {color}{C['bold']}{state}{C['reset']}\n")
+    if not report.ready:
+        raise SystemExit(1)
 
 
 def cmd_agents(args):
@@ -763,7 +847,17 @@ def cmd_scan(args):
         ]
         if info.gpus:
             for i, gpu in enumerate(info.gpus):
-                rows.append([f"GPU {i+1}", f"{gpu.name} ({gpu.vram_gb} GB, {gpu.backend}, {gpu.tier})"])
+                if gpu.tier == "integrated" and not gpu.split_verified:
+                    memory = (
+                        f"{gpu.vram_gb} GB reported shared memory, "
+                        "excluded from model splitting"
+                    )
+                else:
+                    memory = f"{gpu.vram_gb} GB"
+                rows.append([
+                    f"GPU {i+1}",
+                    f"{gpu.name} ({memory}, {gpu.backend}, {gpu.tier})",
+                ])
         else:
             rows.append(["GPU", "None detected"])
         if info.is_apple_silicon:
@@ -773,7 +867,7 @@ def cmd_scan(args):
             print(f"  {C['bold']}{label}:{C['reset']} {value}")
         print()
 
-        total_vram = info.total_vram_gb or (info.gpus[0].vram_gb if info.gpus else 0)
+        total_vram = info.total_vram_gb
         if total_vram:
             print(f"  {C['bold']}Total VRAM:{C['reset']} {total_vram} GB")
             print(f"  {C['bold']}Models that fit:{C['reset']} Up to ~{int(total_vram / 0.58 * 0.9)}B params at Q4_K_M")
@@ -857,14 +951,21 @@ def cmd_agent(args):
     sys.path.insert(0, str(script_dir))
     try:
         from backend.agent_launch.launcher import launch_agent
-        from backend.agent_launch.opencode_bin import OpenCodeNotFound
+        from backend.agent_launch.opencode_bin import (
+            OpenCodeNotFound,
+            OpenCodeUnsupportedVersion,
+        )
         from backend.agent_launch.variant import BaseModelNotInstalled
     except ImportError as e:
         eprint(f"{C['red']}Error: {e}{C['reset']}")
         sys.exit(1)
     try:
         rc = launch_agent(Path(args.dir))
-    except (OpenCodeNotFound, BaseModelNotInstalled) as e:
+    except (
+        OpenCodeNotFound,
+        OpenCodeUnsupportedVersion,
+        BaseModelNotInstalled,
+    ) as e:
         eprint(f"{C['yellow']}{e}{C['reset']}")
         sys.exit(1)
     sys.exit(rc)
@@ -1143,10 +1244,35 @@ def build_parser():
     p_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
 
     p_ps = sub.add_parser("ps", help="Show running models")
-    p_inspect = sub.add_parser("inspect", help="Show model details")
-    p_inspect.add_argument("model", help="Model name")
+    p_inspect = sub.add_parser(
+        "inspect",
+        help="Inspect a repository privately, or show model details",
+    )
+    p_inspect.add_argument("model", help="Repository directory or model name")
+    p_inspect.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable repository receipt",
+    )
 
     p_scan = sub.add_parser("scan", help="Scan hardware")
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Check local-agent readiness without installing or downloading",
+    )
+    p_doctor.add_argument(
+        "dir",
+        nargs="?",
+        default=".",
+        help="Repository directory (default: current)",
+    )
+    p_doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable readiness evidence",
+    )
+    p_doctor.set_defaults(func=cmd_doctor)
 
     p_agents = sub.add_parser("agents", help="List configured agents and permissions")
     p_providers = sub.add_parser("providers", help="List LLM providers")
@@ -1242,9 +1368,10 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    print_banner()
     parser = build_parser()
     args = parser.parse_args()
+    if not getattr(args, "json", False):
+        print_banner()
 
     if args.host:
         os.environ["OLLAMA_HOST"] = args.host

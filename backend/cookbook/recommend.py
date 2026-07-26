@@ -411,12 +411,25 @@ def _compute_split_plan(vram_needed: float, info: SystemInfo,
     """
     tiers = info.compute_tiers
     if not tiers:
-        from .hardware import ComputeTier
+        from .hardware import ComputeTier, _classify_gpu
         tiers = []
-        if info.gpus:
-            gpu = info.gpus[0]
-            tiers = [ComputeTier(gpu.name, gpu.vram_gb, gpu.backend, "discrete", 0)]
-        elif info.total_vram_gb > 0:
+        eligible_gpus = []
+        for gpu in info.gpus:
+            kind = gpu.tier or _classify_gpu(gpu.name)
+            if kind == "discrete" or (
+                kind == "integrated" and gpu.split_verified
+            ):
+                eligible_gpus.append((gpu, kind))
+        if eligible_gpus:
+            gpu, kind = eligible_gpus[0]
+            tiers = [ComputeTier(
+                gpu.name,
+                gpu.vram_gb,
+                gpu.backend,
+                kind,
+                gpu.device_index,
+            )]
+        elif not info.gpus and info.total_vram_gb > 0:
             tiers = [ComputeTier("GPU", info.total_vram_gb,
                                   "rocm" if info.has_amd else "cuda", "discrete", 0)]
         if info.ram_gb > 0:

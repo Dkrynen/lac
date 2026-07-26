@@ -22,7 +22,7 @@ async def test_tui_renders_core_widgets():
         assert inp is not None
 
 
-async def test_tui_loads_models_into_bar(ollama_available):
+async def test_tui_loads_models_into_bar(ollama_available, isolated_home):
     if not ollama_available:
         pytest.skip("Ollama not running")
     from backend.provider import default_provider

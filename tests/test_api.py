@@ -218,6 +218,21 @@ def test_scan(flask_app):
     assert "cpu" in data or "os" in data
 
 
+def test_scan_exposes_integrated_gpu_split_eligibility(monkeypatch, flask_app):
+    from backend import api as api_mod
+
+    monkeypatch.setattr(api_mod, "detect", _fake_unverified_igpu_detect)
+
+    response = flask_app.test_client().get("/api/scan")
+
+    assert response.status_code == 200
+    integrated = next(
+        gpu for gpu in response.get_json()["gpus"]
+        if gpu["tier"] == "integrated"
+    )
+    assert integrated["split_verified"] is False
+
+
 def test_workspaces_list(flask_app):
     client = flask_app.test_client()
     r = client.get("/api/workspaces")
@@ -331,8 +346,18 @@ def _fake_detect_factory():
 
     def make():
         gpus = [
-            GPUInfo(name="Big GPU", vram_gb=16.0, backend="cuda"),
-            GPUInfo(name="Small GPU", vram_gb=4.0, backend="cuda"),
+            GPUInfo(
+                name="Big GPU",
+                vram_gb=16.0,
+                backend="cuda",
+                tier="discrete",
+            ),
+            GPUInfo(
+                name="Small GPU",
+                vram_gb=4.0,
+                backend="cuda",
+                tier="discrete",
+            ),
         ]
         return SystemInfo(
             os="Test", cpu="Test CPU", cpu_cores=8, ram_gb=64.0,
@@ -404,6 +429,137 @@ def test_recommend_gpu_mask_malformed_entries_dropped_then_ignored(monkeypatch, 
     r = client.get("/api/recommend?use_case=general&top_k=3&gpu_mask=abc,,-1")
     assert r.status_code == 200
     assert r.get_json()["combined_vram_gb"] == 20.0
+
+
+def _fake_unverified_igpu_detect():
+    from backend.cookbook.hardware import (
+        GPUInfo,
+        SystemInfo,
+        _finalize_compute_tiers,
+    )
+
+    return _finalize_compute_tiers(SystemInfo(
+        os="Windows",
+        cpu="AMD Ryzen 5 7600",
+        cpu_cores=6,
+        ram_gb=30.9,
+        gpus=[
+            GPUInfo("AMD Radeon RX 6800 XT", 16.0, backend="vulkan"),
+            GPUInfo("AMD Radeon(TM) Graphics", 10.5, backend="vulkan"),
+        ],
+        has_amd=True,
+    ))
+
+
+def test_recommend_manual_vram_does_not_rewrite_unverified_igpu(
+    monkeypatch, flask_app, isolated_home
+):
+    from backend import api as api_mod
+
+    monkeypatch.setattr(api_mod, "detect", _fake_unverified_igpu_detect)
+
+    response = flask_app.test_client().get(
+        "/api/recommend?use_case=general&top_k=3&vram=8"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["vram_gb"] == 8.0
+    assert response.get_json()["combined_vram_gb"] == 8.0
+
+
+def test_recommend_gpu_mask_cannot_restore_unverified_igpu_capacity(
+    monkeypatch, flask_app, isolated_home
+):
+    from backend import api as api_mod
+
+    monkeypatch.setattr(api_mod, "detect", _fake_unverified_igpu_detect)
+
+    response = flask_app.test_client().get(
+        "/api/recommend?use_case=general&top_k=3&gpu_mask=1"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["vram_gb"] == 0.0
+    assert response.get_json()["combined_vram_gb"] == 0.0
+
+
+def test_recommend_no_spill_cannot_promote_integrated_only_gpu(
+    monkeypatch, flask_app, isolated_home
+):
+    from backend import api as api_mod
+    from backend.cookbook.hardware import GPUInfo, SystemInfo, _finalize_compute_tiers
+
+    def integrated_only():
+        return _finalize_compute_tiers(SystemInfo(
+            os="Windows",
+            ram_gb=32.0,
+            gpus=[
+                GPUInfo(
+                    "AMD Radeon(TM) Graphics",
+                    12.0,
+                    backend="vulkan",
+                )
+            ],
+        ))
+
+    monkeypatch.setattr(api_mod, "detect", integrated_only)
+
+    response = flask_app.test_client().get(
+        "/api/recommend?use_case=general&top_k=10&allow_spill=0"
+        "&no_calibration=1"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["vram_gb"] == 0.0
+    assert response.get_json()["recommendations"] == []
+
+
+def test_recommend_masked_unverified_igpu_stays_empty_without_ram_spill(
+    monkeypatch, flask_app, isolated_home
+):
+    from backend import api as api_mod
+
+    monkeypatch.setattr(api_mod, "detect", _fake_unverified_igpu_detect)
+
+    response = flask_app.test_client().get(
+        "/api/recommend?use_case=general&top_k=10&gpu_mask=1"
+        "&allow_spill=0&no_calibration=1"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["vram_gb"] == 0.0
+    assert response.get_json()["recommendations"] == []
+
+
+def test_recommend_manual_vram_cannot_promote_integrated_only_gpu(
+    monkeypatch, flask_app, isolated_home
+):
+    from backend import api as api_mod
+    from backend.cookbook.hardware import GPUInfo, SystemInfo, _finalize_compute_tiers
+
+    def integrated_only():
+        return _finalize_compute_tiers(SystemInfo(
+            os="Windows",
+            ram_gb=32.0,
+            gpus=[
+                GPUInfo(
+                    "AMD Radeon(TM) Graphics",
+                    12.0,
+                    backend="vulkan",
+                )
+            ],
+        ))
+
+    monkeypatch.setattr(api_mod, "detect", integrated_only)
+
+    response = flask_app.test_client().get(
+        "/api/recommend?use_case=general&top_k=3&vram=8"
+        "&no_calibration=1"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["vram_gb"] == 0.0
+    assert response.get_json()["combined_vram_gb"] == 0.0
 
 
 def test_switch_workspace_succeeds_for_valid_id(flask_app, isolated_home):

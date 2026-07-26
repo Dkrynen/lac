@@ -1,0 +1,257 @@
+"""Run the trusted raw/stock/LAC local-agent smoke baseline.
+
+This command never downloads or creates a model. Use --dry-run first to prove
+the exact local identities and output boundary before generating any tokens.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backend.agent_eval.runner import build_plan, run_evaluation
+from backend.agent_eval.task import load_task
+from backend.agent_launch.opencode_bin import (
+    SUPPORTED_OPENCODE_VERSION,
+    resolve_opencode_binary,
+)
+from backend.cookbook.proc import run as run_process
+
+
+SUITE_ROOT = ROOT / "evals" / "agent"
+
+
+def _default_list_models():
+    from backend.provider.registry import create_provider
+
+    return create_provider("ollama").list_models()
+
+
+def _model_names(models) -> list[str]:
+    names = []
+    for model in models:
+        if isinstance(model, dict):
+            name = model.get("name") or model.get("model")
+        else:
+            name = getattr(model, "name", getattr(model, "model", None))
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def _git_environment() -> dict[str, Any]:
+    commit = run_process(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+    )
+    status = run_process(
+        ["git", "status", "--porcelain"],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+    )
+    return {
+        "commit": commit.stdout.strip() if commit.returncode == 0 else None,
+        "dirty": bool(status.stdout.strip()) if status.returncode == 0 else None,
+    }
+
+
+def _hardware_environment() -> dict[str, Any]:
+    from backend.cookbook.hardware import detect
+
+    info = detect()
+    return {
+        "os": info.os,
+        "cpu": info.cpu,
+        "ram_gb": info.ram_gb,
+        "verified_total_vram_gb": info.total_vram_gb,
+        "gpus": [
+            {
+                "name": gpu.name,
+                "vram_gb": gpu.vram_gb,
+                "tier": gpu.tier,
+                "backend": gpu.backend,
+                "split_verified": gpu.split_verified,
+            }
+            for gpu in info.gpus
+        ],
+    }
+
+
+def _ollama_version(ollama_host: str) -> str | None:
+    request = urllib.request.Request(
+        ollama_host.rstrip("/") + "/api/version",
+        headers={"User-Agent": "LAC-agent-eval/1"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        version = data.get("version")
+        return version if isinstance(version, str) else None
+    except Exception:
+        return None
+
+
+def _default_environment(ollama_host: str) -> dict[str, Any]:
+    environment: dict[str, Any] = {
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "git": {},
+        "hardware": {},
+        "ollama": {"version": _ollama_version(ollama_host)},
+    }
+    try:
+        environment["git"] = _git_environment()
+    except Exception as exc:
+        environment["git"] = {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        environment["hardware"] = _hardware_environment()
+    except Exception as exc:
+        environment["hardware"] = {"error": f"{type(exc).__name__}: {exc}"}
+    return environment
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Compare raw Ollama, stock OpenCode, and the LAC OpenCode harness."
+    )
+    parser.add_argument("--task", required=True, help="Packaged trusted task id.")
+    parser.add_argument("--base-model", required=True, help="Installed base Ollama model.")
+    parser.add_argument(
+        "--lac-model", required=True, help="Installed <base>-agent Ollama variant."
+    )
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Evidence root outside the model-hub source repository.",
+    )
+    parser.add_argument(
+        "--ollama-host", default="http://localhost:11434", help="Loopback Ollama URL."
+    )
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate identities and boundaries without creating files or model tokens.",
+    )
+    return parser.parse_args(argv)
+
+
+def _dry_report(plan) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "dry_run": True,
+        "task": plan.task.id,
+        "models": {
+            "raw": plan.base_model,
+            "stock": plan.base_model,
+            "lac": plan.lac_model,
+        },
+        "ollama_host": plan.ollama_host,
+        "opencode": {
+            "binary": str(plan.opencode_binary),
+            "version": plan.opencode_version,
+        },
+        "output_root": str(plan.output_root),
+        "fixture_sha256": plan.fixture_sha256,
+        "auto_approval": {
+            "enabled": True,
+            "scope": plan.auto_approval_scope,
+        },
+        "network": "loopback_ollama_only",
+        "os_egress_enforced": False,
+        "evidence_ready": False,
+        "evidence_blockers": [
+            "runtime_dependency_provenance",
+            "os_loopback_only_egress",
+            "immutable_ollama_model_lineage",
+            "sealed_fixture_materialization",
+            "windows_process_tree_containment",
+            "bounded_process_and_http_capture",
+            "counterbalanced_deterministic_sampling",
+        ],
+        "model_downloads": "forbidden",
+        "runtime_dependency_bootstrap": (
+            "possible_on_cold_opencode_config; source is not yet traced"
+        ),
+    }
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    list_models_fn: Callable[[], Any] | None = None,
+    resolve_bin_fn: Callable[[], Path] = resolve_opencode_binary,
+    run_fn: Callable[..., dict[str, Any]] = run_evaluation,
+    environment_fn: Callable[[], dict[str, Any]] | None = None,
+    out: Callable[[str], None] = print,
+) -> int:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    try:
+        task = load_task(args.task, SUITE_ROOT)
+        installed = _model_names(
+            (list_models_fn or _default_list_models)()
+        )
+        binary = resolve_bin_fn()
+        plan = build_plan(
+            task,
+            base_model=args.base_model,
+            lac_model=args.lac_model,
+            ollama_host=args.ollama_host,
+            output_root=args.output_dir,
+            installed_models=installed,
+            opencode_binary=binary,
+            opencode_version=SUPPORTED_OPENCODE_VERSION,
+            source_root=ROOT,
+        )
+        if args.dry_run:
+            report = _dry_report(plan)
+            out(json.dumps(report, indent=2, sort_keys=True))
+            return 0
+
+        environment = (
+            environment_fn()
+            if environment_fn is not None
+            else _default_environment(plan.ollama_host)
+        )
+        comparison = run_fn(
+            plan,
+            run_id=args.run_id,
+            environment=environment,
+        )
+        out(json.dumps(comparison, indent=2, sort_keys=True))
+        return (
+            0
+            if comparison.get("artifact_valid")
+            and comparison.get("all_arms_executed")
+            else 1
+        )
+    except Exception as exc:
+        out(
+            json.dumps(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

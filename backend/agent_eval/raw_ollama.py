@@ -1,0 +1,161 @@
+"""Raw-model evaluation arm using only a loopback Ollama endpoint."""
+from __future__ import annotations
+
+import json
+import time
+import urllib.request
+from typing import Any, Callable
+from urllib.parse import urlsplit
+
+from .result import ArmResult
+from .task import EvalTask, snapshot_fixture
+
+
+RequestFn = Callable[[str, dict[str, Any], int], dict[str, Any]]
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _request_json(
+    ollama_host: str, body: dict[str, Any], timeout: int
+) -> dict[str, Any]:
+    request = urllib.request.Request(
+        ollama_host.rstrip("/") + "/api/chat",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "LAC-agent-eval/1",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _is_loopback_ollama_host(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        return (
+            parsed.scheme == "http"
+            and parsed.hostname in _LOOPBACK_HOSTS
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.path.rstrip("/")
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _milliseconds(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return round(float(value) / 1_000_000, 3)
+
+
+def _metrics(data: dict[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for key in ("prompt_eval_count", "eval_count"):
+        value = data.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            metrics[key] = value
+    for source, target in (
+        ("prompt_eval_duration", "prompt_eval_duration_ms"),
+        ("eval_duration", "eval_duration_ms"),
+        ("total_duration", "total_duration_ms"),
+        ("load_duration", "load_duration_ms"),
+    ):
+        value = _milliseconds(data.get(source))
+        if value is not None:
+            metrics[target] = value
+
+    count = metrics.get("eval_count")
+    duration_ms = metrics.get("eval_duration_ms")
+    if count and duration_ms and duration_ms > 0:
+        metrics["tokens_per_second"] = round(count / (duration_ms / 1000), 2)
+    return metrics
+
+
+def build_raw_prompt(task: EvalTask) -> str:
+    """Return the exact prompt used when the raw arm has no file tools."""
+
+    return (
+        f"{task.prompt}\n\n"
+        "The complete project fixture follows. Treat it as read-only input.\n\n"
+        f"{snapshot_fixture(task.fixture_root)}"
+    )
+
+
+def run_raw(
+    task: EvalTask,
+    model: str,
+    ollama_host: str,
+    *,
+    request_fn: RequestFn = _request_json,
+) -> ArmResult:
+    started = time.perf_counter()
+    if not _is_loopback_ollama_host(ollama_host):
+        return ArmResult(
+            arm="raw",
+            model=model,
+            runtime="ollama",
+            completed=False,
+            timed_out=False,
+            response="",
+            wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
+            errors=("non_loopback_ollama_host",),
+        )
+
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": build_raw_prompt(task)}],
+        "stream": False,
+    }
+    try:
+        data = request_fn(ollama_host.rstrip("/"), body, task.timeout_seconds)
+    except TimeoutError as exc:
+        return ArmResult(
+            arm="raw",
+            model=model,
+            runtime="ollama",
+            completed=False,
+            timed_out=True,
+            response="",
+            wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
+            errors=(f"timeout: {exc}",),
+        )
+    except Exception as exc:
+        return ArmResult(
+            arm="raw",
+            model=model,
+            runtime="ollama",
+            completed=False,
+            timed_out=False,
+            response="",
+            wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
+            errors=(f"{type(exc).__name__}: {exc}",),
+        )
+
+    message = data.get("message") if isinstance(data, dict) else None
+    response = (
+        message.get("content", "")
+        if isinstance(message, dict) and isinstance(message.get("content", ""), str)
+        else ""
+    )
+    errors: tuple[str, ...] = ()
+    completed = bool(response.strip()) and data.get("done") is True
+    if not response.strip():
+        errors = ("empty_response",)
+    elif data.get("done") is not True:
+        errors = ("incomplete_response",)
+    return ArmResult(
+        arm="raw",
+        model=model,
+        runtime="ollama",
+        completed=completed,
+        timed_out=False,
+        response=response,
+        wall_time_ms=round((time.perf_counter() - started) * 1000, 3),
+        metrics=_metrics(data if isinstance(data, dict) else {}),
+        errors=errors,
+    )

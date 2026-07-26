@@ -63,7 +63,12 @@ for f in webdist_dir.rglob("*"):
     if f.is_file():
         datas.append((str(f), str(f.parent.relative_to(PROJECT_ROOT))))
 
-for extra in ["requirements.txt", "CHANGELOG.md", "LICENSE"]:
+for extra in [
+    "requirements.txt",
+    "CHANGELOG.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+]:
     p = PROJECT_ROOT / extra
     if p.exists():
         datas.append((str(p), "."))

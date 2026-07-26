@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/audit-gate.test.mjs",
     "typecheck": "tsc --noEmit",
-    "check:bundle": "node scripts/check-bundle.mjs"
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "audit:release": "node scripts/audit-gate.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -40,7 +41,7 @@
     "lucide-react": "^0.441.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.2",
+    "react-router-dom": "^7.18.1",
     "sonner": "^1.5.0",
     "tailwind-merge": "^2.5.2"
   },
@@ -50,7 +51,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "6.0.3",
     "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.47",
+    "postcss": "^8.5.23",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.5.4",
     "vite": "8.1.4",

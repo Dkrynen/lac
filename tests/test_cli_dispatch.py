@@ -6,6 +6,11 @@ def test_is_cli_invocation_true_for_subcommand():
     assert server._is_cli_invocation(["scan"]) is True
 
 
+def test_is_cli_invocation_routes_top_level_help_to_cli():
+    assert server._is_cli_invocation(["--help"]) is True
+    assert server._is_cli_invocation(["-h"]) is True
+
+
 def test_is_cli_invocation_false_for_server_flags_and_empty():
     assert server._is_cli_invocation([]) is False
     assert server._is_cli_invocation(["--window"]) is False

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "components": [
+    {
+      "name": "OpenCode",
+      "repository": "https://github.com/anomalyco/opencode",
+      "commit": "7534d23551f665e65080809975b4ca5c7d63807b",
+      "license": "MIT",
+      "treatment": "external-runtime",
+      "source_paths": [
+        "LICENSE",
+        "sdks/vscode/src/extension.ts",
+        "packages/opencode/src/ide/index.ts"
+      ],
+      "local_paths": [
+        "backend/agent_launch"
+      ],
+      "modifications": "No OpenCode source is vendored. LAC invokes the separately installed, version-pinned runtime through its process and configuration boundaries.",
+      "owner": "LAC runtime compatibility"
+    },
+    {
+      "name": "Jan",
+      "repository": "https://github.com/janhq/jan",
+      "commit": "92eeab4479020980e01cb2ca8529c30e3c4192f9",
+      "license": "Apache-2.0",
+      "treatment": "research-reference",
+      "source_paths": [
+        "LICENSE",
+        "src-tauri/src/bin/jan-cli.rs",
+        "src-tauri/src/core/setup.rs"
+      ],
+      "local_paths": [],
+      "modifications": "No Jan source is included. Its shared desktop/CLI setup architecture informed LAC planning.",
+      "owner": "LAC onboarding"
+    }
+  ]
+}
