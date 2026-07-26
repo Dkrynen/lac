@@ -59,6 +59,7 @@ class DeferredCleanupStatus:
         self._state = "waiting_for_readers"
         self._sanitize_attempts = 0
         self._delete_attempts = 0
+        self._supervisor_errors = 0
         self._last_error: str | None = None
 
     def _update(
@@ -67,6 +68,7 @@ class DeferredCleanupStatus:
         state: str,
         sanitize_attempt: bool = False,
         delete_attempt: bool = False,
+        supervisor_error: bool = False,
         error: BaseException | str | None = None,
         active: bool = True,
     ) -> None:
@@ -74,6 +76,7 @@ class DeferredCleanupStatus:
             self._state = state
             self._sanitize_attempts += int(sanitize_attempt)
             self._delete_attempts += int(delete_attempt)
+            self._supervisor_errors += int(supervisor_error)
             self._last_error = (
                 None
                 if error is None
@@ -92,6 +95,7 @@ class DeferredCleanupStatus:
                 "state": self._state,
                 "sanitize_attempts": self._sanitize_attempts,
                 "delete_attempts": self._delete_attempts,
+                "supervisor_errors": self._supervisor_errors,
                 "last_error": self._last_error,
             }
 
@@ -248,66 +252,68 @@ def _schedule_deferred_capture_cleanup(
     status = DeferredCleanupStatus()
 
     def reap() -> None:
-        while any(thread.is_alive() for thread in threads):
-            for thread in threads:
-                thread.join(timeout=_DEFERRED_CLEANUP_POLL_SECONDS)
-        for pipe in pipes:
-            deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
-            _bounded_call(pipe.close, deadline)
-        while temporary_root.exists():
-            sanitized = True
-            for path in temporary_paths:
-                if not path.exists():
-                    continue
+        readers_finished = False
+        pipes_closed = False
+        while True:
+            try:
+                if not readers_finished:
+                    while any(thread.is_alive() for thread in threads):
+                        for thread in threads:
+                            thread.join(
+                                timeout=_DEFERRED_CLEANUP_POLL_SECONDS
+                            )
+                    readers_finished = True
+                if not pipes_closed:
+                    for pipe in pipes:
+                        pipe.close()
+                    pipes_closed = True
+                if not temporary_root.exists():
+                    status._update(state="complete", active=False)
+                    return
 
-                def sanitize(target: Path = path) -> None:
-                    with target.open("r+b") as capture_file:
-                        capture_file.seek(0)
-                        capture_file.truncate(0)
-                        capture_file.flush()
+                sanitized = True
+                for path in temporary_paths:
+                    if not path.exists():
+                        continue
+                    status._update(
+                        state="sanitizing",
+                        sanitize_attempt=True,
+                    )
+                    try:
+                        with path.open("r+b") as capture_file:
+                            capture_file.seek(0)
+                            capture_file.truncate(0)
+                            capture_file.flush()
+                    except BaseException as exc:
+                        sanitized = False
+                        status._update(
+                            state="sanitize_retry",
+                            error=exc,
+                        )
 
-                deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
-                completed, _value, error = _bounded_call(sanitize, deadline)
-                sanitize_error: BaseException | str | None = error
-                if not completed:
-                    sanitize_error = "sanitization deadline exceeded"
-                if sanitize_error is not None:
-                    sanitized = False
+                status._update(state="deleting", delete_attempt=True)
+                try:
+                    shutil.rmtree(temporary_root)
+                except BaseException as exc:
+                    status._update(
+                        state=(
+                            "sanitized_waiting_for_delete"
+                            if sanitized
+                            else "sanitize_retry"
+                        ),
+                        error=exc,
+                    )
+                else:
+                    status._update(state="complete", active=False)
+                    return
+                time.sleep(_DEFERRED_CLEANUP_POLL_SECONDS)
+            except BaseException as exc:
                 status._update(
-                    state=(
-                        "sanitized_waiting_for_delete"
-                        if sanitize_error is None
-                        else "sanitize_retry"
-                    ),
-                    sanitize_attempt=True,
-                    error=sanitize_error,
+                    state="supervisor_retry",
+                    supervisor_error=True,
+                    error=exc,
                 )
-            deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
-            completed, _value, error = _bounded_call(
-                lambda: shutil.rmtree(temporary_root),
-                deadline,
-            )
-            delete_error: BaseException | str | None = error
-            if not completed:
-                delete_error = "deletion deadline exceeded"
-            if not temporary_root.exists():
-                status._update(
-                    state="complete",
-                    delete_attempt=True,
-                    active=False,
-                )
-                return
-            status._update(
-                state=(
-                    "sanitized_waiting_for_delete"
-                    if sanitized
-                    else "sanitize_retry"
-                ),
-                delete_attempt=True,
-                error=delete_error or "capture root still exists",
-            )
-            time.sleep(_DEFERRED_CLEANUP_POLL_SECONDS)
-        status._update(state="complete", active=False)
+                time.sleep(_DEFERRED_CLEANUP_POLL_SECONDS)
 
     threading.Thread(
         target=reap,

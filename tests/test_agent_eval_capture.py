@@ -631,6 +631,154 @@ def test_deferred_cleanup_stays_owned_until_sanitize_and_delete_denials_lift(
             real_rmtree(capture_root)
 
 
+def test_deferred_cleanup_recovers_from_unexpected_owner_exception(
+    tmp_path, monkeypatch, recwarn
+):
+    capture_root = tmp_path / "capture-root"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+    real_exists = Path.exists
+    real_rmtree = capture_module.shutil.rmtree
+    delete_calls = 0
+    injected = False
+
+    def fail_first_delete(path):
+        nonlocal delete_calls
+        delete_calls += 1
+        if delete_calls == 1:
+            raise OSError("force deferred ownership")
+        return real_rmtree(path)
+
+    def fail_once_in_owner(path):
+        nonlocal injected
+        if (
+            not injected
+            and threading.current_thread().name
+            == "agent-eval-deferred-cleanup"
+            and Path(path) == capture_root
+        ):
+            injected = True
+            raise RuntimeError(f"unexpected owner failure: {capture_root}")
+        return real_exists(path)
+
+    monkeypatch.setattr(capture_module.shutil, "rmtree", fail_first_delete)
+    monkeypatch.setattr(Path, "exists", fail_once_in_owner)
+    result = run_bounded_process(
+        [sys.executable, "-c", "print('owned-secret')"],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(cleanup_grace_seconds=0.1),
+    )
+
+    try:
+        assert result.raw_stdout == b""
+        assert result.temporary_paths == ()
+        status = result.deferred_cleanup_status
+        assert status is not None
+        recovery_deadline = time.monotonic() + 1
+        while real_exists(capture_root) and time.monotonic() < recovery_deadline:
+            time.sleep(0.01)
+        snapshot = status.snapshot()
+        assert not real_exists(capture_root)
+        assert snapshot["active"] is False
+        assert snapshot["state"] == "complete"
+        assert snapshot["supervisor_errors"] >= 1
+        assert snapshot["last_error"] is None
+        assert "capture-root" not in str(snapshot)
+        assert not [
+            warning
+            for warning in recwarn
+            if "agent-eval-deferred-cleanup" in str(warning.message)
+        ]
+    finally:
+        if real_exists(capture_root):
+            real_rmtree(capture_root)
+
+
+def test_blocked_deferred_operation_uses_one_owner_thread_until_release(
+    tmp_path, monkeypatch
+):
+    capture_root = tmp_path / "capture-root"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+    real_open = Path.open
+    real_rmtree = capture_module.shutil.rmtree
+    release = threading.Event()
+    operation_started = threading.Event()
+    delete_calls = 0
+
+    def block_sanitize(path, mode="r", *args, **kwargs):
+        if Path(path).parent == capture_root and mode == "r+b":
+            operation_started.set()
+            release.wait(2)
+        return real_open(path, mode, *args, **kwargs)
+
+    def fail_then_block_delete(path):
+        nonlocal delete_calls
+        delete_calls += 1
+        if delete_calls == 1:
+            raise OSError("force deferred ownership")
+        operation_started.set()
+        release.wait(2)
+        return real_rmtree(path)
+
+    monkeypatch.setattr(Path, "open", block_sanitize)
+    monkeypatch.setattr(capture_module.shutil, "rmtree", fail_then_block_delete)
+    started = time.monotonic()
+    result = run_bounded_process(
+        [sys.executable, "-c", "print('blocked-secret')"],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(cleanup_grace_seconds=0.1),
+    )
+    elapsed = time.monotonic() - started
+
+    def live_cleanup_threads():
+        return [
+            thread
+            for thread in threading.enumerate()
+            if thread.name
+            in {"agent-eval-deferred-cleanup", "agent-eval-cleanup"}
+        ]
+
+    try:
+        assert elapsed < 0.5
+        assert result.raw_stdout == b""
+        assert result.temporary_paths == ()
+        assert operation_started.wait(0.5)
+        counts = []
+        for _sample in range(3):
+            time.sleep(0.12)
+            counts.append(len(live_cleanup_threads()))
+        assert counts == [1, 1, 1]
+        status = result.deferred_cleanup_status
+        assert status is not None
+        snapshot = status.snapshot()
+        assert snapshot["active"] is True
+        assert snapshot["state"] in {"sanitizing", "deleting"}
+    finally:
+        release.set()
+
+    recovery_deadline = time.monotonic() + 1
+    while (
+        capture_root.exists() or live_cleanup_threads()
+    ) and time.monotonic() < recovery_deadline:
+        time.sleep(0.01)
+    assert not capture_root.exists()
+    assert live_cleanup_threads() == []
+    assert result.deferred_cleanup_status.snapshot()["state"] == "complete"
+
+
 def test_bounded_process_never_uses_unbounded_wait_when_termination_is_ineffective(
     tmp_path,
 ):
