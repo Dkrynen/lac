@@ -21,6 +21,7 @@ from .evidence import (
     EvidenceMode,
     EvidenceState,
 )
+from .containment import select_containment_provider
 from .opencode import run_lac, run_stock
 from .ledger import atomic_write_json, seal_evidence
 from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
@@ -436,6 +437,7 @@ def run_evaluation(
     identity_capture_fn: Callable[[EvaluationPlan], EvaluationIdentitySnapshot] = capture_preflight_identities,
     identity_compare_fn: Callable[[EvaluationIdentitySnapshot, EvaluationIdentitySnapshot], tuple[EvidenceControlResult, EvidenceControlResult]] = compare_postflight_identities,
     identity_lease_fn: Callable[[EvaluationIdentitySnapshot], Any] = acquire_runtime_identity_leases,
+    containment_provider_fn: Callable[..., Any] = select_containment_provider,
 ) -> dict[str, Any]:
     run_id = run_id or _default_run_id()
     if not _RUN_ID.fullmatch(run_id):
@@ -468,6 +470,34 @@ def run_evaluation(
         reason = f"identity preflight failed: {type(exc).__name__}: {exc}"
         identity_results = _identity_failures(reason)
 
+    containment_provider: Any | None = None
+    containment_result = EvidenceControlResult(
+        "os_loopback_only_egress",
+        EvidenceState.FAIL,
+        "containment provider was not initialized",
+        {},
+    )
+    try:
+        applications = [preflight.opencode] if preflight is not None else []
+        containment_provider = containment_provider_fn(
+            mode,
+            os.name,
+            plan.ollama_host,
+            applications,
+        )
+        containment_result = containment_provider.verify_active()
+        if containment_result.name != "os_loopback_only_egress":
+            raise EvalPlanError(
+                "containment provider returned the wrong evidence control"
+            )
+    except Exception as exc:
+        containment_result = EvidenceControlResult(
+            "os_loopback_only_egress",
+            EvidenceState.FAIL,
+            f"containment activation failed: {type(exc).__name__}: {exc}",
+            {"active": False},
+        )
+
     results: dict[str, ArmResult] = {}
     measured_windows_arms: set[str] = set()
     scores: dict[str, ScoreResult] = {}
@@ -495,6 +525,14 @@ def run_evaluation(
                 )
             arm_task = replace(plan.task, fixture_root=workspace)
             try:
+                if (
+                    mode is EvidenceMode.VERIFIED
+                    and containment_result.state is not EvidenceState.PASS
+                ):
+                    raise EvalPlanError(
+                        "verified OS loopback-only egress containment "
+                        "was not available"
+                    )
                 if seal is None or not seal.ok or not seal.acl_hardened:
                     raise EvalPlanError("sealed fixture materialization was not available")
                 if arm == "raw":
@@ -512,7 +550,10 @@ def run_evaluation(
                         )
                         if os.name == "nt":
                             adapter_kwargs["launcher"] = (
-                                WindowsJobProcess.start
+                                containment_provider.launcher
+                                if containment_provider is not None
+                                and containment_provider.launcher is not None
+                                else WindowsJobProcess.start
                             )
                     candidate = adapter(
                         arm_task,
@@ -607,6 +648,39 @@ def run_evaluation(
                 )
                 identity_results = _identity_failures(reason)
     finally:
+        if (
+            containment_provider is not None
+            and containment_result.state is EvidenceState.PASS
+        ):
+            try:
+                postflight_containment = containment_provider.verify_active()
+                if postflight_containment.name != "os_loopback_only_egress":
+                    raise EvalPlanError(
+                        "containment provider returned the wrong evidence control"
+                    )
+                containment_result = postflight_containment
+            except Exception as exc:
+                containment_result = EvidenceControlResult(
+                    "os_loopback_only_egress",
+                    EvidenceState.FAIL,
+                    f"containment postflight verification failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    {"active": False},
+                )
+        if containment_provider is not None:
+            try:
+                containment_provider.close()
+            except Exception as exc:
+                containment_result = EvidenceControlResult(
+                    "os_loopback_only_egress",
+                    EvidenceState.FAIL,
+                    f"containment cleanup uncertain: "
+                    f"{type(exc).__name__}: {exc}",
+                    {
+                        **containment_result.details,
+                        "cleanup_certain": False,
+                    },
+                )
         if runtime_leases is not None:
             try:
                 runtime_leases.close()
@@ -670,6 +744,7 @@ def run_evaluation(
             "sealed_fixture_materialization",
             "bounded_process_and_http_capture",
             "windows_process_tree_containment",
+            "os_loopback_only_egress",
         }
     ]
     fixture_ok = len(fixture_controls) == 3 and all(
@@ -692,6 +767,7 @@ def run_evaluation(
         [
             *carried_results,
             *identity_results,
+            containment_result,
             fixture_result,
             windows_containment_result,
             capture_result,

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -18,7 +20,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.agent_eval.evidence import EvidenceMode, EvidenceState, EvidenceVerdict
+from backend.agent_eval.containment import select_containment_provider
+from backend.agent_eval.evidence import (
+    EvidenceControlResult,
+    EvidenceMode,
+    EvidenceState,
+    EvidenceVerdict,
+)
+from backend.agent_eval.identity import capture_preflight_identities
 from backend.agent_eval.runner import (
     build_plan,
     preliminary_evidence_results,
@@ -173,10 +182,84 @@ def _unready_controls(verdict: EvidenceVerdict) -> list[str]:
     return names + [name for name in verdict.missing if name not in names]
 
 
-def _dry_report(plan, mode: EvidenceMode) -> dict[str, Any]:
-    verdict = EvidenceVerdict.from_results(mode, preliminary_evidence_results())
-    return {
-        "ok": True,
+def _dry_containment_preflight(
+    plan,
+    mode: EvidenceMode,
+    *,
+    identity_capture_fn: Callable[..., Any],
+    containment_provider_fn: Callable[..., Any],
+) -> tuple[EvidenceControlResult, list[str]]:
+    provider = None
+    application_paths: list[str] = []
+    result = EvidenceControlResult(
+        "os_loopback_only_egress",
+        EvidenceState.FAIL,
+        "containment capability preflight was not completed",
+        {},
+    )
+    try:
+        applications = []
+        if mode is EvidenceMode.VERIFIED:
+            snapshot = identity_capture_fn(plan)
+            applications = [snapshot.opencode]
+            application_paths = [str(item.path) for item in applications]
+        provider = containment_provider_fn(
+            mode,
+            os.name,
+            plan.ollama_host,
+            applications,
+        )
+        result = provider.verify_active()
+        if result.name != "os_loopback_only_egress":
+            raise ValueError(
+                "containment provider returned the wrong evidence control"
+            )
+    except Exception as exc:
+        result = EvidenceControlResult(
+            "os_loopback_only_egress",
+            EvidenceState.FAIL,
+            f"containment capability preflight failed: "
+            f"{type(exc).__name__}: {exc}",
+            {"active": False},
+        )
+    finally:
+        if provider is not None:
+            try:
+                provider.close()
+            except Exception as exc:
+                result = EvidenceControlResult(
+                    "os_loopback_only_egress",
+                    EvidenceState.FAIL,
+                    f"containment cleanup uncertain: "
+                    f"{type(exc).__name__}: {exc}",
+                    {
+                        **result.details,
+                        "active": False,
+                        "cleanup_certain": False,
+                    },
+                )
+    return result, application_paths
+
+
+def _dry_report(
+    plan,
+    mode: EvidenceMode,
+    containment: EvidenceControlResult,
+    application_paths: list[str],
+    original_command: str,
+) -> dict[str, Any]:
+    preliminary = [
+        item
+        for item in preliminary_evidence_results()
+        if item.name != "os_loopback_only_egress"
+    ]
+    verdict = EvidenceVerdict.from_results(
+        mode,
+        [*preliminary, containment],
+    )
+    containment_ok = containment.state is EvidenceState.PASS
+    report = {
+        "ok": mode is EvidenceMode.DIAGNOSTIC or containment_ok,
         "dry_run": True,
         "mode": mode.value,
         "task": plan.task.id,
@@ -197,7 +280,17 @@ def _dry_report(plan, mode: EvidenceMode) -> dict[str, Any]:
             "scope": plan.auto_approval_scope,
         },
         "network": "loopback_ollama_only",
-        "os_egress_enforced": False,
+        "os_egress_enforced": containment_ok,
+        "containment": {
+            "name": containment.name,
+            "state": containment.state.value,
+            "reason": containment.reason,
+            "details": containment.details,
+            "elevation_present": (
+                containment_ok if mode is EvidenceMode.VERIFIED else None
+            ),
+            "application_paths": application_paths,
+        },
         "evidence_ready": False,
         "controls": verdict.to_dict(),
         "artifact_valid": verdict.artifact_valid,
@@ -208,6 +301,15 @@ def _dry_report(plan, mode: EvidenceMode) -> dict[str, Any]:
             "possible_on_cold_opencode_config; source is not yet traced"
         ),
     }
+    if mode is EvidenceMode.VERIFIED and not containment_ok:
+        report["rerun_command"] = original_command
+        report["error"] = (
+            "Verified Windows network containment requires an elevated "
+            "terminal.\n"
+            "Reopen PowerShell as Administrator and rerun:\n"
+            f"{original_command}"
+        )
+    return report
 
 
 def main(
@@ -217,9 +319,18 @@ def main(
     resolve_bin_fn: Callable[[], Path] = resolve_opencode_binary,
     run_fn: Callable[..., dict[str, Any]] = run_evaluation,
     environment_fn: Callable[[], dict[str, Any]] | None = None,
+    identity_capture_fn: Callable[..., Any] = capture_preflight_identities,
+    containment_provider_fn: Callable[..., Any] = select_containment_provider,
     out: Callable[[str], None] = print,
 ) -> int:
-    args = parse_args(argv if argv is not None else sys.argv[1:])
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    original_argv = (
+        [str(Path(__file__).resolve()), *raw_argv]
+        if argv is not None
+        else list(sys.argv)
+    )
+    original_command = subprocess.list2cmdline(original_argv)
+    args = parse_args(raw_argv)
     try:
         mode = EvidenceMode(args.mode)
         task = load_task(args.task, SUITE_ROOT)
@@ -239,9 +350,21 @@ def main(
             source_root=ROOT,
         )
         if args.dry_run:
-            report = _dry_report(plan, mode)
+            containment, application_paths = _dry_containment_preflight(
+                plan,
+                mode,
+                identity_capture_fn=identity_capture_fn,
+                containment_provider_fn=containment_provider_fn,
+            )
+            report = _dry_report(
+                plan,
+                mode,
+                containment,
+                application_paths,
+                original_command,
+            )
             out(json.dumps(report, indent=2, sort_keys=True))
-            return 0
+            return 0 if report["ok"] else 2
 
         preliminary_results = preliminary_evidence_results()
         verdict = EvidenceVerdict.from_results(mode, preliminary_results)

@@ -15,6 +15,7 @@ from backend.agent_eval.evidence import (
     EvidenceMode,
     EvidenceState,
 )
+from backend.agent_eval.containment import ContainmentError
 from backend.agent_eval.identity import (
     EvaluationIdentitySnapshot,
     IdentityError,
@@ -975,3 +976,161 @@ def test_runner_replaces_injected_windows_pass_with_measured_failure(
     )
     assert control["state"] == "fail"
     assert arm in control["reason"]
+
+
+class _FakeContainmentProvider:
+    launcher = WindowsJobProcess.start
+
+    def __init__(self, *, state=EvidenceState.PASS, close_error=None):
+        self.state = state
+        self.close_error = close_error
+        self.verify_calls = 0
+        self.close_calls = 0
+
+    def verify_active(self):
+        self.verify_calls += 1
+        return EvidenceControlResult(
+            "os_loopback_only_egress",
+            self.state,
+            "measured fake WFP policy",
+            {
+                "provider": "fake_wfp",
+                "active": self.state is EvidenceState.PASS,
+                "verified_complete_shape": self.state is EvidenceState.PASS,
+            },
+        )
+
+    def close(self):
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def test_runner_replaces_injected_egress_pass_with_diagnostic_unsupported(
+    tmp_path,
+):
+    injected = EvidenceControlResult(
+        "os_loopback_only_egress",
+        EvidenceState.PASS,
+        "caller assertion must be ignored",
+    )
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="diagnostic-containment",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=lambda task, model, host, workspace: _result(
+            "stock", model, "ZeroDivisionError"
+        ),
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+        preliminary_results=(injected,),
+    )
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "os_loopback_only_egress"
+    )
+    assert control["state"] == "unsupported"
+    assert control["details"]["provider"] == "diagnostic"
+
+
+def test_verified_runner_uses_measured_provider_and_task5_launcher(tmp_path):
+    provider = _FakeContainmentProvider()
+    snapshot = EvaluationIdentitySnapshot.for_test()
+    received = {}
+
+    def select(mode, platform, endpoint, applications):
+        received.update(
+            mode=mode,
+            platform=platform,
+            endpoint=endpoint,
+            applications=applications,
+        )
+        return provider
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="verified-containment",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=lambda task, model, host, workspace: _result(
+            "stock", model, "ZeroDivisionError"
+        ),
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+        mode=EvidenceMode.VERIFIED,
+        containment_provider_fn=select,
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=_noop_identity_lease,
+    )
+
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "os_loopback_only_egress"
+    )
+    assert control["state"] == "pass"
+    assert received["applications"] == [snapshot.opencode]
+    assert received["endpoint"] == "http://localhost:11434"
+    assert provider.verify_calls == 2
+    assert provider.close_calls == 1
+
+
+def test_verified_runner_stops_adapters_when_provider_open_fails(tmp_path):
+    called = []
+
+    def deny(*_args):
+        raise ContainmentError("elevation required")
+
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="containment-open-failure",
+        raw_fn=lambda *_args: called.append("raw"),
+        stock_fn=lambda *_args: called.append("stock"),
+        lac_fn=lambda *_args: called.append("lac"),
+        mode=EvidenceMode.VERIFIED,
+        containment_provider_fn=deny,
+    )
+
+    assert called == []
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "os_loopback_only_egress"
+    )
+    assert control["state"] == "fail"
+    assert "elevation required" in control["reason"]
+
+
+def test_provider_close_uncertainty_forces_egress_failure(tmp_path):
+    provider = _FakeContainmentProvider(
+        close_error=ContainmentError("dynamic cleanup uncertain")
+    )
+    comparison = run_evaluation(
+        _plan(tmp_path),
+        run_id="containment-close-failure",
+        raw_fn=lambda task, model, host: _result(
+            "raw", model, "ZeroDivisionError"
+        ),
+        stock_fn=lambda task, model, host, workspace: _result(
+            "stock", model, "ZeroDivisionError"
+        ),
+        lac_fn=lambda task, model, host, workspace: _result(
+            "lac", model, "ZeroDivisionError"
+        ),
+        mode=EvidenceMode.VERIFIED,
+        containment_provider_fn=lambda *_args: provider,
+    )
+    control = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "os_loopback_only_egress"
+    )
+    assert control["state"] == "fail"
+    assert "cleanup uncertain" in control["reason"]
