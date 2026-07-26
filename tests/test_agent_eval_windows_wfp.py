@@ -1,13 +1,17 @@
 import ctypes
 import hashlib
+import importlib.util
 import inspect
 import os
+import sys
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import backend.agent_eval.containment as containment_module
 import backend.agent_eval.windows_wfp as windows_wfp_module
 from backend.agent_eval.containment import (
     ContainmentError,
@@ -354,6 +358,101 @@ def test_native_port_condition_uses_wfp_host_byte_order():
     assert windows_wfp_module._parse_native_filter(native, spec) == spec
 
 
+@pytest.mark.skipif(
+    sys.byteorder != "little",
+    reason="Windows WFP reference ABI is little-endian",
+)
+def test_native_ipv4_condition_uses_independent_wfp_host_order_value():
+    spec = windows_wfp_module.FilterSpec(
+        "v4",
+        "permit",
+        PERMIT_WEIGHT,
+        b"app-id",
+        "127.0.0.1",
+        11434,
+        "12345678-1234-5678-9abc-123456789abc",
+    )
+
+    native, references = windows_wfp_module._native_filter(spec)
+
+    assert references
+    address = next(
+        condition
+        for condition in native.filterCondition[: native.numFilterConditions]
+        if condition.fieldKey.to_uuid()
+        == windows_wfp_module.FWPM_CONDITION_IP_REMOTE_ADDRESS
+    )
+    assert address.conditionValue.uint32 == 0x0100007F
+    assert windows_wfp_module._parse_native_filter(native, spec) == spec
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["match_type", "extra", "duplicate", "reordered"],
+)
+def test_native_parser_rejects_incomplete_condition_shape(mutation):
+    spec = windows_wfp_module.FilterSpec(
+        "v4",
+        "permit",
+        PERMIT_WEIGHT,
+        b"app-id",
+        "127.0.0.1",
+        11434,
+        "12345678-1234-5678-9abc-123456789abc",
+    )
+    native, references = windows_wfp_module._native_filter(spec)
+    conditions = [
+        native.filterCondition[index]
+        for index in range(native.numFilterConditions)
+    ]
+    if mutation == "match_type":
+        conditions[0].matchType = 99
+    elif mutation == "extra":
+        extra = windows_wfp_module.FWPM_FILTER_CONDITION0()
+        extra.fieldKey = windows_wfp_module.GUID.from_uuid(uuid.uuid4())
+        extra.matchType = windows_wfp_module.FWP_MATCH_EQUAL
+        extra.conditionValue.type = windows_wfp_module.FWP_UINT16
+        extra.conditionValue.uint16 = 1
+        conditions.append(extra)
+    elif mutation == "duplicate":
+        conditions.append(conditions[0])
+    else:
+        conditions.reverse()
+    condition_array = (
+        windows_wfp_module.FWPM_FILTER_CONDITION0 * len(conditions)
+    )(*conditions)
+    references.append(condition_array)
+    native.numFilterConditions = len(conditions)
+    native.filterCondition = condition_array
+
+    with pytest.raises(ContainmentError, match="condition shape"):
+        windows_wfp_module._parse_native_filter(native, spec)
+
+
+def test_live_design_proves_reachability_before_installing_wfp():
+    path = (
+        Path(__file__).resolve().parent
+        / "test_agent_eval_live_containment.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "agent_eval_live_containment_design",
+        path,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = inspect.getsource(
+        module.test_real_wfp_allows_only_exact_loopback_endpoint_and_cleans_up
+    )
+
+    assert source.index("_prove_uncontained_baseline(") < source.index(
+        "WindowsWfpSession.open("
+    )
+    assert "198.51.100.1" not in source
+    assert "2001:db8::1" not in source
+    assert ".invalid" not in source
+
+
 def test_diagnostic_provider_is_explicitly_unsupported():
     provider = select_containment_provider(
         EvidenceMode.DIAGNOSTIC,
@@ -361,7 +460,12 @@ def test_diagnostic_provider_is_explicitly_unsupported():
         "http://127.0.0.1:11434",
         [],
     )
-    result = provider.verify_active()
+    result = containment_module.derive_containment_result(
+        EvidenceMode.DIAGNOSTIC,
+        provider,
+        "http://127.0.0.1:11434",
+        [],
+    )
     assert result.state is EvidenceState.UNSUPPORTED
     assert result.details["active"] is False
     provider.close()
@@ -377,6 +481,27 @@ def test_verified_non_windows_provider_fails_closed():
         )
 
 
+def test_verified_evidence_rejects_nonproduction_provider():
+    forged = SimpleNamespace(
+        launcher=lambda *_args, **_kwargs: None,
+        verify_active=lambda: EvidenceControlResult(
+            "os_loopback_only_egress",
+            EvidenceState.PASS,
+            "forged",
+            {"active": True, "verified_complete_shape": True},
+        ),
+        close=lambda: None,
+    )
+
+    with pytest.raises(ContainmentError, match="production Windows"):
+        containment_module.derive_containment_result(
+            EvidenceMode.VERIFIED,
+            forged,
+            "http://127.0.0.1:11434",
+            [],
+        )
+
+
 def test_verified_windows_provider_owns_wfp_and_job_launcher(tmp_path):
     api = FakeWfpApi()
     provider = select_containment_provider(
@@ -386,7 +511,13 @@ def test_verified_windows_provider_owns_wfp_and_job_launcher(tmp_path):
         [identity(tmp_path / "app.exe")],
         wfp_api=api,
     )
-    result = provider.verify_active()
+    application = provider.session.applications[0]
+    result = containment_module.derive_containment_result(
+        EvidenceMode.VERIFIED,
+        provider,
+        "http://127.0.0.1:11434",
+        [application],
+    )
     assert result.state is EvidenceState.PASS
     assert result.details["verified_complete_shape"] is True
     assert getattr(provider.launcher, "_windows_job_launcher") is True

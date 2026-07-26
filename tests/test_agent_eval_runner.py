@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import inspect
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,7 +121,7 @@ def _plan(tmp_path: Path):
         _task(tmp_path),
         base_model="gpt-oss:20b",
         lac_model="gpt-oss:20b-agent",
-        ollama_host="http://localhost:11434",
+        ollama_host="http://127.0.0.1:11434",
         output_root=tmp_path / "evidence",
         installed_models=["gpt-oss:20b", "gpt-oss:20b-agent"],
         opencode_binary=Path(r"C:\tools\opencode.cmd"),
@@ -187,7 +189,7 @@ def test_build_plan_is_dry_and_records_exact_identities(tmp_path):
     assert plan.task.id == "python-empty-mean"
     assert plan.base_model == "gpt-oss:20b"
     assert plan.lac_model == "gpt-oss:20b-agent"
-    assert plan.ollama_host == "http://localhost:11434"
+    assert plan.ollama_host == "http://127.0.0.1:11434"
     assert plan.opencode_binary == Path(r"C:\tools\opencode.cmd")
     assert plan.opencode_version == "1.18.4"
     assert len(plan.fixture_sha256) == 64
@@ -978,32 +980,64 @@ def test_runner_replaces_injected_windows_pass_with_measured_failure(
     assert arm in control["reason"]
 
 
-class _FakeContainmentProvider:
-    launcher = WindowsJobProcess.start
+class _RunnerWfpApi:
+    def __init__(self):
+        self.calls = []
+        self.filters = {}
+        self.next_filter_id = 100
+        self.fail = {}
 
-    def __init__(self, *, state=EvidenceState.PASS, close_error=None):
-        self.state = state
-        self.close_error = close_error
-        self.verify_calls = 0
-        self.close_calls = 0
+    def _raise(self, name):
+        error = self.fail.get(name)
+        if error is not None:
+            raise error
 
-    def verify_active(self):
-        self.verify_calls += 1
-        return EvidenceControlResult(
-            "os_loopback_only_egress",
-            self.state,
-            "measured fake WFP policy",
-            {
-                "provider": "fake_wfp",
-                "active": self.state is EvidenceState.PASS,
-                "verified_complete_shape": self.state is EvidenceState.PASS,
-            },
+    def engine_open_dynamic(self, session_key):
+        self.calls.append(("engine_open", session_key))
+        self._raise("engine_open")
+        return 10
+
+    def engine_close(self, engine):
+        self.calls.append(("engine_close", engine))
+        self._raise("engine_close")
+
+    def sublayer_add(self, engine, key):
+        self.calls.append(("sublayer_add", key))
+        self._raise("sublayer_add")
+
+    def sublayer_delete(self, engine, key):
+        self.calls.append(("sublayer_delete", key))
+        self._raise("sublayer_delete")
+
+    def get_app_id(self, path):
+        self.calls.append(("get_app_id", path))
+        self._raise("get_app_id")
+        return SimpleNamespace(
+            value=("app:" + str(path).lower()).encode(),
+            token=object(),
         )
 
-    def close(self):
-        self.close_calls += 1
-        if self.close_error is not None:
-            raise self.close_error
+    def free_memory(self, token):
+        self.calls.append(("free_memory", token))
+        self._raise("free_memory")
+
+    def filter_add(self, engine, spec):
+        self.calls.append(("filter_add", spec))
+        self._raise("filter_add")
+        filter_id = self.next_filter_id
+        self.next_filter_id += 1
+        self.filters[filter_id] = spec
+        return filter_id
+
+    def filter_get(self, engine, filter_id):
+        self.calls.append(("filter_get", filter_id))
+        self._raise("filter_get")
+        return self.filters[filter_id]
+
+    def filter_delete(self, engine, filter_id):
+        self.calls.append(("filter_delete", filter_id))
+        self._raise("filter_delete")
+        self.filters.pop(filter_id)
 
 
 def test_runner_replaces_injected_egress_pass_with_diagnostic_unsupported(
@@ -1038,18 +1072,8 @@ def test_runner_replaces_injected_egress_pass_with_diagnostic_unsupported(
 
 
 def test_verified_runner_uses_measured_provider_and_task5_launcher(tmp_path):
-    provider = _FakeContainmentProvider()
-    snapshot = EvaluationIdentitySnapshot.for_test()
-    received = {}
-
-    def select(mode, platform, endpoint, applications):
-        received.update(
-            mode=mode,
-            platform=platform,
-            endpoint=endpoint,
-            applications=applications,
-        )
-        return provider
+    _runtime, snapshot = _runtime_snapshot(tmp_path)
+    api = _RunnerWfpApi()
 
     comparison = run_evaluation(
         _plan(tmp_path),
@@ -1064,7 +1088,7 @@ def test_verified_runner_uses_measured_provider_and_task5_launcher(tmp_path):
             "lac", model, "ZeroDivisionError"
         ),
         mode=EvidenceMode.VERIFIED,
-        containment_provider_fn=select,
+        containment_wfp_api=api,
         identity_capture_fn=lambda _: snapshot,
         identity_compare_fn=_passing_identity_compare,
         identity_lease_fn=_noop_identity_lease,
@@ -1076,17 +1100,31 @@ def test_verified_runner_uses_measured_provider_and_task5_launcher(tmp_path):
         if item["name"] == "os_loopback_only_egress"
     )
     assert control["state"] == "pass"
-    assert received["applications"] == [snapshot.opencode]
-    assert received["endpoint"] == "http://localhost:11434"
-    assert provider.verify_calls == 2
-    assert provider.close_calls == 1
+    assert control["details"]["provider"] == "windows_wfp"
+    assert control["details"]["applications"] == [str(snapshot.opencode.path)]
+    assert control["details"]["endpoint"] == "http://127.0.0.1:11434"
+    assert len([call for call in api.calls if call[0] == "filter_add"]) == 4
+    assert [call[0] for call in api.calls[-6:]] == [
+        "filter_delete",
+        "filter_delete",
+        "filter_delete",
+        "filter_delete",
+        "sublayer_delete",
+        "engine_close",
+    ]
+
+
+def test_verified_runner_has_no_free_form_provider_evidence_seam():
+    assert "containment_provider_fn" not in inspect.signature(
+        run_evaluation
+    ).parameters
 
 
 def test_verified_runner_stops_adapters_when_provider_open_fails(tmp_path):
     called = []
-
-    def deny(*_args):
-        raise ContainmentError("elevation required")
+    _runtime, snapshot = _runtime_snapshot(tmp_path)
+    api = _RunnerWfpApi()
+    api.fail["engine_open"] = ContainmentError("elevation required")
 
     comparison = run_evaluation(
         _plan(tmp_path),
@@ -1095,7 +1133,10 @@ def test_verified_runner_stops_adapters_when_provider_open_fails(tmp_path):
         stock_fn=lambda *_args: called.append("stock"),
         lac_fn=lambda *_args: called.append("lac"),
         mode=EvidenceMode.VERIFIED,
-        containment_provider_fn=deny,
+        containment_wfp_api=api,
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=_noop_identity_lease,
     )
 
     assert called == []
@@ -1109,8 +1150,10 @@ def test_verified_runner_stops_adapters_when_provider_open_fails(tmp_path):
 
 
 def test_provider_close_uncertainty_forces_egress_failure(tmp_path):
-    provider = _FakeContainmentProvider(
-        close_error=ContainmentError("dynamic cleanup uncertain")
+    _runtime, snapshot = _runtime_snapshot(tmp_path)
+    api = _RunnerWfpApi()
+    api.fail["filter_delete"] = ContainmentError(
+        "dynamic cleanup uncertain"
     )
     comparison = run_evaluation(
         _plan(tmp_path),
@@ -1125,7 +1168,10 @@ def test_provider_close_uncertainty_forces_egress_failure(tmp_path):
             "lac", model, "ZeroDivisionError"
         ),
         mode=EvidenceMode.VERIFIED,
-        containment_provider_fn=lambda *_args: provider,
+        containment_wfp_api=api,
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=_noop_identity_lease,
     )
     control = next(
         item

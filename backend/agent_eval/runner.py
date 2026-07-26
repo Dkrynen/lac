@@ -21,7 +21,10 @@ from .evidence import (
     EvidenceMode,
     EvidenceState,
 )
-from .containment import select_containment_provider
+from .containment import (
+    derive_containment_result,
+    select_containment_provider,
+)
 from .opencode import run_lac, run_stock
 from .ledger import atomic_write_json, seal_evidence
 from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
@@ -437,7 +440,7 @@ def run_evaluation(
     identity_capture_fn: Callable[[EvaluationPlan], EvaluationIdentitySnapshot] = capture_preflight_identities,
     identity_compare_fn: Callable[[EvaluationIdentitySnapshot, EvaluationIdentitySnapshot], tuple[EvidenceControlResult, EvidenceControlResult]] = compare_postflight_identities,
     identity_lease_fn: Callable[[EvaluationIdentitySnapshot], Any] = acquire_runtime_identity_leases,
-    containment_provider_fn: Callable[..., Any] = select_containment_provider,
+    containment_wfp_api: object | None = None,
 ) -> dict[str, Any]:
     run_id = run_id or _default_run_id()
     if not _RUN_ID.fullmatch(run_id):
@@ -477,19 +480,21 @@ def run_evaluation(
         "containment provider was not initialized",
         {},
     )
+    applications = [preflight.opencode] if preflight is not None else []
     try:
-        applications = [preflight.opencode] if preflight is not None else []
-        containment_provider = containment_provider_fn(
+        containment_provider = select_containment_provider(
             mode,
             os.name,
             plan.ollama_host,
             applications,
+            wfp_api=containment_wfp_api,
         )
-        containment_result = containment_provider.verify_active()
-        if containment_result.name != "os_loopback_only_egress":
-            raise EvalPlanError(
-                "containment provider returned the wrong evidence control"
-            )
+        containment_result = derive_containment_result(
+            mode,
+            containment_provider,
+            plan.ollama_host,
+            applications,
+        )
     except Exception as exc:
         containment_result = EvidenceControlResult(
             "os_loopback_only_egress",
@@ -653,12 +658,12 @@ def run_evaluation(
             and containment_result.state is EvidenceState.PASS
         ):
             try:
-                postflight_containment = containment_provider.verify_active()
-                if postflight_containment.name != "os_loopback_only_egress":
-                    raise EvalPlanError(
-                        "containment provider returned the wrong evidence control"
-                    )
-                containment_result = postflight_containment
+                containment_result = derive_containment_result(
+                    mode,
+                    containment_provider,
+                    plan.ollama_host,
+                    applications,
+                )
             except Exception as exc:
                 containment_result = EvidenceControlResult(
                     "os_loopback_only_egress",

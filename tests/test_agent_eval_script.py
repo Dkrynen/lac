@@ -3,15 +3,15 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from backend.agent_eval.containment import ContainmentError
-from backend.agent_eval.evidence import (
-    EvidenceControlResult,
-    EvidenceState,
+from backend.agent_eval.identity import (
+    EvaluationIdentitySnapshot,
+    file_identity,
 )
-from backend.agent_eval.identity import EvaluationIdentitySnapshot
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,46 +90,92 @@ def test_dry_run_validates_real_boundaries_without_creating_output(tmp_path):
     assert report["controls"]["results"][0]["state"] == "unsupported"
 
 
-class _DryRunContainmentProvider:
-    launcher = None
+class _ScriptWfpApi:
+    def __init__(self):
+        self.calls = []
+        self.filters = {}
+        self.next_filter_id = 100
+        self.fail = {}
 
-    def __init__(self, *, close_error=None):
-        self.verify_calls = 0
-        self.close_calls = 0
-        self.close_error = close_error
+    def _raise(self, name):
+        error = self.fail.get(name)
+        if error is not None:
+            raise error
 
-    def verify_active(self):
-        self.verify_calls += 1
-        return EvidenceControlResult(
-            "os_loopback_only_egress",
-            EvidenceState.PASS,
-            "verified fake dynamic WFP policy",
-            {"provider": "fake_wfp", "active": True},
-        )
+    def engine_open_dynamic(self, session_key):
+        self.calls.append(("engine_open", session_key))
+        self._raise("engine_open")
+        return 10
 
-    def close(self):
-        self.close_calls += 1
-        if self.close_error:
-            raise self.close_error
+    def engine_close(self, engine):
+        self.calls.append(("engine_close", engine))
+        self._raise("engine_close")
+
+    def sublayer_add(self, engine, key):
+        self.calls.append(("sublayer_add", key))
+        self._raise("sublayer_add")
+
+    def sublayer_delete(self, engine, key):
+        self.calls.append(("sublayer_delete", key))
+        self._raise("sublayer_delete")
+
+    def get_app_id(self, path):
+        self.calls.append(("get_app_id", path))
+        self._raise("get_app_id")
+        return SimpleNamespace(value=b"app-id", token=object())
+
+    def free_memory(self, token):
+        self.calls.append(("free_memory", token))
+        self._raise("free_memory")
+
+    def filter_add(self, engine, spec):
+        self.calls.append(("filter_add", spec))
+        self._raise("filter_add")
+        filter_id = self.next_filter_id
+        self.next_filter_id += 1
+        self.filters[filter_id] = spec
+        return filter_id
+
+    def filter_get(self, engine, filter_id):
+        self.calls.append(("filter_get", filter_id))
+        self._raise("filter_get")
+        return self.filters[filter_id]
+
+    def filter_delete(self, engine, filter_id):
+        self.calls.append(("filter_delete", filter_id))
+        self._raise("filter_delete")
+        self.filters.pop(filter_id)
+
+
+def _snapshot(tmp_path):
+    executable = tmp_path / "opencode.exe"
+    executable.write_bytes(b"native-opencode")
+    measured = file_identity(
+        executable,
+        version="1.18.4",
+        authenticode_fn=lambda _path: "unsigned",
+    )
+    return replace(
+        EvaluationIdentitySnapshot.for_test(),
+        opencode=measured,
+    )
+
+
+def test_cli_default_is_literal_ipv4_loopback():
+    script = _load_script()
+
+    args = script.parse_args(_argv(Path("C:/safe")))
+
+    assert args.ollama_host == "http://127.0.0.1:11434"
 
 
 def test_verified_dry_run_opens_verifies_and_closes_containment_without_arms(
     tmp_path,
 ):
     script = _load_script()
-    provider = _DryRunContainmentProvider()
-    snapshot = EvaluationIdentitySnapshot.for_test()
-    received = {}
+    api = _ScriptWfpApi()
+    snapshot = _snapshot(tmp_path)
     lines = []
-
-    def select(mode, platform, endpoint, applications):
-        received.update(
-            mode=mode,
-            platform=platform,
-            endpoint=endpoint,
-            applications=applications,
-        )
-        return provider
 
     rc = script.main(
         _argv(tmp_path, "--dry-run"),
@@ -139,7 +185,7 @@ def test_verified_dry_run_opens_verifies_and_closes_containment_without_arms(
             AssertionError("dry-run must not execute arms")
         ),
         identity_capture_fn=lambda _plan: snapshot,
-        containment_provider_fn=select,
+        containment_wfp_api=api,
         out=lines.append,
     )
 
@@ -147,19 +193,20 @@ def test_verified_dry_run_opens_verifies_and_closes_containment_without_arms(
     assert rc == 0
     assert report["os_egress_enforced"] is True
     assert report["containment"]["state"] == "pass"
-    assert received["applications"] == [snapshot.opencode]
-    assert received["endpoint"] == "http://localhost:11434"
-    assert provider.verify_calls == 1
-    assert provider.close_calls == 1
+    assert report["containment"]["application_paths"] == [
+        str(snapshot.opencode.path)
+    ]
+    assert report["ollama_host"] == "http://127.0.0.1:11434"
+    assert len([call for call in api.calls if call[0] == "filter_add"]) == 4
+    assert api.calls[-1][0] == "engine_close"
     assert not (tmp_path / "evidence").exists()
 
 
 def test_verified_dry_run_fails_when_containment_cleanup_is_uncertain(tmp_path):
     script = _load_script()
-    provider = _DryRunContainmentProvider(
-        close_error=RuntimeError("filter cleanup uncertain")
-    )
-    snapshot = EvaluationIdentitySnapshot.for_test()
+    api = _ScriptWfpApi()
+    api.fail["filter_delete"] = RuntimeError("filter cleanup uncertain")
+    snapshot = _snapshot(tmp_path)
     lines = []
 
     rc = script.main(
@@ -167,7 +214,7 @@ def test_verified_dry_run_fails_when_containment_cleanup_is_uncertain(tmp_path):
         list_models_fn=_models,
         resolve_bin_fn=lambda: snapshot.opencode.path,
         identity_capture_fn=lambda _plan: snapshot,
-        containment_provider_fn=lambda *_args: provider,
+        containment_wfp_api=api,
         out=lines.append,
     )
 
@@ -181,26 +228,27 @@ def test_verified_dry_run_fails_when_containment_cleanup_is_uncertain(tmp_path):
 
 def test_verified_dry_run_reports_elevation_and_exact_rerun_command(tmp_path):
     script = _load_script()
-    snapshot = EvaluationIdentitySnapshot.for_test()
+    snapshot = _snapshot(tmp_path)
+    api = _ScriptWfpApi()
+    denied = OSError("access denied")
+    denied.winerror = 5
+    api.fail["engine_open"] = denied
     lines = []
     argv = _argv(tmp_path, "--dry-run", "--run-id", "quoted run")
-
-    def deny(*_args):
-        raise ContainmentError(
-            "engine_open denied: run from an Administrator elevated PowerShell"
-        )
 
     rc = script.main(
         argv,
         list_models_fn=_models,
         resolve_bin_fn=lambda: snapshot.opencode.path,
         identity_capture_fn=lambda _plan: snapshot,
-        containment_provider_fn=deny,
+        containment_wfp_api=api,
         out=lines.append,
     )
 
     report = json.loads("\n".join(lines))
-    exact_command = subprocess.list2cmdline([str(SCRIPT), *argv])
+    exact_command = subprocess.list2cmdline(
+        [sys.executable, str(SCRIPT), *argv]
+    )
     assert rc == 2
     assert report["containment"]["elevation_present"] is False
     assert report["containment"]["application_paths"] == [
@@ -212,6 +260,32 @@ def test_verified_dry_run_reports_elevation_and_exact_rerun_command(tmp_path):
         "Reopen PowerShell as Administrator and rerun:\n"
         + exact_command
     )
+
+
+def test_verified_dry_run_preserves_non_elevation_containment_failure(
+    tmp_path,
+):
+    script = _load_script()
+    snapshot = _snapshot(tmp_path)
+    api = _ScriptWfpApi()
+    api.fail["engine_open"] = OSError("policy database corrupted")
+    lines = []
+
+    rc = script.main(
+        _argv(tmp_path, "--dry-run"),
+        list_models_fn=_models,
+        resolve_bin_fn=lambda: snapshot.opencode.path,
+        identity_capture_fn=lambda _plan: snapshot,
+        containment_wfp_api=api,
+        out=lines.append,
+    )
+
+    report = json.loads("\n".join(lines))
+    assert rc == 2
+    assert report["containment"]["state"] == "fail"
+    assert "policy database corrupted" in report["error"]
+    assert "elevated terminal" not in report["error"]
+    assert "rerun_command" not in report
 
 
 def test_script_refuses_missing_models_before_runner(tmp_path):

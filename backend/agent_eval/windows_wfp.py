@@ -5,6 +5,7 @@ import ctypes
 import hashlib
 import ipaddress
 import os
+import sys
 import uuid
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
 
-from .containment import ContainmentError
+from .containment import ContainmentElevationRequired, ContainmentError
 from .identity import FileIdentity
 
 
@@ -210,7 +211,7 @@ def _operation(name: str, function):
         raise
     except BaseException as exc:
         if getattr(exc, "winerror", None) == 5:
-            raise ContainmentError(
+            raise ContainmentElevationRequired(
                 f"{name} denied: run the exact command from an "
                 "Administrator elevated PowerShell"
             ) from exc
@@ -468,7 +469,13 @@ class WindowsWfpSession:
                 message += "; rollback uncertain: " + "; ".join(
                     rollback_errors
                 )
-            raise ContainmentError(message) from exc
+            error_type = (
+                ContainmentElevationRequired
+                if isinstance(exc, ContainmentElevationRequired)
+                and not rollback_errors
+                else ContainmentError
+            )
+            raise error_type(message) from exc
 
     def verify_active(self) -> dict[str, object]:
         if self._uncertainty is not None:
@@ -783,7 +790,7 @@ def _native_filter(spec: FilterSpec) -> tuple[FWPM_FILTER0, list[object]]:
             address_condition.conditionValue.type = FWP_UINT32
             address_condition.conditionValue.uint32 = int.from_bytes(
                 ipaddress.IPv4Address(spec.remote_address).packed,
-                "big",
+                sys.byteorder,
             )
         else:
             address = FWP_BYTE_ARRAY16(
@@ -839,13 +846,48 @@ def _parse_native_filter(
     app_id = b""
     remote_address = None
     remote_port = None
-    for index in range(int(native.numFilterConditions)):
+    expected_conditions = [
+        (FWPM_CONDITION_ALE_APP_ID, FWP_BYTE_BLOB_TYPE),
+    ]
+    if (expected.remote_address is None) != (expected.remote_port is None):
+        raise ContainmentError(
+            "native filter condition shape has an incomplete permit"
+        )
+    if expected.remote_address is not None:
+        expected_conditions.extend(
+            (
+                (
+                    FWPM_CONDITION_IP_REMOTE_ADDRESS,
+                    FWP_UINT32
+                    if expected.layer == "v4"
+                    else FWP_BYTE_ARRAY16_TYPE,
+                ),
+                (FWPM_CONDITION_IP_REMOTE_PORT, FWP_UINT16),
+            )
+        )
+    if (
+        int(native.numFilterConditions) != len(expected_conditions)
+        or not native.filterCondition
+    ):
+        raise ContainmentError(
+            "native filter condition shape has the wrong condition count"
+        )
+    for index, (expected_field, expected_type) in enumerate(
+        expected_conditions
+    ):
         condition = native.filterCondition[index]
         field = condition.fieldKey.to_uuid()
         value = condition.conditionValue
         if (
+            field != expected_field
+            or int(condition.matchType) != FWP_MATCH_EQUAL
+            or int(value.type) != expected_type
+        ):
+            raise ContainmentError(
+                f"native filter condition shape mismatch at index {index}"
+            )
+        if (
             field == FWPM_CONDITION_ALE_APP_ID
-            and value.type == FWP_BYTE_BLOB_TYPE
             and value.byteBlob
         ):
             app_id = ctypes.string_at(
@@ -853,23 +895,31 @@ def _parse_native_filter(
                 value.byteBlob.contents.size,
             )
         elif field == FWPM_CONDITION_IP_REMOTE_ADDRESS:
-            if value.type == FWP_UINT32:
+            if expected_type == FWP_UINT32:
                 remote_address = str(
                     ipaddress.IPv4Address(
-                        int(value.uint32).to_bytes(4, "big")
+                        int(value.uint32).to_bytes(4, sys.byteorder)
                     )
                 )
-            elif value.type == FWP_BYTE_ARRAY16_TYPE and value.byteArray16:
+            elif value.byteArray16:
                 remote_address = str(
                     ipaddress.IPv6Address(
                         bytes(value.byteArray16.contents.byteArray16)
                     )
                 )
-        elif (
-            field == FWPM_CONDITION_IP_REMOTE_PORT
-            and value.type == FWP_UINT16
-        ):
+        elif field == FWPM_CONDITION_IP_REMOTE_PORT:
             remote_port = int(value.uint16)
+        if (
+            field == FWPM_CONDITION_ALE_APP_ID
+            and not value.byteBlob
+        ) or (
+            field == FWPM_CONDITION_IP_REMOTE_ADDRESS
+            and expected_type == FWP_BYTE_ARRAY16_TYPE
+            and not value.byteArray16
+        ):
+            raise ContainmentError(
+                f"native filter condition shape has a null value at index {index}"
+            )
     return FilterSpec(
         layer,
         action,

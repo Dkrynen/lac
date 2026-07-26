@@ -119,6 +119,27 @@ def _assert_filters_absent(api: _FwpuclntApi, filter_ids: tuple[int, ...]) -> No
         api.engine_close(engine)
 
 
+def _prove_uncontained_baseline(
+    executable: Path,
+    probes: list[tuple[str, str, dict[str, str], bool]],
+) -> None:
+    for label, target, environment, use_proxy in probes:
+        returncode, _stdout, stderr = _curl(
+            executable,
+            target,
+            environment=environment,
+            use_proxy=use_proxy,
+        )
+        if returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            pytest.fail(
+                "live containment precondition unavailable: "
+                f"{label} did not succeed before WFP installation"
+                + (f": {detail}" if detail else ""),
+                pytrace=False,
+            )
+
+
 def _forced_session_worker() -> None:
     executable = Path(os.environ["LAC_WFP_LIVE_EXECUTABLE"])
     endpoint = os.environ["LAC_WFP_LIVE_ENDPOINT"]
@@ -152,6 +173,48 @@ def test_real_wfp_allows_only_exact_loopback_endpoint_and_cleans_up(
         thread.start()
 
     endpoint = f"http://127.0.0.1:{allowed.server_port}"
+    direct_environment = dict(os.environ)
+    proxy_environment = dict(os.environ)
+    proxy_url = f"http://127.0.0.1:{denied.server_port}"
+    proxy_environment.update(
+        HTTP_PROXY=proxy_url,
+        HTTPS_PROXY=proxy_url,
+        ALL_PROXY=proxy_url,
+        NO_PROXY="",
+    )
+    public_ipv4_url = os.environ.get(
+        "LAC_WFP_LIVE_PUBLIC_IPV4_URL",
+        "http://1.1.1.1/",
+    )
+    dns_url = os.environ.get(
+        "LAC_WFP_LIVE_DNS_URL",
+        "http://example.com/",
+    )
+    denial_probes = [
+        (
+            "other loopback port",
+            f"http://127.0.0.1:{denied.server_port}",
+            direct_environment,
+            False,
+        ),
+        ("public IPv4", public_ipv4_url, direct_environment, False),
+        ("DNS hostname", dns_url, direct_environment, False),
+        ("configured proxy", dns_url, proxy_environment, True),
+    ]
+    if socket.has_ipv6:
+        denial_probes.append(
+            (
+                "public IPv6",
+                os.environ.get(
+                    "LAC_WFP_LIVE_PUBLIC_IPV6_URL",
+                    "http://[2606:4700:4700::1111]/",
+                ),
+                direct_environment,
+                False,
+            )
+        )
+    _prove_uncontained_baseline(identity.path, denial_probes)
+
     api = _FwpuclntApi()
     session = WindowsWfpSession.open(endpoint, [identity], api=api)
     normal_filter_ids = session.filter_ids
@@ -166,36 +229,14 @@ def test_real_wfp_allows_only_exact_loopback_endpoint_and_cleans_up(
         assert ok == 0
         assert body == b"contained-ok"
 
-        blocked_targets = [
-            f"http://127.0.0.1:{denied.server_port}",
-            "http://198.51.100.1/",
-            "http://containment.invalid/",
-        ]
-        if socket.has_ipv6:
-            blocked_targets.append("http://[2001:db8::1]/")
-        for target in blocked_targets:
+        for label, target, environment, use_proxy in denial_probes:
             returncode, _stdout, _stderr = _curl(
                 identity.path,
                 target,
-                environment=dict(os.environ),
+                environment=environment,
+                use_proxy=use_proxy,
             )
-            assert returncode != 0, target
-
-        proxy_environment = dict(os.environ)
-        proxy_url = f"http://127.0.0.1:{denied.server_port}"
-        proxy_environment.update(
-            HTTP_PROXY=proxy_url,
-            HTTPS_PROXY=proxy_url,
-            ALL_PROXY=proxy_url,
-            NO_PROXY="",
-        )
-        returncode, _stdout, _stderr = _curl(
-            identity.path,
-            "http://example.invalid/",
-            environment=proxy_environment,
-            use_proxy=True,
-        )
-        assert returncode != 0
+            assert returncode != 0, f"{label}: {target}"
     finally:
         try:
             session.close()

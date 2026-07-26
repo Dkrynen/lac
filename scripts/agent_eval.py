@@ -20,7 +20,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.agent_eval.containment import select_containment_provider
+from backend.agent_eval.containment import (
+    ContainmentElevationRequired,
+    derive_containment_result,
+    select_containment_provider,
+)
 from backend.agent_eval.evidence import (
     EvidenceControlResult,
     EvidenceMode,
@@ -156,7 +160,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Evidence root outside the model-hub source repository.",
     )
     parser.add_argument(
-        "--ollama-host", default="http://localhost:11434", help="Loopback Ollama URL."
+        "--ollama-host",
+        default="http://127.0.0.1:11434",
+        help="Literal loopback Ollama URL.",
     )
     parser.add_argument("--run-id", default=None)
     parser.add_argument(
@@ -187,7 +193,7 @@ def _dry_containment_preflight(
     mode: EvidenceMode,
     *,
     identity_capture_fn: Callable[..., Any],
-    containment_provider_fn: Callable[..., Any],
+    containment_wfp_api: object | None,
 ) -> tuple[EvidenceControlResult, list[str]]:
     provider = None
     application_paths: list[str] = []
@@ -203,24 +209,32 @@ def _dry_containment_preflight(
             snapshot = identity_capture_fn(plan)
             applications = [snapshot.opencode]
             application_paths = [str(item.path) for item in applications]
-        provider = containment_provider_fn(
+        provider = select_containment_provider(
             mode,
             os.name,
             plan.ollama_host,
             applications,
+            wfp_api=containment_wfp_api,
         )
-        result = provider.verify_active()
-        if result.name != "os_loopback_only_egress":
-            raise ValueError(
-                "containment provider returned the wrong evidence control"
-            )
+        result = derive_containment_result(
+            mode,
+            provider,
+            plan.ollama_host,
+            applications,
+        )
     except Exception as exc:
         result = EvidenceControlResult(
             "os_loopback_only_egress",
             EvidenceState.FAIL,
             f"containment capability preflight failed: "
             f"{type(exc).__name__}: {exc}",
-            {"active": False},
+            {
+                "active": False,
+                "elevation_required": isinstance(
+                    exc,
+                    ContainmentElevationRequired,
+                ),
+            },
         )
     finally:
         if provider is not None:
@@ -236,6 +250,10 @@ def _dry_containment_preflight(
                         **result.details,
                         "active": False,
                         "cleanup_certain": False,
+                        "elevation_required": isinstance(
+                            exc,
+                            ContainmentElevationRequired,
+                        ),
                     },
                 )
     return result, application_paths
@@ -258,6 +276,9 @@ def _dry_report(
         [*preliminary, containment],
     )
     containment_ok = containment.state is EvidenceState.PASS
+    elevation_required = (
+        containment.details.get("elevation_required") is True
+    )
     report = {
         "ok": mode is EvidenceMode.DIAGNOSTIC or containment_ok,
         "dry_run": True,
@@ -287,7 +308,11 @@ def _dry_report(
             "reason": containment.reason,
             "details": containment.details,
             "elevation_present": (
-                containment_ok if mode is EvidenceMode.VERIFIED else None
+                True
+                if mode is EvidenceMode.VERIFIED and containment_ok
+                else False
+                if mode is EvidenceMode.VERIFIED and elevation_required
+                else None
             ),
             "application_paths": application_paths,
         },
@@ -301,7 +326,11 @@ def _dry_report(
             "possible_on_cold_opencode_config; source is not yet traced"
         ),
     }
-    if mode is EvidenceMode.VERIFIED and not containment_ok:
+    if (
+        mode is EvidenceMode.VERIFIED
+        and not containment_ok
+        and elevation_required
+    ):
         report["rerun_command"] = original_command
         report["error"] = (
             "Verified Windows network containment requires an elevated "
@@ -309,6 +338,8 @@ def _dry_report(
             "Reopen PowerShell as Administrator and rerun:\n"
             f"{original_command}"
         )
+    elif mode is EvidenceMode.VERIFIED and not containment_ok:
+        report["error"] = containment.reason
     return report
 
 
@@ -320,15 +351,15 @@ def main(
     run_fn: Callable[..., dict[str, Any]] = run_evaluation,
     environment_fn: Callable[[], dict[str, Any]] | None = None,
     identity_capture_fn: Callable[..., Any] = capture_preflight_identities,
-    containment_provider_fn: Callable[..., Any] = select_containment_provider,
+    containment_wfp_api: object | None = None,
     out: Callable[[str], None] = print,
 ) -> int:
     raw_argv = argv if argv is not None else sys.argv[1:]
-    original_argv = (
-        [str(Path(__file__).resolve()), *raw_argv]
-        if argv is not None
-        else list(sys.argv)
-    )
+    original_argv = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        *raw_argv,
+    ]
     original_command = subprocess.list2cmdline(original_argv)
     args = parse_args(raw_argv)
     try:
@@ -354,7 +385,7 @@ def main(
                 plan,
                 mode,
                 identity_capture_fn=identity_capture_fn,
-                containment_provider_fn=containment_provider_fn,
+                containment_wfp_api=containment_wfp_api,
             )
             report = _dry_report(
                 plan,
