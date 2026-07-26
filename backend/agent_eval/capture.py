@@ -22,6 +22,8 @@ _OLLAMA_ENDPOINTS = frozenset(
     {"/api/version", "/api/tags", "/api/show", "/api/chat"}
 )
 _READ_CHUNK_BYTES = 64 * 1024
+_DEFERRED_CLEANUP_POLL_SECONDS = 0.05
+_DEFERRED_DELETE_ATTEMPTS = 5
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class CapturedProcess:
     raw_stdout: bytes = b""
     raw_stderr: bytes = b""
     cleanup_complete: bool = True
+    cleanup_deferred: bool = False
 
 
 class CaptureLimitExceeded(ValueError):
@@ -186,6 +189,56 @@ def _drain_stream(
                 f"{type(exc).__name__}: {exc}",
             )
         state["observed"] = min(observed, limit + 1)
+
+
+def _schedule_deferred_capture_cleanup(
+    *,
+    threads: Sequence[threading.Thread],
+    pipes: Sequence[object],
+    temporary_root: Path,
+    temporary_paths: Sequence[Path],
+) -> None:
+    """Transfer incomplete capture cleanup to a non-blocking daemon reaper."""
+
+    def reap() -> None:
+        try:
+            while any(thread.is_alive() for thread in threads):
+                for thread in threads:
+                    thread.join(timeout=_DEFERRED_CLEANUP_POLL_SECONDS)
+            for pipe in pipes:
+                deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
+                _bounded_call(pipe.close, deadline)
+            for path in temporary_paths:
+                if not path.exists():
+                    continue
+
+                def sanitize(target: Path = path) -> None:
+                    with target.open("r+b") as capture_file:
+                        capture_file.seek(0)
+                        capture_file.truncate(0)
+                        capture_file.flush()
+
+                deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
+                _bounded_call(sanitize, deadline)
+            for _attempt in range(_DEFERRED_DELETE_ATTEMPTS):
+                if not temporary_root.exists():
+                    return
+                deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
+                completed, _value, error = _bounded_call(
+                    lambda: shutil.rmtree(temporary_root),
+                    deadline,
+                )
+                if completed and error is None:
+                    return
+                time.sleep(_DEFERRED_CLEANUP_POLL_SECONDS)
+        except BaseException:
+            return
+
+    threading.Thread(
+        target=reap,
+        daemon=True,
+        name="agent-eval-deferred-cleanup",
+    ).start()
 
 
 def run_bounded_process(
@@ -367,6 +420,24 @@ def run_bounded_process(
             and pipe_cleanup_complete
             and temporary_cleanup_complete
         )
+        cleanup_deferred = not cleanup_complete and temporary_root.exists()
+        if cleanup_deferred:
+            _schedule_deferred_capture_cleanup(
+                threads=threads,
+                pipes=tuple(
+                    pipe
+                    for pipe in (
+                        getattr(process, "stdout", None),
+                        getattr(process, "stderr", None),
+                    )
+                    if pipe is not None
+                ),
+                temporary_root=temporary_root,
+                temporary_paths=temporary_paths,
+            )
+        if not cleanup_complete:
+            raw_stdout = b""
+            raw_stderr = b""
         observed_stdout = int(stdout_state["observed"])
         observed_stderr = int(stderr_state["observed"])
         stdout_overflow = observed_stdout > limits.stdout_bytes
@@ -405,10 +476,11 @@ def run_bounded_process(
             observed_stderr_bytes=observed_stderr,
             limits=limits,
             errors=tuple(errors),
-            temporary_paths=temporary_paths,
+            temporary_paths=() if cleanup_deferred else temporary_paths,
             raw_stdout=raw_stdout,
             raw_stderr=raw_stderr,
             cleanup_complete=cleanup_complete,
+            cleanup_deferred=cleanup_deferred,
         )
     finally:
         pass

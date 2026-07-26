@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+import backend.agent_eval.capture as capture_module
 from backend.agent_eval.capture import (
     CaptureLimitExceeded,
     CaptureLimits,
@@ -375,7 +376,7 @@ def test_bounded_http_json_rejects_invalid_timeout_before_open(value):
 
 
 def test_bounded_process_reports_inherited_pipe_handles_without_closing_live_readers(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, recwarn
 ):
     release = threading.Event()
 
@@ -418,19 +419,127 @@ def test_bounded_process_reports_inherited_pipe_handles_without_closing_live_rea
             limits=CaptureLimits(cleanup_grace_seconds=0.05),
             launcher=lambda *_args, **_kwargs: parent,
         )
-    finally:
         elapsed = time.monotonic() - started
+        assert elapsed < 0.5
+        assert result.completed is False
+        assert result.cleanup_complete is False
+        assert result.cleanup_deferred is True
+        assert result.errors == (
+            "capture_cleanup_incomplete:task5_containment_required",
+        )
+        assert result.raw_stdout == b""
+        assert result.raw_stderr == b""
+        assert result.temporary_paths == ()
+        assert parent.stdout.close_calls == 0
+        assert parent.stderr.close_calls == 0
+        assert capture_root.exists()
+    finally:
         release.set()
 
-    assert elapsed < 0.5
+    removal_deadline = time.monotonic() + 1
+    while capture_root.exists() and time.monotonic() < removal_deadline:
+        time.sleep(0.01)
+    assert not capture_root.exists()
+    assert not [
+        warning
+        for warning in recwarn
+        if "Exception in thread agent-eval" in str(warning.message)
+    ]
+
+
+def test_bounded_process_retries_deferred_temp_deletion_without_returning_content(
+    tmp_path, monkeypatch
+):
+    capture_root = tmp_path / "capture-root"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+    real_rmtree = capture_module.shutil.rmtree
+    attempts = 0
+
+    def fail_once(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("transient delete denial")
+        return real_rmtree(path)
+
+    monkeypatch.setattr(capture_module.shutil, "rmtree", fail_once)
+    result = run_bounded_process(
+        [sys.executable, "-c", "print('secret-output')"],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(cleanup_grace_seconds=1),
+    )
+
     assert result.completed is False
     assert result.cleanup_complete is False
-    assert result.errors == (
-        "capture_cleanup_incomplete:task5_containment_required",
+    assert result.cleanup_deferred is True
+    assert result.raw_stdout == b""
+    assert result.stdout == ""
+    assert result.temporary_paths == ()
+    assert result.errors == ("temporary_capture_cleanup_incomplete",)
+    removal_deadline = time.monotonic() + 1
+    while capture_root.exists() and time.monotonic() < removal_deadline:
+        time.sleep(0.01)
+    assert attempts >= 2
+    assert not capture_root.exists()
+
+
+def test_deferred_cleanup_sanitizes_files_when_root_deletion_stays_denied(
+    tmp_path, monkeypatch
+):
+    capture_root = tmp_path / "capture-root"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
     )
-    assert parent.stdout.close_calls == 0
-    assert parent.stderr.close_calls == 0
+    attempts = 0
+
+    def always_fail(_path):
+        nonlocal attempts
+        attempts += 1
+        raise OSError("persistent delete denial")
+
+    monkeypatch.setattr(capture_module.shutil, "rmtree", always_fail)
+    result = run_bounded_process(
+        [sys.executable, "-c", "print('secret-output')"],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(cleanup_grace_seconds=1),
+    )
+
+    assert result.cleanup_complete is False
+    assert result.cleanup_deferred is True
+    assert result.raw_stdout == b""
+    assert result.temporary_paths == ()
+    sanitization_deadline = time.monotonic() + 1
+    while time.monotonic() < sanitization_deadline:
+        if attempts >= 6 and all(
+            path.read_bytes() == b""
+            for path in (
+                capture_root / "stdout.bin",
+                capture_root / "stderr.bin",
+            )
+        ):
+            break
+        time.sleep(0.01)
+    assert attempts >= 6
     assert capture_root.exists()
+    assert all(
+        path.read_bytes() == b""
+        for path in (
+            capture_root / "stdout.bin",
+            capture_root / "stderr.bin",
+        )
+    )
 
 
 def test_bounded_process_never_uses_unbounded_wait_when_termination_is_ineffective(
