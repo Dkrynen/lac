@@ -249,6 +249,34 @@ def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
     states = {item["name"]: item["state"] for item in comparison["evidence"]["controls"]["results"]}
     assert states["runtime_dependency_provenance"] == "pass"
     assert states["immutable_ollama_model_lineage"] == "pass"
+    configs = json.loads((identity_root / "opencode-configs.json").read_text(encoding="utf-8"))
+    assert configs["stock"]["before"] == configs["stock"]["after"]
+    assert configs["lac"]["before"] == configs["lac"]["after"]
+
+
+def test_missing_or_drifted_arm_config_fails_runtime_provenance(tmp_path):
+    from backend.agent_eval.identity import EvaluationIdentitySnapshot
+    snapshot = EvaluationIdentitySnapshot.for_test()
+    def bad(arm, model):
+        result = _result(arm, model, "ZeroDivisionError")
+        if arm == "stock":
+            result.metrics["opencode_config_identity"] = {"before": {"sha256": "a" * 64}, "after": {"sha256": "b" * 64}}
+        if arm == "lac":
+            result.metrics.pop("opencode_config_identity")
+        return result
+    comparison = run_evaluation(
+        _plan(tmp_path), run_id="config-drift",
+        raw_fn=lambda task, model, host: _result("raw", model, "ZeroDivisionError"),
+        stock_fn=lambda task, model, host, workspace: bad("stock", model),
+        lac_fn=lambda task, model, host, workspace: bad("lac", model),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=lambda *_: (
+            EvidenceControlResult("runtime_dependency_provenance", EvidenceState.PASS, "unchanged"),
+            EvidenceControlResult("immutable_ollama_model_lineage", EvidenceState.PASS, "unchanged"),
+        ),
+    )
+    control = next(item for item in comparison["evidence"]["controls"]["results"] if item["name"] == "runtime_dependency_provenance")
+    assert control["state"] == "fail"
 
 
 def test_run_evaluation_persists_partial_arm_failure(tmp_path):

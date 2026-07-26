@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from backend.agent_eval.opencode import (
     parse_opencode_jsonl,
     run_lac,
@@ -304,6 +306,34 @@ def test_run_lac_uses_fail_closed_config_and_agent_variant(tmp_path):
     assert not (workspace / ".opencode").exists()
     assert result.arm == "lac"
     assert result.model == "gpt-oss:20b-agent"
+
+
+@pytest.mark.parametrize("arm,model", [("stock", "gpt-oss:20b"), ("lac", "gpt-oss:20b-agent")])
+def test_real_generated_config_is_measured_before_and_after_process(tmp_path, arm, model):
+    workspace = tmp_path / arm
+    workspace.mkdir()
+    runner = run_stock if arm == "stock" else run_lac
+    result = runner(
+        _task(workspace), model, "http://localhost:11434", workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout=_successful_stdout(), stderr=""),
+    )
+    measured = result.metrics["opencode_config_identity"]
+    assert measured["before"] == measured["after"]
+    assert Path(measured["before"]["path"]).is_file()
+    assert measured["before"]["size"] > 0
+    assert len(measured["before"]["sha256"]) == 64
+
+
+def test_real_generated_config_mutation_during_process_records_drift(tmp_path):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    def mutate(_argv, **kwargs):
+        Path(kwargs["env"]["OPENCODE_CONFIG"]).write_text('{"mutated":true}', encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout=_successful_stdout(), stderr="")
+    result = run_stock(_task(workspace), "gpt-oss:20b", "http://localhost:11434", workspace, resolve_bin_fn=lambda: Path("opencode"), run_fn=mutate)
+    measured = result.metrics["opencode_config_identity"]
+    assert measured["before"] != measured["after"]
 
 
 def test_run_opencode_records_nonzero_exit_and_stderr(tmp_path):
