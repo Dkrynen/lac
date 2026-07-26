@@ -23,7 +23,6 @@ _OLLAMA_ENDPOINTS = frozenset(
 )
 _READ_CHUNK_BYTES = 64 * 1024
 _DEFERRED_CLEANUP_POLL_SECONDS = 0.05
-_DEFERRED_DELETE_ATTEMPTS = 5
 
 
 @dataclass(frozen=True)
@@ -51,6 +50,52 @@ class CaptureLimits:
 DEFAULT_CAPTURE_LIMITS = CaptureLimits()
 
 
+class DeferredCleanupStatus:
+    """Thread-safe observable state for capture artifacts owned by a reaper."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = True
+        self._state = "waiting_for_readers"
+        self._sanitize_attempts = 0
+        self._delete_attempts = 0
+        self._last_error: str | None = None
+
+    def _update(
+        self,
+        *,
+        state: str,
+        sanitize_attempt: bool = False,
+        delete_attempt: bool = False,
+        error: BaseException | str | None = None,
+        active: bool = True,
+    ) -> None:
+        with self._lock:
+            self._state = state
+            self._sanitize_attempts += int(sanitize_attempt)
+            self._delete_attempts += int(delete_attempt)
+            self._last_error = (
+                None
+                if error is None
+                else (
+                    error
+                    if isinstance(error, str)
+                    else type(error).__name__
+                )
+            )
+            self._active = active
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "active": self._active,
+                "state": self._state,
+                "sanitize_attempts": self._sanitize_attempts,
+                "delete_attempts": self._delete_attempts,
+                "last_error": self._last_error,
+            }
+
+
 @dataclass(frozen=True)
 class CapturedProcess:
     exit_code: int | None
@@ -68,6 +113,7 @@ class CapturedProcess:
     raw_stderr: bytes = b""
     cleanup_complete: bool = True
     cleanup_deferred: bool = False
+    deferred_cleanup_status: DeferredCleanupStatus | None = None
 
 
 class CaptureLimitExceeded(ValueError):
@@ -197,17 +243,19 @@ def _schedule_deferred_capture_cleanup(
     pipes: Sequence[object],
     temporary_root: Path,
     temporary_paths: Sequence[Path],
-) -> None:
+) -> DeferredCleanupStatus:
     """Transfer incomplete capture cleanup to a non-blocking daemon reaper."""
+    status = DeferredCleanupStatus()
 
     def reap() -> None:
-        try:
-            while any(thread.is_alive() for thread in threads):
-                for thread in threads:
-                    thread.join(timeout=_DEFERRED_CLEANUP_POLL_SECONDS)
-            for pipe in pipes:
-                deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
-                _bounded_call(pipe.close, deadline)
+        while any(thread.is_alive() for thread in threads):
+            for thread in threads:
+                thread.join(timeout=_DEFERRED_CLEANUP_POLL_SECONDS)
+        for pipe in pipes:
+            deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
+            _bounded_call(pipe.close, deadline)
+        while temporary_root.exists():
+            sanitized = True
             for path in temporary_paths:
                 if not path.exists():
                     continue
@@ -219,26 +267,54 @@ def _schedule_deferred_capture_cleanup(
                         capture_file.flush()
 
                 deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
-                _bounded_call(sanitize, deadline)
-            for _attempt in range(_DEFERRED_DELETE_ATTEMPTS):
-                if not temporary_root.exists():
-                    return
-                deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
-                completed, _value, error = _bounded_call(
-                    lambda: shutil.rmtree(temporary_root),
-                    deadline,
+                completed, _value, error = _bounded_call(sanitize, deadline)
+                sanitize_error: BaseException | str | None = error
+                if not completed:
+                    sanitize_error = "sanitization deadline exceeded"
+                if sanitize_error is not None:
+                    sanitized = False
+                status._update(
+                    state=(
+                        "sanitized_waiting_for_delete"
+                        if sanitize_error is None
+                        else "sanitize_retry"
+                    ),
+                    sanitize_attempt=True,
+                    error=sanitize_error,
                 )
-                if completed and error is None:
-                    return
-                time.sleep(_DEFERRED_CLEANUP_POLL_SECONDS)
-        except BaseException:
-            return
+            deadline = time.monotonic() + _DEFERRED_CLEANUP_POLL_SECONDS
+            completed, _value, error = _bounded_call(
+                lambda: shutil.rmtree(temporary_root),
+                deadline,
+            )
+            delete_error: BaseException | str | None = error
+            if not completed:
+                delete_error = "deletion deadline exceeded"
+            if not temporary_root.exists():
+                status._update(
+                    state="complete",
+                    delete_attempt=True,
+                    active=False,
+                )
+                return
+            status._update(
+                state=(
+                    "sanitized_waiting_for_delete"
+                    if sanitized
+                    else "sanitize_retry"
+                ),
+                delete_attempt=True,
+                error=delete_error or "capture root still exists",
+            )
+            time.sleep(_DEFERRED_CLEANUP_POLL_SECONDS)
+        status._update(state="complete", active=False)
 
     threading.Thread(
         target=reap,
         daemon=True,
         name="agent-eval-deferred-cleanup",
     ).start()
+    return status
 
 
 def run_bounded_process(
@@ -421,8 +497,9 @@ def run_bounded_process(
             and temporary_cleanup_complete
         )
         cleanup_deferred = not cleanup_complete and temporary_root.exists()
+        deferred_cleanup_status = None
         if cleanup_deferred:
-            _schedule_deferred_capture_cleanup(
+            deferred_cleanup_status = _schedule_deferred_capture_cleanup(
                 threads=threads,
                 pipes=tuple(
                     pipe
@@ -481,6 +558,7 @@ def run_bounded_process(
             raw_stderr=raw_stderr,
             cleanup_complete=cleanup_complete,
             cleanup_deferred=cleanup_deferred,
+            deferred_cleanup_status=deferred_cleanup_status,
         )
     finally:
         pass

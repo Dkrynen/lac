@@ -3,6 +3,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -540,6 +541,94 @@ def test_deferred_cleanup_sanitizes_files_when_root_deletion_stays_denied(
             capture_root / "stderr.bin",
         )
     )
+
+
+def test_deferred_cleanup_stays_owned_until_sanitize_and_delete_denials_lift(
+    tmp_path, monkeypatch
+):
+    capture_root = tmp_path / "capture-root"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+    real_open = Path.open
+    real_rmtree = capture_module.shutil.rmtree
+    denied = {"sanitize": True, "delete": True}
+    attempts = {"sanitize": 0, "delete": 0}
+
+    def controlled_open(path, mode="r", *args, **kwargs):
+        if (
+            denied["sanitize"]
+            and Path(path).parent == capture_root
+            and mode == "r+b"
+        ):
+            attempts["sanitize"] += 1
+            raise PermissionError(f"sanitization denied: {capture_root}")
+        return real_open(path, mode, *args, **kwargs)
+
+    def controlled_rmtree(path):
+        if denied["delete"] and Path(path) == capture_root:
+            attempts["delete"] += 1
+            raise PermissionError(f"deletion denied: {capture_root}")
+        return real_rmtree(path)
+
+    monkeypatch.setattr(Path, "open", controlled_open)
+    monkeypatch.setattr(capture_module.shutil, "rmtree", controlled_rmtree)
+    started = time.monotonic()
+    result = run_bounded_process(
+        [sys.executable, "-c", "print('sensitive-output')"],
+        cwd=tmp_path,
+        env={},
+        timeout=10,
+        limits=CaptureLimits(cleanup_grace_seconds=0.1),
+    )
+    elapsed = time.monotonic() - started
+
+    try:
+        assert elapsed < 0.5
+        assert result.cleanup_complete is False
+        assert result.cleanup_deferred is True
+        assert result.raw_stdout == b""
+        assert result.temporary_paths == ()
+        status = result.deferred_cleanup_status
+        assert status is not None
+        denial_deadline = time.monotonic() + 1
+        snapshot = status.snapshot()
+        while (
+            snapshot["sanitize_attempts"] < 2
+            or snapshot["delete_attempts"] < 2
+        ) and time.monotonic() < denial_deadline:
+            time.sleep(0.01)
+            snapshot = status.snapshot()
+        assert snapshot["active"] is True
+        assert snapshot["sanitize_attempts"] >= 2
+        assert snapshot["delete_attempts"] >= 2
+        assert snapshot["last_error"]
+        assert "capture-root" not in str(snapshot)
+        assert (
+            real_open(capture_root / "stdout.bin", "rb").read()
+            == b"sensitive-output\r\n"
+        )
+
+        denied["sanitize"] = False
+        denied["delete"] = False
+        recovery_deadline = time.monotonic() + 1
+        while capture_root.exists() and time.monotonic() < recovery_deadline:
+            time.sleep(0.01)
+        assert not capture_root.exists()
+        recovered = status.snapshot()
+        assert recovered["active"] is False
+        assert recovered["state"] == "complete"
+        assert recovered["sanitize_attempts"] > snapshot["sanitize_attempts"]
+        assert recovered["delete_attempts"] > snapshot["delete_attempts"]
+        assert recovered["last_error"] is None
+    finally:
+        denied["sanitize"] = False
+        denied["delete"] = False
+        if capture_root.exists():
+            real_rmtree(capture_root)
 
 
 def test_bounded_process_never_uses_unbounded_wait_when_termination_is_ineffective(
