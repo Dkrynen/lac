@@ -1249,7 +1249,7 @@ def print_banner():
     print()
 
 
-def build_parser():
+def build_parser(*, include_plugins=True):
     parser = argparse.ArgumentParser(
         prog="lac",
         description=f"LAC CLI v{__version__} — Find your perfect local LLM",
@@ -1409,24 +1409,25 @@ def build_parser():
     p_unlock.set_defaults(func=cmd_unlock)
 
     # --- plugin seam: mount plugin CLI subcommands (never fatal) ---
-    from backend import plugins as _plugins
-    try:
-        _found = _plugins.discover()
-    except Exception as e:  # noqa: BLE001 — discovery failure must not kill the CLI
-        eprint(f"[plugins] discovery failed: {e}")
-        _found = []
-    for _p in _found:
-        reg = getattr(_p.obj, "register_cli", None)
-        if not _p.ok or reg is None:
-            continue
+    if include_plugins:
+        from backend import plugins as _plugins
         try:
-            reg(sub)
-        except Exception as e:  # noqa: BLE001
-            eprint(f"[plugin:{_p.name}] register_cli failed: {e}")
+            _found = _plugins.discover()
+        except Exception as e:  # noqa: BLE001 — discovery failure must not kill the CLI
+            eprint(f"[plugins] discovery failed: {e}")
+            _found = []
+        for _p in _found:
+            reg = getattr(_p.obj, "register_cli", None)
+            if not _p.ok or reg is None:
+                continue
+            try:
+                reg(sub)
+            except Exception as e:  # noqa: BLE001
+                eprint(f"[plugin:{_p.name}] register_cli failed: {e}")
     return parser
 
 
-def main():
+def main(argv=None):
     # Windows' default console codepage (cp1252) can't encode glyphs like
     # '✓' (success lines) or '█'/'░' (the pull progress bar), crashing
     # commands AFTER their action already succeeded. Force UTF-8 with a
@@ -1436,8 +1437,11 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    parser = build_parser()
-    args = parser.parse_args()
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser(
+        include_plugins=not (arguments and arguments[0] == "eval")
+    )
+    args = parser.parse_args(arguments)
     if not getattr(args, "json", False):
         print_banner()
 

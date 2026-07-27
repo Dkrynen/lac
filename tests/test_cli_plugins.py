@@ -1,6 +1,8 @@
 """CLI plugin mounting: plugins add subcommands; apt plugins lists them."""
 from types import SimpleNamespace
 
+import pytest
+
 import backend.plugins as plugins_mod
 from backend.plugins import LoadedPlugin
 
@@ -24,6 +26,78 @@ def test_plugin_subcommand_is_mounted(monkeypatch):
     args = parser.parse_args(["prototest"])
     args.func(args)
     assert calls["ran"] is True
+
+
+def test_main_discovers_registers_and_runs_plugin_subcommand(monkeypatch):
+    calls = []
+
+    def register_cli(sub):
+        calls.append("register_cli")
+        parser = sub.add_parser("prototest")
+        parser.set_defaults(func=lambda _args: calls.append("ran"))
+
+    plugin = SimpleNamespace(
+        name="fake",
+        version="9.9",
+        register_cli=register_cli,
+    )
+
+    def discover():
+        calls.append("discover")
+        return [LoadedPlugin("fake", "9.9", plugin)]
+
+    monkeypatch.setattr(plugins_mod, "discover", discover)
+
+    import cli
+
+    assert cli.main(["prototest"]) is None
+    assert calls == ["discover", "register_cli", "ran"]
+
+
+def test_unknown_non_eval_command_still_discovers_plugins(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        plugins_mod,
+        "discover",
+        lambda: calls.append("discover") or [],
+    )
+
+    import cli
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["not-a-command"])
+
+    assert raised.value.code == 2
+    assert calls == ["discover"]
+
+
+def test_top_level_help_still_mounts_plugin_commands(monkeypatch, capsys):
+    calls = []
+
+    def register_cli(sub):
+        calls.append("register_cli")
+        sub.add_parser("prototest", help="plugin help sentinel")
+
+    plugin = SimpleNamespace(
+        name="fake",
+        version="9.9",
+        register_cli=register_cli,
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "discover",
+        lambda: calls.append("discover")
+        or [LoadedPlugin("fake", "9.9", plugin)],
+    )
+
+    import cli
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["--help"])
+
+    assert raised.value.code == 0
+    assert calls == ["discover", "register_cli"]
+    assert "prototest" in capsys.readouterr().out
 
 
 def test_broken_register_cli_does_not_crash(monkeypatch):
