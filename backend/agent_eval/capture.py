@@ -15,6 +15,8 @@ from typing import BinaryIO, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from backend.cookbook import proc
+
 
 IDENTITY_RESPONSE_MAX_BYTES = 2 * 1024 * 1024
 OLLAMA_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
@@ -246,6 +248,7 @@ def _schedule_deferred_capture_cleanup(
     *,
     threads: Sequence[threading.Thread],
     pipes: Sequence[object],
+    process: object | None = None,
     temporary_root: Path,
     temporary_paths: Sequence[Path],
 ) -> DeferredCleanupStatus:
@@ -254,6 +257,9 @@ def _schedule_deferred_capture_cleanup(
 
     def reap() -> None:
         readers_finished = False
+        process_closed = process is None or not callable(
+            getattr(process, "close", None)
+        )
         pipes_closed = False
         while True:
             try:
@@ -264,6 +270,9 @@ def _schedule_deferred_capture_cleanup(
                                 timeout=_DEFERRED_CLEANUP_POLL_SECONDS
                             )
                     readers_finished = True
+                if not process_closed:
+                    process.close()
+                    process_closed = True
                 if not pipes_closed:
                     for pipe in pipes:
                         pipe.close()
@@ -324,6 +333,86 @@ def _schedule_deferred_capture_cleanup(
     return status
 
 
+def _cleanup_failed_capture(
+    *,
+    process: object | None,
+    threads: Sequence[threading.Thread],
+    pipes: Sequence[object],
+    destinations: Sequence[BinaryIO],
+    temporary_root: Path,
+    temporary_paths: Sequence[Path],
+    grace_seconds: float,
+) -> None:
+    """Best-effort bounded cleanup that never replaces the triggering error."""
+    deadline = time.monotonic() + float(grace_seconds)
+    if process is not None:
+        try:
+            _terminate_process(process, deadline)
+        except BaseException:
+            pass
+
+    for thread in threads:
+        try:
+            thread.join(_remaining(deadline))
+        except BaseException:
+            pass
+    readers_alive = any(
+        thread.is_alive()
+        for thread in threads
+    )
+
+    for destination in destinations:
+        try:
+            _bounded_call(destination.close, deadline)
+        except BaseException:
+            pass
+
+    if readers_alive:
+        try:
+            _schedule_deferred_capture_cleanup(
+                threads=threads,
+                pipes=pipes,
+                process=process,
+                temporary_root=temporary_root,
+                temporary_paths=temporary_paths,
+            )
+        except BaseException:
+            pass
+        return
+
+    if process is not None:
+        close_process = getattr(process, "close", None)
+        if callable(close_process):
+            try:
+                _bounded_call(close_process, deadline)
+            except BaseException:
+                pass
+    for pipe in pipes:
+        try:
+            _bounded_call(pipe.close, deadline)
+        except BaseException:
+            pass
+    if temporary_root.exists():
+        try:
+            completed, _value, error = _bounded_call(
+                lambda: shutil.rmtree(temporary_root),
+                deadline,
+            )
+        except BaseException:
+            completed, error = False, None
+        if not completed or error is not None or temporary_root.exists():
+            try:
+                _schedule_deferred_capture_cleanup(
+                    threads=(),
+                    pipes=(),
+                    process=None,
+                    temporary_root=temporary_root,
+                    temporary_paths=temporary_paths,
+                )
+            except BaseException:
+                pass
+
+
 def run_bounded_process(
     argv: Sequence[str],
     *,
@@ -343,7 +432,7 @@ def run_bounded_process(
         or timeout <= 0
     ):
         raise ValueError("timeout must be positive")
-    launch = launcher or subprocess.Popen
+    launch = launcher or proc.popen
     temporary_root = Path(tempfile.mkdtemp(prefix="lac-agent-eval-"))
     stdout_path = temporary_root / "stdout.bin"
     stderr_path = temporary_root / "stderr.bin"
@@ -356,7 +445,6 @@ def run_bounded_process(
     threads: list[threading.Thread] = []
     stdout_file: BinaryIO | None = None
     stderr_file: BinaryIO | None = None
-    readers_started = False
     cleanup_complete = True
     process_cleanup_complete = True
     job_cleanup_complete = True
@@ -384,15 +472,6 @@ def run_bounded_process(
                 from .windows_job import WindowsJobProcess
 
                 if not isinstance(process, WindowsJobProcess):
-                    deadline = (
-                        time.monotonic()
-                        + float(limits.cleanup_grace_seconds)
-                    )
-                    _terminate_process(process, deadline)
-                    for pipe_name in ("stdout", "stderr"):
-                        pipe = getattr(process, pipe_name, None)
-                        if pipe is not None:
-                            pipe.close()
                     raise RuntimeError(
                         "verified Windows launcher must return a real "
                         "WindowsJobProcess"
@@ -405,18 +484,12 @@ def run_bounded_process(
                     and started_evidence.get("kill_on_close") is True
                     and started_evidence.get("resume_after_assignment") is True
                 ):
-                    deadline = (
-                        time.monotonic()
-                        + float(limits.cleanup_grace_seconds)
-                    )
-                    _terminate_process(process, deadline)
-                    process.close()
                     raise RuntimeError(
                         "Windows Job assignment and limits were not proven"
                     )
             if process.stdout is None or process.stderr is None:
                 raise RuntimeError("launcher must provide binary stdout and stderr pipes")
-            threads = [
+            reader_threads = [
                 threading.Thread(
                     target=_drain_stream,
                     args=(
@@ -442,11 +515,13 @@ def run_bounded_process(
                     name="agent-eval-stderr",
                 ),
             ]
-            for thread in threads:
+            for index, thread in enumerate(reader_threads):
                 thread.start()
-            readers_started = True
-            stdout_file = None
-            stderr_file = None
+                threads.append(thread)
+                if index == 0:
+                    stdout_file = None
+                else:
+                    stderr_file = None
 
             deadline = time.monotonic() + float(timeout)
             while process.poll() is None:
@@ -546,13 +621,27 @@ def run_bounded_process(
                 temporary_cleanup_complete = completed and error is None
             else:
                 temporary_cleanup_complete = False
-        except Exception:
-            if not readers_started:
-                for destination in (stdout_file, stderr_file):
-                    if destination is not None:
-                        destination.close()
-                if temporary_root.exists():
-                    shutil.rmtree(temporary_root)
+        except BaseException:
+            _cleanup_failed_capture(
+                process=process,
+                threads=tuple(threads),
+                pipes=tuple(
+                    pipe
+                    for pipe in (
+                        getattr(process, "stdout", None),
+                        getattr(process, "stderr", None),
+                    )
+                    if pipe is not None
+                ) if process is not None else (),
+                destinations=tuple(
+                    destination
+                    for destination in (stdout_file, stderr_file)
+                    if destination is not None
+                ),
+                temporary_root=temporary_root,
+                temporary_paths=temporary_paths,
+                grace_seconds=float(limits.cleanup_grace_seconds),
+            )
             raise
 
         cleanup_complete = (
@@ -575,6 +664,7 @@ def run_bounded_process(
                     )
                     if pipe is not None
                 ),
+                process=process,
                 temporary_root=temporary_root,
                 temporary_paths=temporary_paths,
             )
@@ -630,7 +720,19 @@ def run_bounded_process(
             containment=containment,
         )
     finally:
-        pass
+        if process is None:
+            for destination in (stdout_file, stderr_file):
+                if destination is not None:
+                    try:
+                        destination.close()
+                    except BaseException:
+                        pass
+            if temporary_root.exists():
+                try:
+                    shutil.rmtree(temporary_root)
+                except BaseException:
+                    pass
+
 
 def _is_loopback(hostname: str | None) -> bool:
     if hostname is None:

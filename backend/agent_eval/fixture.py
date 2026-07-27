@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from backend.cookbook import proc
 from backend.project_security import is_sensitive_project_path
 
 from .identity import canonical_sha256
@@ -433,7 +434,7 @@ def _current_acl_user() -> str:
 def _run_icacls(root: Path, *arguments: str) -> None:
     command = ["icacls.exe", str(root), *arguments, "/Q"]
     try:
-        completed = subprocess.run(
+        completed = proc.run(
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

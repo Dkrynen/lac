@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping, TYPE_CHECKING
 
 from backend.agent_launch.opencode_bin import SUPPORTED_OPENCODE_VERSION
 from backend.agent_launch.opencode_bin import _probe_version
+from backend.cookbook import proc
 
 from .capture import IDENTITY_RESPONSE_MAX_BYTES, OLLAMA_RESPONSE_MAX_BYTES, bounded_http_json
 from .evidence import EvidenceControlResult, EvidenceState
@@ -301,7 +302,7 @@ def _verify_retained_path(
 
 def _default_authenticode(path: Path) -> str:
     try:
-        completed = subprocess.run(
+        completed = proc.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "(Get-AuthenticodeSignature -LiteralPath $args[0]).Status", str(path)],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
         )

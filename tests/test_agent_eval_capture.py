@@ -332,6 +332,284 @@ def test_optional_launcher_receives_binary_pipe_contract(tmp_path):
     assert kwargs["text"] is False
 
 
+def test_default_launcher_routes_through_proc_popen_with_binary_contract(
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+
+    class ExitedProcess:
+        def __init__(self):
+            self.stdout = io.BytesIO(b"wrapped-out")
+            self.stderr = io.BytesIO()
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return ExitedProcess()
+
+    monkeypatch.setattr(capture_module.proc, "popen", fake_popen)
+
+    result = run_bounded_process(
+        ["wrapped-child", "--flag"],
+        cwd=tmp_path,
+        env={"ONLY": "VALUE"},
+        timeout=1,
+        limits=CaptureLimits(stdout_bytes=128, stderr_bytes=128),
+    )
+
+    assert result.completed is True
+    assert result.stdout == "wrapped-out"
+    assert calls == [
+        (
+            ["wrapped-child", "--flag"],
+            {
+                "cwd": tmp_path,
+                "env": {"ONLY": "VALUE"},
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": False,
+            },
+        )
+    ]
+
+
+class _CleanupPipe(io.BytesIO):
+    def __init__(self, payload=b""):
+        super().__init__(payload)
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+        super().close()
+
+
+class _CleanupProcess:
+    def __init__(self):
+        self.stdout = _CleanupPipe()
+        self.stderr = _CleanupPipe()
+        self.returncode = None
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.wait_calls = []
+        self.close_calls = 0
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminate_calls += 1
+        self.returncode = 71
+
+    def kill(self):
+        self.kill_calls += 1
+        self.returncode = 72
+
+    def wait(self, timeout=None):
+        self.wait_calls.append(timeout)
+        assert timeout is not None
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("cleanup-child", timeout)
+        return self.returncode
+
+    def close(self):
+        self.close_calls += 1
+        if self.stdout is not None:
+            self.stdout.close()
+        if self.stderr is not None:
+            self.stderr.close()
+
+
+def _capture_reader_threads():
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread.name in {"agent-eval-stdout", "agent-eval-stderr"}
+    ]
+
+
+def test_launch_with_missing_pipe_cleans_process_and_temp_before_reraising(
+    tmp_path,
+    monkeypatch,
+):
+    process = _CleanupProcess()
+    process.stdout = None
+    capture_root = tmp_path / "missing-pipe-capture"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+
+    with pytest.raises(RuntimeError, match="binary stdout and stderr"):
+        run_bounded_process(
+            ["missing-pipe-child"],
+            cwd=tmp_path,
+            env={},
+            timeout=1,
+            limits=CaptureLimits(cleanup_grace_seconds=0.2),
+            launcher=lambda *_args, **_kwargs: process,
+        )
+
+    assert process.terminate_calls == 1
+    assert process.wait_calls
+    assert process.close_calls == 1
+    assert process.stderr.closed is True
+    assert not capture_root.exists()
+    assert _capture_reader_threads() == []
+
+
+def test_second_reader_start_failure_cleans_started_reader_and_process(
+    tmp_path,
+    monkeypatch,
+):
+    process = _CleanupProcess()
+    capture_root = tmp_path / "reader-start-capture"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+    real_thread = threading.Thread
+
+    def thread_factory(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        if kwargs.get("name") == "agent-eval-stderr":
+            thread.start = lambda: (_ for _ in ()).throw(
+                RuntimeError("second reader start failed")
+            )
+        return thread
+
+    monkeypatch.setattr(capture_module.threading, "Thread", thread_factory)
+
+    with pytest.raises(RuntimeError, match="second reader start failed"):
+        run_bounded_process(
+            ["reader-start-child"],
+            cwd=tmp_path,
+            env={},
+            timeout=1,
+            limits=CaptureLimits(cleanup_grace_seconds=0.2),
+            launcher=lambda *_args, **_kwargs: process,
+        )
+
+    assert process.terminate_calls == 1
+    assert process.close_calls == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+    assert not capture_root.exists()
+    assert _capture_reader_threads() == []
+
+
+def test_poll_exception_after_readers_start_cleans_every_acquired_resource(
+    tmp_path,
+    monkeypatch,
+):
+    process = _CleanupProcess()
+    process.stdout = _CleanupPipe(b"out")
+    process.stderr = _CleanupPipe(b"err")
+    capture_root = tmp_path / "poll-failure-capture"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+
+    def fail_poll():
+        raise RuntimeError("poll exploded")
+
+    process.poll = fail_poll
+
+    with pytest.raises(RuntimeError, match="poll exploded"):
+        run_bounded_process(
+            ["poll-failure-child"],
+            cwd=tmp_path,
+            env={},
+            timeout=1,
+            limits=CaptureLimits(cleanup_grace_seconds=0.2),
+            launcher=lambda *_args, **_kwargs: process,
+        )
+
+    assert process.terminate_calls == 1
+    assert process.close_calls == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+    assert not capture_root.exists()
+    assert _capture_reader_threads() == []
+
+
+def test_job_containment_query_failure_still_closes_job_and_temp(
+    tmp_path,
+    monkeypatch,
+):
+    class QueryFailureJob(WindowsJobProcess):
+        def __init__(self):
+            self.stdout = _CleanupPipe()
+            self.stderr = _CleanupPipe()
+            self.returncode = None
+            self.terminate_calls = 0
+            self.wait_calls = []
+            self.close_calls = 0
+
+        def containment_evidence(self):
+            raise RuntimeError("job containment query failed")
+
+        def terminate_tree(self):
+            self.terminate_calls += 1
+            self.returncode = 73
+
+        def kill_tree(self):
+            self.returncode = 74
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            assert timeout is not None
+            return self.returncode
+
+        def close(self):
+            self.close_calls += 1
+            self.stdout.close()
+            self.stderr.close()
+
+    process = QueryFailureJob()
+    capture_root = tmp_path / "job-query-capture"
+    capture_root.mkdir()
+    monkeypatch.setattr(
+        capture_module.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(capture_root),
+    )
+
+    def launcher(*_args, **_kwargs):
+        return process
+
+    launcher._windows_job_launcher = True
+
+    with pytest.raises(RuntimeError, match="job containment query failed"):
+        run_bounded_process(
+            ["job-query-child.exe"],
+            cwd=tmp_path,
+            env={},
+            timeout=1,
+            limits=CaptureLimits(cleanup_grace_seconds=0.2),
+            launcher=launcher,
+        )
+
+    assert process.terminate_calls == 1
+    assert process.wait_calls
+    assert process.close_calls == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+    assert not capture_root.exists()
+    assert _capture_reader_threads() == []
+
+
 def test_capture_bounded_response_accumulates_short_reads_and_reports_overflow():
     response = Response(b"x" * 9, max_chunk=2)
 

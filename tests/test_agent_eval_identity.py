@@ -290,16 +290,43 @@ def test_package_metadata_is_found_at_npm_package_root(tmp_path):
 def test_authenticode_status_mapping_is_truthful(
     tmp_path, monkeypatch, status, returncode, expected
 ):
-    monkeypatch.setattr(
-        identity_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(
             stdout=status + ("\n" if status else ""),
             returncode=returncode,
-        ),
+        )
+
+    monkeypatch.setattr(
+        identity_module.proc,
+        "run",
+        fake_run,
     )
 
-    assert _default_authenticode(tmp_path / "runtime.exe") == expected
+    runtime = tmp_path / "runtime.exe"
+    assert _default_authenticode(runtime) == expected
+    assert calls == [
+        (
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-AuthenticodeSignature -LiteralPath $args[0]).Status",
+                str(runtime),
+            ],
+            {
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "timeout": 10,
+                "check": False,
+            },
+        )
+    ]
 
 
 def test_postflight_model_or_binary_drift_fails():

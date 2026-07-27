@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -240,6 +241,41 @@ def test_readonly_marking_reports_failure_without_raising(task, monkeypatch):
 
     assert seal.ok is False
     assert "read-only marking failed" in seal.reason
+
+
+def test_icacls_routes_through_proc_run_with_bounded_hidden_contract(
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fixture_module.proc, "run", fake_run)
+
+    fixture_module._run_icacls(tmp_path, "/inheritance:r", "/T", "/C")
+
+    assert calls == [
+        (
+            [
+                "icacls.exe",
+                str(tmp_path),
+                "/inheritance:r",
+                "/T",
+                "/C",
+                "/Q",
+            ],
+            {
+                "stdin": fixture_module.subprocess.DEVNULL,
+                "stdout": fixture_module.subprocess.DEVNULL,
+                "stderr": fixture_module.subprocess.DEVNULL,
+                "timeout": fixture_module._ACL_TIMEOUT_SECONDS,
+                "check": False,
+            },
+        )
+    ]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
