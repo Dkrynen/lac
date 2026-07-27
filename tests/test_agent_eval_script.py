@@ -82,7 +82,14 @@ def test_dry_run_validates_real_boundaries_without_creating_output(tmp_path):
     assert report["auto_approval"]["scope"] == "disposable_workspace_only"
     assert report["network"] == "loopback_ollama_only"
     assert report["model_downloads"] == "forbidden"
-    assert "possible" in report["runtime_dependency_bootstrap"]
+    bootstrap = report["runtime_dependency_bootstrap"]
+    assert bootstrap["state"] == "not_required"
+    assert bootstrap["ok"] is None
+    assert bootstrap["mode"] == "diagnostic"
+    assert set(bootstrap) == {"state", "ok", "mode", "reason"}
+    assert bootstrap["reason"] == (
+        "verified attestation is not required in diagnostic mode"
+    )
     assert report["os_egress_enforced"] is False
     assert report["evidence_ready"] is False
     assert report["mode"] == "diagnostic"
