@@ -4,7 +4,10 @@ import json
 import hashlib
 import inspect
 import os
+import threading
+import urllib.request
 from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -145,14 +148,17 @@ def _plan(tmp_path: Path):
     )
 
 
-def _plan_v2(tmp_path: Path):
+def _plan_v2(
+    tmp_path: Path,
+    ollama_host: str = "http://127.0.0.1:11434",
+):
     source = tmp_path / "source"
     source.mkdir()
     return build_plan(
         _task_v2(tmp_path),
         base_model="gpt-oss:20b",
         lac_model="gpt-oss:20b-agent",
-        ollama_host="http://127.0.0.1:11434",
+        ollama_host=ollama_host,
         output_root=tmp_path / "evidence",
         installed_models=["gpt-oss:20b", "gpt-oss:20b-agent"],
         opencode_binary=Path(r"C:\tools\opencode.cmd"),
@@ -182,6 +188,69 @@ def _sampling_metadata(arm: str, trial: TrialSpec) -> dict:
         "max_output_tokens": 128,
         "trial_index": trial.index,
     }
+
+
+def _send_sampling_request(
+    endpoint: str,
+    arm: str,
+    trial: TrialSpec,
+) -> None:
+    if arm == "raw":
+        path = "/api/chat"
+        body = {
+            "model": "gpt-oss:20b",
+            "stream": False,
+            "options": {
+                "temperature": 1.0,
+                "seed": trial.seed,
+                "num_predict": 128,
+            },
+        }
+    else:
+        path = "/v1/chat/completions"
+        body = {
+            "model": (
+                "gpt-oss:20b-agent" if arm == "lac" else "gpt-oss:20b"
+            ),
+            "temperature": 1.0,
+            "seed": trial.seed,
+            "max_tokens": 128,
+        }
+    request = urllib.request.Request(
+        endpoint + path,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:
+        assert response.status == 200
+
+
+@pytest.fixture
+def recording_upstream():
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers["Content-Length"])
+            self.rfile.read(length)
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *_args):
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def _runtime_snapshot(tmp_path):
@@ -408,8 +477,9 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
 
 def test_v2_runner_persists_schedule_before_first_arm_and_nine_records(
     tmp_path,
+    recording_upstream,
 ):
-    plan = _plan_v2(tmp_path)
+    plan = _plan_v2(tmp_path, recording_upstream)
     _runtime, snapshot = _runtime_snapshot(tmp_path)
     calls = []
 
@@ -419,6 +489,7 @@ def test_v2_runner_persists_schedule_before_first_arm_and_nine_records(
             schedule_path = run_root / "schedule.json"
             assert schedule_path.is_file()
             assert generation == plan.task.generation
+            assert host != recording_upstream
             assert task.fixture_root == (
                 run_root
                 / "trials"
@@ -429,10 +500,8 @@ def test_v2_runner_persists_schedule_before_first_arm_and_nine_records(
             if workspace is not None:
                 assert Path(workspace) == task.fixture_root
             calls.append((trial.index, arm, trial.seed))
-            return replace(
-                _result(arm, model, "ZeroDivisionError"),
-                request_metadata=_sampling_metadata(arm, trial),
-            )
+            _send_sampling_request(host, arm, trial)
+            return _result(arm, model, "ZeroDivisionError")
 
         return run
 

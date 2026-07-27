@@ -10,7 +10,7 @@ import stat
 import subprocess
 import time
 from ctypes import wintypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -80,7 +80,6 @@ class _ProcessOutcome:
     raw_stdout: bytes
     raw_stderr: bytes
     capture: dict[str, Any]
-    ollama_http_capture: dict[str, Any] = field(default_factory=dict)
 
 
 def _nonnegative_number(value: Any) -> float | int | None:
@@ -245,7 +244,6 @@ def _failure(
     stderr: str = "",
     metrics: dict[str, Any] | None = None,
     capture: dict[str, Any] | None = None,
-    request_metadata: dict[str, Any] | None = None,
 ) -> ArmResult:
     return ArmResult(
         arm=arm,
@@ -260,38 +258,7 @@ def _failure(
         raw_stdout=stdout,
         raw_stderr=stderr,
         capture=capture or {},
-        request_metadata=request_metadata or {},
     )
-
-
-def _observed_sampling_metadata(
-    capture: dict[str, Any],
-    trial: TrialSpec | None,
-) -> dict[str, Any]:
-    if trial is None or capture.get("path") != "/v1/chat/completions":
-        return {}
-    body = capture.get("body")
-    if not isinstance(body, dict):
-        return {}
-    temperature = body.get("temperature")
-    seed = body.get("seed")
-    max_output_tokens = body.get("max_tokens")
-    if (
-        isinstance(temperature, bool)
-        or not isinstance(temperature, (int, float))
-        or type(seed) is not int
-        or type(max_output_tokens) is not int
-    ):
-        return {}
-    return {
-        "source": "opencode_1.18.4_ollama_http_capture",
-        "observed": True,
-        "path": "/v1/chat/completions",
-        "temperature": float(temperature),
-        "seed": seed,
-        "max_output_tokens": max_output_tokens,
-        "trial_index": trial.index,
-    }
 
 
 def _config_identity(fd: int, path: Path) -> dict[str, Any]:
@@ -408,9 +375,6 @@ def _run_process_outcome(
         if launcher is not None:
             kwargs["launcher"] = launcher
         process = run_fn(argv, **kwargs)
-        ollama_http_capture = getattr(process, "ollama_http_capture", {})
-        if not isinstance(ollama_http_capture, dict):
-            ollama_http_capture = {}
         if isinstance(process, CapturedProcess):
             capture = {
                 "cleanup_complete": process.cleanup_complete,
@@ -438,7 +402,6 @@ def _run_process_outcome(
                 process.raw_stdout,
                 process.raw_stderr,
                 capture,
-                ollama_http_capture,
             )
         exit_code = int(getattr(process, "returncode", 1))
         stdout = _as_text(getattr(process, "stdout", ""))
@@ -467,7 +430,6 @@ def _run_process_outcome(
             raw_stdout,
             raw_stderr,
             capture,
-            ollama_http_capture,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = _as_text(exc.output)
@@ -544,6 +506,7 @@ def _isolated_environment(
             "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
             "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
             "OPENCODE_DISABLE_MODELS_FETCH": "1",
+            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
             "OPENCODE_DISABLE_CLAUDE_CODE": "1",
             "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "1",
             "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
@@ -692,10 +655,6 @@ def _run_opencode(
             {},
         )
     outcome_errors = (*outcome.errors, *lifecycle_errors)
-    request_metadata = _observed_sampling_metadata(
-        outcome.ollama_http_capture,
-        trial,
-    )
     if outcome_errors:
         return _failure(
             arm,
@@ -708,7 +667,6 @@ def _run_opencode(
             stderr=outcome.stderr,
             metrics=config_metrics,
             capture=outcome.capture,
-            request_metadata=request_metadata,
         )
 
     parsed = parse_opencode_jsonl(
@@ -735,7 +693,6 @@ def _run_opencode(
         events=parsed.events,
         unknown_event_types=parsed.unknown_event_types,
         capture=outcome.capture,
-        request_metadata=request_metadata,
     )
 
 

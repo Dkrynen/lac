@@ -41,13 +41,17 @@ def test_evaluation_config_pins_build_agent_generation_settings(tmp_path):
     )
 
     cfg = json.loads(out.read_text(encoding="utf-8"))
-    assert cfg["agent"]["build"] == {
-        "temperature": 1.0,
-        "options": {
-            "seed": 1209934845,
-            "max_tokens": 128,
+    assert cfg["agent"] == {
+        "build": {
+            "temperature": 1.0,
+            "options": {
+                "temperature": 1.0,
+                "seed": 1209934845,
+                "max_tokens": 128,
+            },
+            "steps": 1,
         },
-        "steps": 1,
+        "title": {"disable": True},
     }
 
 

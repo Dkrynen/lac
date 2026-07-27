@@ -120,11 +120,13 @@ def build_opencode_config(
             "build": {
                 "temperature": generation.temperature,
                 "options": {
+                    "temperature": generation.temperature,
                     "seed": seed,
                     "max_tokens": generation.max_output_tokens,
                 },
                 "steps": 1,
-            }
+            },
+            "title": {"disable": True},
         }
     if evaluation:
         config.pop("$schema")

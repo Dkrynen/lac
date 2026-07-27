@@ -314,6 +314,7 @@ def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     }
     assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
     assert env["OPENCODE_DISABLE_CLAUDE_CODE"] == "1"
+    assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
     assert env["OPENCODE_AUTO_SHARE"] == "false"
     assert "ANTHROPIC_API_KEY" not in env
     assert "OPENAI_API_KEY" not in env
@@ -327,7 +328,7 @@ def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     assert result.request_metadata == {}
 
 
-def test_opencode_1184_http_capture_proves_build_sampling_reaches_ollama(
+def test_process_return_attribute_cannot_synthesize_http_observation(
     tmp_path,
 ):
     workspace = tmp_path / "stock"
@@ -383,15 +384,7 @@ def test_opencode_1184_http_capture_proves_build_sampling_reaches_ollama(
             "max_tokens": 128,
         },
     }
-    assert result.request_metadata == {
-        "source": "opencode_1.18.4_ollama_http_capture",
-        "observed": True,
-        "path": "/v1/chat/completions",
-        "temperature": 1.0,
-        "seed": 1209934845,
-        "max_output_tokens": 128,
-        "trial_index": 1,
-    }
+    assert result.request_metadata == {}
 
 
 def test_run_lac_uses_fail_closed_config_and_agent_variant(tmp_path):

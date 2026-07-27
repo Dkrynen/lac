@@ -28,6 +28,11 @@ from .containment import (
     select_containment_provider,
 )
 from .opencode import run_lac, run_stock
+from .http_observer import (
+    HttpObservationError,
+    LoopbackRecordingProxy,
+    attach_observed_request,
+)
 from .ledger import atomic_write_json, seal_evidence
 from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
 from .result import ArmResult
@@ -280,6 +285,7 @@ def _sampling_metadata_matches(
     arm: str,
     metadata: object,
     *,
+    model: str,
     trial_index: int,
     seed: int,
     temperature: float,
@@ -287,14 +293,48 @@ def _sampling_metadata_matches(
 ) -> bool:
     if not isinstance(metadata, dict):
         return False
+    common_keys = {
+        "source",
+        "observed",
+        "capture_token",
+        "method",
+        "path",
+        "raw_body_sha256",
+        "raw_body",
+        "trial_index",
+    }
+    if (
+        metadata.get("source") != "loopback_recording_proxy"
+        or metadata.get("observed") is not True
+        or metadata.get("capture_token")
+        != f"{trial_index:03d}-{arm}"
+        or metadata.get("method") != "POST"
+        or type(metadata.get("trial_index")) is not int
+        or metadata["trial_index"] != trial_index
+        or not isinstance(metadata.get("raw_body"), str)
+        or not isinstance(metadata.get("raw_body_sha256"), str)
+        or hashlib.sha256(
+            metadata["raw_body"].encode("utf-8")
+        ).hexdigest()
+        != metadata["raw_body_sha256"]
+    ):
+        return False
+    try:
+        body = json.loads(metadata["raw_body"])
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(body, dict) or body.get("model") != model:
+        return False
     if arm == "raw":
         options = metadata.get("options")
         return (
-            type(metadata.get("trial_index")) is int
-            and metadata["trial_index"] == trial_index
+            set(metadata) == common_keys | {"stream", "options"}
+            and metadata.get("path") == "/api/chat"
             and metadata.get("stream") is False
+            and body.get("stream") is False
             and isinstance(options, dict)
             and set(options) == {"temperature", "seed", "num_predict"}
+            and options == body.get("options")
             and type(options.get("seed")) is int
             and options["seed"] == seed
             and not isinstance(options.get("temperature"), bool)
@@ -304,27 +344,18 @@ def _sampling_metadata_matches(
         )
     return (
         set(metadata)
-        == {
-            "source",
-            "observed",
-            "path",
-            "temperature",
-            "seed",
-            "max_output_tokens",
-            "trial_index",
-        }
-        and metadata.get("source")
-        == "opencode_1.18.4_ollama_http_capture"
-        and metadata.get("observed") is True
+        == common_keys
+        | {"temperature", "seed", "max_output_tokens"}
         and metadata.get("path") == "/v1/chat/completions"
-        and type(metadata.get("trial_index")) is int
-        and metadata["trial_index"] == trial_index
         and type(metadata.get("seed")) is int
         and metadata["seed"] == seed
+        and metadata["seed"] == body.get("seed")
         and not isinstance(metadata.get("temperature"), bool)
         and metadata["temperature"] == temperature
+        and metadata["temperature"] == body.get("temperature")
         and type(metadata.get("max_output_tokens")) is int
         and metadata["max_output_tokens"] == max_output_tokens
+        and metadata["max_output_tokens"] == body.get("max_tokens")
     )
 
 
@@ -435,6 +466,7 @@ def _counterbalanced_sampling_result(
                 or not _sampling_metadata_matches(
                     arm,
                     result.get("request_metadata"),
+                    model=result.get("model"),
                     trial_index=trial["index"],
                     seed=trial["seed"],
                     temperature=generation["temperature"],
@@ -744,6 +776,28 @@ def run_evaluation(
         reason = f"identity preflight failed: {type(exc).__name__}: {exc}"
         identity_results = _identity_failures(reason)
 
+    http_observer: LoopbackRecordingProxy | None = None
+    observer_start_error: str | None = None
+    observer_cleanup_complete = not v2_sampling
+    containment_endpoint = plan.ollama_host
+    if v2_sampling:
+        try:
+            http_observer = LoopbackRecordingProxy.open(plan.ollama_host)
+            containment_endpoint = http_observer.endpoint
+            atomic_write_json(
+                run_root / "http-observer.before.json",
+                {
+                    "schema_version": 1,
+                    "upstream": plan.ollama_host,
+                    "endpoint": containment_endpoint,
+                    "active": True,
+                },
+            )
+        except Exception as exc:
+            observer_start_error = (
+                f"{type(exc).__name__}: {exc}"
+            )
+
     containment_provider: Any | None = None
     containment_result = EvidenceControlResult(
         "os_loopback_only_egress",
@@ -753,17 +807,22 @@ def run_evaluation(
     )
     applications = [preflight.opencode] if preflight is not None else []
     try:
+        if v2_sampling and http_observer is None:
+            raise EvalPlanError(
+                "loopback HTTP observer was not initialized: "
+                f"{observer_start_error}"
+            )
         containment_provider = select_containment_provider(
             mode,
             os.name,
-            plan.ollama_host,
+            containment_endpoint,
             applications,
             wfp_api=containment_wfp_api,
         )
         containment_result = derive_containment_result(
             mode,
             containment_provider,
-            plan.ollama_host,
+            containment_endpoint,
             applications,
         )
     except Exception as exc:
@@ -825,6 +884,7 @@ def run_evaluation(
                     )
                 )
             arm_task = replace(plan.task, fixture_root=workspace)
+            capture_started = False
             try:
                 if (
                     mode is EvidenceMode.VERIFIED
@@ -836,6 +896,20 @@ def run_evaluation(
                     )
                 if seal is None or not seal.ok or not seal.acl_hardened:
                     raise EvalPlanError("sealed fixture materialization was not available")
+                if trial is not None:
+                    if http_observer is None:
+                        raise EvalPlanError(
+                            "loopback HTTP observer was not available"
+                        )
+                    http_observer.begin_capture(
+                        f"{trial.index:03d}-{arm}",
+                        (
+                            "/api/chat"
+                            if arm == "raw"
+                            else "/v1/chat/completions"
+                        ),
+                    )
+                    capture_started = True
                 sampling_kwargs = (
                     {}
                     if trial is None
@@ -848,7 +922,7 @@ def run_evaluation(
                     candidate = adapter(
                         arm_task,
                         model,
-                        plan.ollama_host,
+                        containment_endpoint,
                         **sampling_kwargs,
                     )
                 else:
@@ -872,7 +946,7 @@ def run_evaluation(
                     candidate = adapter(
                         arm_task,
                         model,
-                        plan.ollama_host,
+                        containment_endpoint,
                         workspace,
                         **adapter_kwargs,
                     )
@@ -885,6 +959,43 @@ def run_evaluation(
                     measured_windows_arms.add(result_key)
             except Exception as exc:
                 result = _adapter_failure(arm, model, exc)
+            if trial is not None:
+                observation_error: str | None = None
+                observation = None
+                if capture_started and http_observer is not None:
+                    try:
+                        observation = http_observer.finish_capture(
+                            f"{trial.index:03d}-{arm}"
+                        )
+                    except Exception as exc:
+                        observation_error = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                else:
+                    observation_error = (
+                        "capture window did not start"
+                    )
+                if observation is not None:
+                    try:
+                        result = attach_observed_request(
+                            result,
+                            observation,
+                            trial,
+                        )
+                    except Exception as exc:
+                        observation_error = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                if observation_error is not None:
+                    result = replace(
+                        result,
+                        request_metadata={},
+                        errors=(
+                            *result.errors,
+                            "http_observation_failed:"
+                            f"{observation_error}",
+                        ),
+                    )
             score = _score_result(result, plan.task.scorer.expected)
             results[arm] = result
             scores[arm] = score
@@ -1005,7 +1116,7 @@ def run_evaluation(
                 containment_result = derive_containment_result(
                     mode,
                     containment_provider,
-                    plan.ollama_host,
+                    containment_endpoint,
                     applications,
                 )
             except Exception as exc:
@@ -1029,6 +1140,26 @@ def run_evaluation(
                         **containment_result.details,
                         "cleanup_certain": False,
                     },
+                )
+        if http_observer is not None:
+            try:
+                http_observer.close()
+                observer_cleanup_complete = True
+                atomic_write_json(
+                    run_root / "http-observer.after.json",
+                    {
+                        "schema_version": 1,
+                        "upstream": plan.ollama_host,
+                        "endpoint": containment_endpoint,
+                        "active": False,
+                        "cleanup_complete": True,
+                    },
+                )
+            except Exception as exc:
+                observer_cleanup_complete = False
+                observer_start_error = (
+                    "observer cleanup failed: "
+                    f"{type(exc).__name__}: {exc}"
                 )
         if runtime_leases is not None:
             try:
@@ -1173,6 +1304,17 @@ def run_evaluation(
         schedule_token,
         result_tokens,
     )
+    if v2_sampling and not observer_cleanup_complete:
+        sampling_result = EvidenceControlResult(
+            "counterbalanced_deterministic_sampling",
+            EvidenceState.FAIL,
+            observer_start_error
+            or "loopback HTTP observer cleanup was incomplete",
+            {
+                **sampling_result.details,
+                "observer_cleanup_complete": False,
+            },
+        )
     evidence = seal_evidence(
         run_root,
         mode,
