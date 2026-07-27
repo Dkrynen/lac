@@ -432,3 +432,193 @@ def test_finish_returns_only_after_successful_response_path_completion():
     assert capture.raw_body == b'{"model":"base"}'
     assert forwarded[0]["body"] == capture.raw_body
     assert client_errors == []
+
+
+def test_finish_seal_counts_second_handler_accepted_before_claim():
+    with _upstream() as (upstream, forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        proxy.begin_capture("001-raw", "/api/chat")
+        assert _post(
+            proxy.endpoint,
+            "/api/chat",
+            b'{"request":1}',
+        ) == b'{"ok":true}'
+
+        entered_claim = threading.Event()
+        release_claim = threading.Event()
+        original_claim = proxy._claim_capture
+
+        def paused_claim(*args):
+            entered_claim.set()
+            assert release_claim.wait(timeout=2)
+            return original_claim(*args)
+
+        proxy._claim_capture = paused_claim
+        second_errors = []
+        finish_results = []
+        finish_errors = []
+        second_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: _post(
+                    proxy.endpoint,
+                    "/api/chat",
+                    b'{"request":2}',
+                ),
+                second_errors,
+            ),
+            daemon=True,
+        )
+        finish_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: finish_results.append(
+                    proxy.finish_capture("001-raw")
+                ),
+                finish_errors,
+            ),
+            daemon=True,
+        )
+        second_thread.start()
+        assert entered_claim.wait(timeout=2)
+        finish_thread.start()
+        time.sleep(0.05)
+        try:
+            assert finish_thread.is_alive()
+            release_claim.set()
+            second_thread.join(timeout=3)
+            finish_thread.join(timeout=3)
+        finally:
+            release_claim.set()
+            proxy.close()
+
+    assert not second_thread.is_alive()
+    assert not finish_thread.is_alive()
+    assert finish_results == []
+    assert len(finish_errors) == 1
+    assert (
+        "multiple" in str(finish_errors[0])
+        or "accepted" in str(finish_errors[0])
+    )
+    assert len(second_errors) == 1
+    assert isinstance(
+        second_errors[0],
+        (urllib.error.HTTPError, ConnectionAbortedError),
+    )
+    assert len(forwarded) == 1
+
+
+def test_accepted_and_claimed_handler_generations_are_condition_accounted():
+    with _upstream() as (upstream, _forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        entered_claim = threading.Event()
+        release_claim = threading.Event()
+        original_claim = proxy._claim_capture
+
+        def paused_claim(*args):
+            entered_claim.set()
+            assert release_claim.wait(timeout=2)
+            return original_claim(*args)
+
+        proxy._claim_capture = paused_claim
+        errors = []
+        proxy.begin_capture("001-raw", "/api/chat")
+        client_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: _post(
+                    proxy.endpoint,
+                    "/api/chat",
+                    b'{"model":"base"}',
+                ),
+                errors,
+            ),
+            daemon=True,
+        )
+        client_thread.start()
+        assert entered_claim.wait(timeout=2)
+        try:
+            with proxy._condition:
+                assert len(proxy._pending_handler_generations) == 1
+                assert proxy._active_handler_generations == set()
+            release_claim.set()
+            client_thread.join(timeout=3)
+            with proxy._condition:
+                assert proxy._pending_handler_generations == set()
+                assert proxy._active_handler_generations == set()
+            proxy.finish_capture("001-raw")
+        finally:
+            release_claim.set()
+            proxy.close()
+
+    assert errors == []
+
+
+def test_new_connection_after_atomic_seal_cannot_mutate_observation():
+    with _upstream() as (upstream, forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        adapter_complete = threading.Event()
+        client_errors = []
+
+        def adapter():
+            try:
+                _post(
+                    proxy.endpoint,
+                    "/api/chat",
+                    b'{"request":1}',
+                )
+            except Exception as exc:
+                client_errors.append(exc)
+            finally:
+                adapter_complete.set()
+
+        proxy.begin_capture("001-raw", "/api/chat")
+        adapter_thread = threading.Thread(target=adapter, daemon=True)
+        adapter_thread.start()
+        assert adapter_complete.wait(timeout=2)
+        adapter_thread.join(timeout=2)
+        capture = proxy.finish_capture("001-raw")
+
+        late_errors = []
+        late_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: _post(
+                    proxy.endpoint,
+                    "/api/chat",
+                    b'{"request":2}',
+                ),
+                late_errors,
+            ),
+            daemon=True,
+        )
+        late_thread.start()
+        late_thread.join(timeout=2)
+        try:
+            assert capture.raw_body == b'{"request":1}'
+            assert len(forwarded) == 1
+            assert len(late_errors) == 1
+        finally:
+            proxy.close()
+
+    assert client_errors == []
+
+
+def test_quiet_window_seals_at_global_quiescence_without_deadlock():
+    with _upstream() as (upstream, _forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        proxy.begin_capture("001-raw", "/api/chat")
+        assert _post(
+            proxy.endpoint,
+            "/api/chat",
+            b'{"model":"base"}',
+        ) == b'{"ok":true}'
+
+        started = time.monotonic()
+        capture = proxy.finish_capture("001-raw", timeout_seconds=1)
+        elapsed = time.monotonic() - started
+        try:
+            with proxy._condition:
+                assert proxy._pending_handler_generations == set()
+                assert proxy._active_handler_generations == set()
+        finally:
+            proxy.close()
+
+    assert capture.raw_body == b'{"model":"base"}'
+    assert elapsed < 1

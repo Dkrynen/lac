@@ -72,6 +72,12 @@ class _WindowState:
     terminal_state: str | None = None
     started: threading.Event = field(default_factory=threading.Event)
     completion: threading.Event = field(default_factory=threading.Event)
+    sealing: bool = False
+    sealed: bool = False
+    accepted_generations: set[int] = field(default_factory=set)
+    pending_generations: set[int] = field(default_factory=set)
+    active_generations: set[int] = field(default_factory=set)
+    terminal_generations: set[int] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if self.errors is None:
@@ -164,6 +170,13 @@ class LoopbackRecordingProxy:
         self._upstream_sockets: set[socket.socket] = set()
         self._client_sockets: set[socket.socket] = set()
         self._active_requests = 0
+        self._next_handler_generation = 0
+        self._pending_handler_generations: set[int] = set()
+        self._active_handler_generations: set[int] = set()
+        self._accepted_handlers: dict[
+            int,
+            tuple[int, _WindowState | None, socket.socket],
+        ] = {}
         self._closed = False
         proxy = self
 
@@ -177,7 +190,30 @@ class LoopbackRecordingProxy:
             def log_message(self, _format: str, *_args: object) -> None:
                 return None
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class RecordingServer(ThreadingHTTPServer):
+            def process_request(
+                self,
+                request: socket.socket,
+                client_address: tuple[str, int],
+            ) -> None:
+                proxy._register_accepted(request)
+                try:
+                    super().process_request(request, client_address)
+                except BaseException:
+                    proxy._accepted_connection_finished(request)
+                    raise
+
+            def process_request_thread(
+                self,
+                request: socket.socket,
+                client_address: tuple[str, int],
+            ) -> None:
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    proxy._accepted_connection_finished(request)
+
+        self._server = RecordingServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = True
         self._thread = threading.Thread(
             target=lambda: self._server.serve_forever(poll_interval=0.05),
@@ -249,50 +285,59 @@ class LoopbackRecordingProxy:
                 "capture completion timeout must be positive"
             )
         deadline = time.monotonic() + float(timeout_seconds)
-        with self._lock:
+        with self._condition:
             state = self._active
             if state is None:
                 raise HttpObservationError("no capture window is active")
             if token != state.token:
                 raise HttpObservationError("capture token does not match")
+            state.sealing = True
             started = state.started
-            completion = state.completion
-            has_attempt = state.attempts > 0
-        if not has_attempt:
+            has_accept = bool(state.accepted_generations)
+        if not has_accept:
             started.wait(
                 timeout=min(
                     DEFAULT_CAPTURE_START_TIMEOUT_SECONDS,
                     max(0.0, deadline - time.monotonic()),
                 )
             )
-            with self._lock:
+            with self._condition:
                 if self._active is not state:
                     raise HttpObservationError(
                         "capture window closed before completion"
                     )
-                if state.attempts == 0 and state.active_handlers == 0:
+                if not state.accepted_generations:
                     self._active = None
+                    state.sealed = True
                     raise HttpObservationError(
                         "capture requires exactly one request: "
                         "missing request"
                     )
-        remaining = max(0.0, deadline - time.monotonic())
-        if not completion.wait(timeout=remaining):
-            with self._lock:
-                if self._active is state:
+        with self._condition:
+            while (
+                self._pending_handler_generations
+                or self._active_handler_generations
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     reason = "capture completion timed out"
                     if reason not in state.errors:
                         state.errors.append(reason)
-            raise HttpObservationError("capture completion timed out")
-        with self._lock:
+                    raise HttpObservationError(reason)
+                self._condition.wait(timeout=remaining)
             if self._active is not state:
                 raise HttpObservationError(
                     "capture window closed before completion"
                 )
-            if state.active_handlers:
+            if (
+                state.pending_generations
+                or state.active_generations
+                or state.active_handlers
+            ):
                 raise HttpObservationError(
                     "capture completion state is inconsistent"
                 )
+            state.sealed = True
             self._active = None
         if state.attempts != 1:
             suffix = "multiple requests" if state.attempts > 1 else "missing request"
@@ -324,27 +369,82 @@ class LoopbackRecordingProxy:
                 state.errors.append(reason)
         handler.send_error(status)
 
+    def _register_accepted(self, request: socket.socket) -> None:
+        with self._condition:
+            self._next_handler_generation += 1
+            generation = self._next_handler_generation
+            state = self._active if not self._closed else None
+            self._accepted_handlers[id(request)] = (
+                generation,
+                state,
+                request,
+            )
+            self._pending_handler_generations.add(generation)
+            self._client_sockets.add(request)
+            if state is not None:
+                state.accepted_generations.add(generation)
+                state.pending_generations.add(generation)
+                state.started.set()
+            self._condition.notify_all()
+
+    def _accepted_connection_finished(
+        self,
+        request: socket.socket,
+    ) -> None:
+        with self._condition:
+            accepted = self._accepted_handlers.pop(id(request), None)
+            self._client_sockets.discard(request)
+            if accepted is None:
+                return
+            generation, state, _socket = accepted
+            if generation in self._pending_handler_generations:
+                self._pending_handler_generations.discard(generation)
+                if state is not None:
+                    state.pending_generations.discard(generation)
+                    state.terminal_generations.add(generation)
+                    state.errors.append(
+                        "accepted connection ended before request claim"
+                    )
+                    state.terminal_state = "failed"
+                    state.completion.set()
+            if generation in self._active_handler_generations:
+                self._active_handler_generations.discard(generation)
+                if state is not None:
+                    state.active_generations.discard(generation)
+                    state.terminal_generations.add(generation)
+                    state.errors.append(
+                        "accepted handler ended without terminal accounting"
+                    )
+                    state.terminal_state = "failed"
+                    state.completion.set()
+            self._condition.notify_all()
+
     def _handle(self, handler: BaseHTTPRequestHandler) -> None:
         with self._condition:
             self._active_requests += 1
-            self._client_sockets.add(handler.connection)
         state: _WindowState | None = None
+        generation: int | None = None
         success = False
         try:
             claimed = self._claim_capture(handler)
             if claimed is not None:
-                state, attempt = claimed
-                success = self._handle_request(
-                    handler,
-                    state,
-                    attempt,
-                )
+                state, attempt, generation = claimed
+                if state is not None:
+                    success = self._handle_request(
+                        handler,
+                        state,
+                        attempt,
+                    )
         finally:
             with self._condition:
+                if generation is not None:
+                    self._active_handler_generations.discard(generation)
                 if state is not None:
                     if success:
                         state.successful_handlers += 1
                     state.active_handlers -= 1
+                    state.active_generations.discard(generation)
+                    state.terminal_generations.add(generation)
                     if state.active_handlers == 0:
                         state.terminal_state = (
                             "succeeded"
@@ -356,14 +456,13 @@ class LoopbackRecordingProxy:
                             else "failed"
                         )
                         state.completion.set()
-                self._client_sockets.discard(handler.connection)
                 self._active_requests -= 1
                 self._condition.notify_all()
 
     def _claim_capture(
         self,
         handler: BaseHTTPRequestHandler,
-    ) -> tuple[_WindowState, int] | None:
+    ) -> tuple[_WindowState | None, int, int] | None:
         try:
             peer = ipaddress.ip_address(handler.client_address[0])
         except ValueError:
@@ -372,21 +471,28 @@ class LoopbackRecordingProxy:
         if not peer.is_loopback:
             handler.send_error(403)
             return None
-        with self._lock:
-            state = self._active
-            if self._closed or state is None:
-                rejected = True
-            else:
-                rejected = False
+        with self._condition:
+            accepted = self._accepted_handlers.get(id(handler.connection))
+            if accepted is None:
+                handler.send_error(409)
+                return None
+            generation, state, _socket = accepted
+            self._pending_handler_generations.discard(generation)
+            self._active_handler_generations.add(generation)
+            if state is not None:
+                state.pending_generations.discard(generation)
+                state.active_generations.add(generation)
                 state.attempts += 1
                 attempt = state.attempts
                 state.active_handlers += 1
                 state.started.set()
                 state.completion.clear()
-        if rejected:
+            else:
+                attempt = 0
+            self._condition.notify_all()
+        if state is None:
             handler.send_error(409)
-            return None
-        return state, attempt
+        return state, attempt, generation
 
     def _handle_request(
         self,
@@ -656,7 +762,11 @@ class LoopbackRecordingProxy:
         self._server.server_close()
         deadline = time.monotonic() + 2
         with self._condition:
-            while self._active_requests:
+            while (
+                self._active_requests
+                or self._pending_handler_generations
+                or self._active_handler_generations
+            ):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise HttpObservationError(
