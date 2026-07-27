@@ -54,8 +54,8 @@ class Response:
 def test_bounded_http_json_reads_at_most_limit_plus_one():
     calls = []
 
-    def open_fn(request, timeout):
-        calls.append((request.full_url, timeout))
+    def open_fn(request, *, timeout):
+        calls.append((request.full_url, request.data, timeout))
         return Response(
             b'{"ok":true}',
             final_url="http://127.0.0.1:11434/api/version",
@@ -69,7 +69,34 @@ def test_bounded_http_json_reads_at_most_limit_plus_one():
         max_bytes=64,
         open_fn=open_fn,
     ) == {"ok": True}
-    assert calls == [("http://127.0.0.1:11434/api/version", 5)]
+    assert calls == [("http://127.0.0.1:11434/api/version", None, 5)]
+
+
+def test_bounded_http_json_passes_post_body_and_timeout_to_urlopen_shape():
+    calls = []
+
+    def open_fn(request, *, timeout):
+        calls.append((request.full_url, request.data, timeout))
+        return Response(
+            b'{"model_info":{}}',
+            final_url="http://127.0.0.1:11434/api/show",
+        )
+
+    assert bounded_http_json(
+        "http://127.0.0.1:11434/api/show",
+        method="POST",
+        body={"model": "gpt-oss:20b", "verbose": False},
+        timeout=10,
+        max_bytes=64,
+        open_fn=open_fn,
+    ) == {"model_info": {}}
+    assert calls == [
+        (
+            "http://127.0.0.1:11434/api/show",
+            b'{"model":"gpt-oss:20b","verbose":false}',
+            10,
+        )
+    ]
 
 
 @pytest.mark.parametrize(

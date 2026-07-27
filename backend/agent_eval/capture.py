@@ -831,7 +831,7 @@ def bounded_http_json(
         ).encode("utf-8")
         headers["Content-Type"] = "application/json"
     request = Request(url, data=payload, method=method, headers=headers)
-    with open_fn(request, timeout) as response:
+    with open_fn(request, timeout=timeout) as response:
         final_url = getattr(response, "geturl", lambda: url)()
         if final_url != url:
             raise ValueError("capture redirect is not allowed")
