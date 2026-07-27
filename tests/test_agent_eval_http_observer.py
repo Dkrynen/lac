@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -240,3 +241,194 @@ def test_proxy_close_cancels_inflight_forward_and_joins_handler():
     assert alive_before_upstream_release is False
     assert proxy.active_requests == 0
     assert client_errors
+
+
+def test_finish_waits_for_exact_19mb_body_forwarding_and_response_completion():
+    raw_body = json.dumps(
+        {"model": "base", "padding": "x" * 1_900_000},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert 1_900_000 < len(raw_body) < 2_000_000
+    with _upstream() as (upstream, forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        entered_exchange = threading.Event()
+        release_exchange = threading.Event()
+        original_exchange = proxy._exchange
+
+        def delayed_exchange(*args):
+            entered_exchange.set()
+            assert release_exchange.wait(timeout=2)
+            return original_exchange(*args)
+
+        proxy._exchange = delayed_exchange
+        client_errors = []
+        finish_results = []
+        finish_errors = []
+        proxy.begin_capture("001-raw", "/api/chat")
+        client_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: _post(proxy.endpoint, "/api/chat", raw_body),
+                client_errors,
+            ),
+            daemon=True,
+        )
+        finish_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: finish_results.append(
+                    proxy.finish_capture("001-raw")
+                ),
+                finish_errors,
+            ),
+            daemon=True,
+        )
+        client_thread.start()
+        assert entered_exchange.wait(timeout=2)
+        finish_thread.start()
+        time.sleep(0.05)
+        try:
+            assert finish_thread.is_alive()
+            assert forwarded == []
+            release_exchange.set()
+            finish_thread.join(timeout=3)
+            client_thread.join(timeout=3)
+        finally:
+            release_exchange.set()
+            proxy.close()
+
+    assert not finish_thread.is_alive()
+    assert not client_thread.is_alive()
+    assert client_errors == []
+    assert finish_errors == []
+    assert finish_results[0].raw_body == raw_body
+    assert forwarded[0]["body"] == raw_body
+
+
+def _capture_call(call, errors):
+    try:
+        call()
+    except Exception as exc:
+        errors.append(exc)
+
+
+def test_finish_rejects_late_upstream_error_after_request_capture():
+    with _upstream() as (upstream, _forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        entered_exchange = threading.Event()
+        release_exchange = threading.Event()
+
+        def failing_exchange(*_args):
+            entered_exchange.set()
+            assert release_exchange.wait(timeout=2)
+            raise HttpObservationError("late upstream failure")
+
+        proxy._exchange = failing_exchange
+        client_errors = []
+        finish_errors = []
+        proxy.begin_capture("001-raw", "/api/chat")
+        client_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: _post(
+                    proxy.endpoint,
+                    "/api/chat",
+                    b'{"model":"base"}',
+                ),
+                client_errors,
+            ),
+            daemon=True,
+        )
+        finish_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: proxy.finish_capture("001-raw"),
+                finish_errors,
+            ),
+            daemon=True,
+        )
+        client_thread.start()
+        assert entered_exchange.wait(timeout=2)
+        finish_thread.start()
+        time.sleep(0.05)
+        try:
+            assert finish_thread.is_alive()
+            release_exchange.set()
+            finish_thread.join(timeout=3)
+            client_thread.join(timeout=3)
+        finally:
+            release_exchange.set()
+            proxy.close()
+
+    assert len(finish_errors) == 1
+    assert "late upstream failure" in str(finish_errors[0])
+
+
+def test_finish_timeout_fails_closed_without_detaching_active_window():
+    with _upstream() as (upstream, _forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        entered_exchange = threading.Event()
+        release_exchange = threading.Event()
+        original_exchange = proxy._exchange
+
+        def delayed_exchange(*args):
+            entered_exchange.set()
+            assert release_exchange.wait(timeout=2)
+            return original_exchange(*args)
+
+        proxy._exchange = delayed_exchange
+        client_errors = []
+        proxy.begin_capture("001-raw", "/api/chat")
+        client_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: _post(
+                    proxy.endpoint,
+                    "/api/chat",
+                    b'{"model":"base"}',
+                ),
+                client_errors,
+            ),
+            daemon=True,
+        )
+        client_thread.start()
+        assert entered_exchange.wait(timeout=2)
+        try:
+            with pytest.raises(HttpObservationError, match="timed out"):
+                proxy.finish_capture("001-raw", timeout_seconds=0.05)
+            with pytest.raises(HttpObservationError, match="already active"):
+                proxy.begin_capture("002-raw", "/api/chat")
+            release_exchange.set()
+            client_thread.join(timeout=3)
+            with pytest.raises(HttpObservationError, match="timed out"):
+                proxy.finish_capture("001-raw", timeout_seconds=1)
+        finally:
+            release_exchange.set()
+            proxy.close()
+
+
+def test_finish_returns_only_after_successful_response_path_completion():
+    with _upstream() as (upstream, forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        client_errors = []
+        proxy.begin_capture("001-raw", "/api/chat")
+        client_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: _post(
+                    proxy.endpoint,
+                    "/api/chat",
+                    b'{"model":"base"}',
+                ),
+                client_errors,
+            ),
+            daemon=True,
+        )
+        client_thread.start()
+        try:
+            capture = proxy.finish_capture(
+                "001-raw",
+                timeout_seconds=2,
+            )
+            assert proxy.active_requests == 0
+        finally:
+            proxy.close()
+            client_thread.join(timeout=2)
+
+    assert capture.raw_body == b'{"model":"base"}'
+    assert forwarded[0]["body"] == capture.raw_body
+    assert client_errors == []

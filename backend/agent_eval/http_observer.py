@@ -11,7 +11,7 @@ import select
 import socket
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -22,6 +22,8 @@ from .schedule import TrialSpec
 DEFAULT_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_RESPONSE_BYTES = 8 * 1024 * 1024
 DEFAULT_UPSTREAM_TIMEOUT_SECONDS = 30.0
+DEFAULT_FINISH_TIMEOUT_SECONDS = 2.0
+DEFAULT_CAPTURE_START_TIMEOUT_SECONDS = 0.1
 
 
 class HttpObservationError(ValueError):
@@ -65,6 +67,11 @@ class _WindowState:
     attempts: int = 0
     request: ObservedHttpRequest | None = None
     errors: list[str] | None = None
+    active_handlers: int = 0
+    successful_handlers: int = 0
+    terminal_state: str | None = None
+    started: threading.Event = field(default_factory=threading.Event)
+    completion: threading.Event = field(default_factory=threading.Event)
 
     def __post_init__(self) -> None:
         if self.errors is None:
@@ -226,13 +233,66 @@ class LoopbackRecordingProxy:
             self._used_tokens.add(token)
             self._active = _WindowState(token, expected_path)
 
-    def finish_capture(self, token: str) -> ObservedHttpRequest:
+    def finish_capture(
+        self,
+        token: str,
+        *,
+        timeout_seconds: float = DEFAULT_FINISH_TIMEOUT_SECONDS,
+    ) -> ObservedHttpRequest:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(float(timeout_seconds))
+            or timeout_seconds <= 0
+        ):
+            raise HttpObservationError(
+                "capture completion timeout must be positive"
+            )
+        deadline = time.monotonic() + float(timeout_seconds)
         with self._lock:
             state = self._active
             if state is None:
                 raise HttpObservationError("no capture window is active")
             if token != state.token:
                 raise HttpObservationError("capture token does not match")
+            started = state.started
+            completion = state.completion
+            has_attempt = state.attempts > 0
+        if not has_attempt:
+            started.wait(
+                timeout=min(
+                    DEFAULT_CAPTURE_START_TIMEOUT_SECONDS,
+                    max(0.0, deadline - time.monotonic()),
+                )
+            )
+            with self._lock:
+                if self._active is not state:
+                    raise HttpObservationError(
+                        "capture window closed before completion"
+                    )
+                if state.attempts == 0 and state.active_handlers == 0:
+                    self._active = None
+                    raise HttpObservationError(
+                        "capture requires exactly one request: "
+                        "missing request"
+                    )
+        remaining = max(0.0, deadline - time.monotonic())
+        if not completion.wait(timeout=remaining):
+            with self._lock:
+                if self._active is state:
+                    reason = "capture completion timed out"
+                    if reason not in state.errors:
+                        state.errors.append(reason)
+            raise HttpObservationError("capture completion timed out")
+        with self._lock:
+            if self._active is not state:
+                raise HttpObservationError(
+                    "capture window closed before completion"
+                )
+            if state.active_handlers:
+                raise HttpObservationError(
+                    "capture completion state is inconsistent"
+                )
             self._active = None
         if state.attempts != 1:
             suffix = "multiple requests" if state.attempts > 1 else "missing request"
@@ -243,6 +303,13 @@ class LoopbackRecordingProxy:
             raise HttpObservationError("; ".join(state.errors))
         if state.request is None:
             raise HttpObservationError("capture request is missing")
+        if (
+            state.terminal_state != "succeeded"
+            or state.successful_handlers != 1
+        ):
+            raise HttpObservationError(
+                "capture forwarding did not complete successfully"
+            )
         return state.request
 
     def _reject(
@@ -261,30 +328,72 @@ class LoopbackRecordingProxy:
         with self._condition:
             self._active_requests += 1
             self._client_sockets.add(handler.connection)
+        state: _WindowState | None = None
+        success = False
         try:
-            self._handle_request(handler)
+            claimed = self._claim_capture(handler)
+            if claimed is not None:
+                state, attempt = claimed
+                success = self._handle_request(
+                    handler,
+                    state,
+                    attempt,
+                )
         finally:
             with self._condition:
+                if state is not None:
+                    if success:
+                        state.successful_handlers += 1
+                    state.active_handlers -= 1
+                    if state.active_handlers == 0:
+                        state.terminal_state = (
+                            "succeeded"
+                            if (
+                                state.attempts == 1
+                                and state.successful_handlers == 1
+                                and not state.errors
+                            )
+                            else "failed"
+                        )
+                        state.completion.set()
                 self._client_sockets.discard(handler.connection)
                 self._active_requests -= 1
                 self._condition.notify_all()
 
-    def _handle_request(self, handler: BaseHTTPRequestHandler) -> None:
+    def _claim_capture(
+        self,
+        handler: BaseHTTPRequestHandler,
+    ) -> tuple[_WindowState, int] | None:
         try:
             peer = ipaddress.ip_address(handler.client_address[0])
         except ValueError:
             handler.send_error(403)
-            return
+            return None
         if not peer.is_loopback:
             handler.send_error(403)
-            return
+            return None
         with self._lock:
             state = self._active
             if self._closed or state is None:
-                handler.send_error(409)
-                return
-            state.attempts += 1
-            attempt = state.attempts
+                rejected = True
+            else:
+                rejected = False
+                state.attempts += 1
+                attempt = state.attempts
+                state.active_handlers += 1
+                state.started.set()
+                state.completion.clear()
+        if rejected:
+            handler.send_error(409)
+            return None
+        return state, attempt
+
+    def _handle_request(
+        self,
+        handler: BaseHTTPRequestHandler,
+        state: _WindowState,
+        attempt: int,
+    ) -> bool:
         if attempt != 1:
             self._reject(
                 handler,
@@ -292,7 +401,7 @@ class LoopbackRecordingProxy:
                 409,
                 "capture received multiple requests",
             )
-            return
+            return False
         if handler.path != state.expected_path:
             self._reject(
                 handler,
@@ -300,7 +409,7 @@ class LoopbackRecordingProxy:
                 404,
                 "capture request path mismatch",
             )
-            return
+            return False
         if handler.headers.get("Transfer-Encoding"):
             self._reject(
                 handler,
@@ -308,7 +417,7 @@ class LoopbackRecordingProxy:
                 400,
                 "chunked request bodies are unsupported",
             )
-            return
+            return False
         raw_length = handler.headers.get("Content-Length")
         try:
             length = int(raw_length) if raw_length is not None else -1
@@ -321,7 +430,7 @@ class LoopbackRecordingProxy:
                 411,
                 "request Content-Length is missing or invalid",
             )
-            return
+            return False
         if length > self._max_request_bytes:
             self._reject(
                 handler,
@@ -329,7 +438,7 @@ class LoopbackRecordingProxy:
                 413,
                 "request body exceeded capture limit",
             )
-            return
+            return False
         raw_body = handler.rfile.read(length)
         if len(raw_body) != length:
             self._reject(
@@ -338,7 +447,7 @@ class LoopbackRecordingProxy:
                 400,
                 "request body was truncated",
             )
-            return
+            return False
         try:
             parsed = json.loads(raw_body)
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -348,7 +457,7 @@ class LoopbackRecordingProxy:
                 400,
                 "captured request body is malformed",
             )
-            return
+            return False
         if not isinstance(parsed, dict):
             self._reject(
                 handler,
@@ -356,7 +465,7 @@ class LoopbackRecordingProxy:
                 400,
                 "captured request body is malformed",
             )
-            return
+            return False
         request = ObservedHttpRequest(
             state.token,
             "POST",
@@ -380,7 +489,7 @@ class LoopbackRecordingProxy:
                     )
                     upstream_socket.shutdown(socket.SHUT_RDWR)
                     upstream_socket.close()
-                    return
+                    return False
                 self._upstream_sockets.add(upstream_socket)
             upstream_socket.setblocking(False)
             response = self._exchange(
@@ -422,6 +531,7 @@ class LoopbackRecordingProxy:
             handler.send_header("Content-Length", str(len(response_body)))
             handler.end_headers()
             handler.wfile.write(response_body)
+            return True
         except Exception as exc:
             reason = (
                 str(exc)
@@ -433,6 +543,7 @@ class LoopbackRecordingProxy:
                 closed = self._closed
             if not closed and not handler.wfile.closed:
                 handler.send_error(502)
+            return False
         finally:
             if upstream_socket is not None:
                 upstream_socket.close()
