@@ -19,6 +19,7 @@ from backend.agent_eval.capture import (
     CapturedProcess,
 )
 from backend.agent_eval.task import EvalScorer, EvalTask
+from backend.agent_eval.schedule import GenerationSettings, TrialSpec
 
 
 def _task(workspace: Path) -> EvalTask:
@@ -323,6 +324,74 @@ def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     assert result.exit_code == 0
     assert result.raw_stdout == _successful_stdout()
     assert result.raw_stderr == ""
+    assert result.request_metadata == {}
+
+
+def test_opencode_1184_http_capture_proves_build_sampling_reaches_ollama(
+    tmp_path,
+):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    generation = GenerationSettings(1.0, 20260726, 128)
+    trial = TrialSpec(1, 1209934845, ("raw", "stock", "lac"))
+    captured = {}
+
+    def compatible_opencode_1184(argv, **kwargs):
+        config = json.loads(
+            Path(kwargs["env"]["OPENCODE_CONFIG"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        build = config["agent"]["build"]
+        outgoing = {
+            "model": "gpt-oss:20b",
+            "temperature": build["temperature"],
+            "seed": build["options"]["seed"],
+            "max_tokens": build["options"]["max_tokens"],
+        }
+        captured.update(
+            path="/v1/chat/completions",
+            body=outgoing,
+        )
+        return SimpleNamespace(
+            returncode=0,
+            stdout=_successful_stdout(),
+            stderr="",
+            ollama_http_capture={
+                "path": "/v1/chat/completions",
+                "body": outgoing,
+            },
+        )
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        generation=generation,
+        trial=trial,
+        resolve_bin_fn=lambda: Path(r"C:\tools\opencode.cmd"),
+        run_fn=compatible_opencode_1184,
+    )
+
+    assert captured == {
+        "path": "/v1/chat/completions",
+        "body": {
+            "model": "gpt-oss:20b",
+            "temperature": 1.0,
+            "seed": 1209934845,
+            "max_tokens": 128,
+        },
+    }
+    assert result.request_metadata == {
+        "source": "opencode_1.18.4_ollama_http_capture",
+        "observed": True,
+        "path": "/v1/chat/completions",
+        "temperature": 1.0,
+        "seed": 1209934845,
+        "max_output_tokens": 128,
+        "trial_index": 1,
+    }
 
 
 def test_run_lac_uses_fail_closed_config_and_agent_variant(tmp_path):

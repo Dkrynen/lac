@@ -12,6 +12,7 @@ from .capture import (
     bounded_http_json,
 )
 from .result import ArmResult
+from .schedule import GenerationSettings, TrialSpec
 from .task import EvalTask, snapshot_fixture
 
 
@@ -97,14 +98,29 @@ def run_raw(
     model: str,
     ollama_host: str,
     *,
+    generation: GenerationSettings | None = None,
+    trial: TrialSpec | None = None,
     request_fn: RequestFn = _request_json,
 ) -> ArmResult:
     started = time.perf_counter()
+    if (generation is None) != (trial is None):
+        raise ValueError("generation and trial must be provided together")
+    options = (
+        {"seed": 0, "temperature": 0}
+        if generation is None
+        else {
+            "seed": trial.seed,
+            "temperature": generation.temperature,
+            "num_predict": generation.max_output_tokens,
+        }
+    )
     request_metadata = {
         "stream": False,
-        "options": {"seed": 0, "temperature": 0},
+        "options": dict(options),
         "response_max_bytes": OLLAMA_RESPONSE_MAX_BYTES,
     }
+    if trial is not None:
+        request_metadata["trial_index"] = trial.index
     if not _is_loopback_ollama_host(ollama_host):
         return ArmResult(
             arm="raw",
@@ -122,7 +138,7 @@ def run_raw(
         "model": model,
         "messages": [{"role": "user", "content": build_raw_prompt(task)}],
         "stream": False,
-        "options": {"seed": 0, "temperature": 0},
+        "options": dict(options),
     }
     response_capture: dict[str, object] = {
         "allowed_bytes": OLLAMA_RESPONSE_MAX_BYTES,

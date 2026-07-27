@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from backend.agent_eval.schedule import GenerationSettings
+
 
 def _evaluation_loopback_host(host: str) -> bool:
     parsed = urlsplit(host)
@@ -85,6 +87,8 @@ def build_opencode_config(
     permission: dict | None = None,
     tools: dict | None = None,
     evaluation: bool = False,
+    generation: GenerationSettings | None = None,
+    seed: int | None = None,
 ) -> dict:
     base_url = ollama_host.rstrip("/") + "/v1"
     if evaluation and not _evaluation_loopback_host(ollama_host):
@@ -105,6 +109,23 @@ def build_opencode_config(
         config["permission"] = copy.deepcopy(permission)
     if tools is not None:
         config["tools"] = copy.deepcopy(tools)
+    if (generation is None) != (seed is None):
+        raise ValueError("generation and seed must be provided together")
+    if generation is not None:
+        if not isinstance(generation, GenerationSettings):
+            raise TypeError("generation must be GenerationSettings")
+        if type(seed) is not int or seed < 0 or seed > 0x7FFFFFFF:
+            raise ValueError("seed must be a 31-bit non-negative integer")
+        config["agent"] = {
+            "build": {
+                "temperature": generation.temperature,
+                "options": {
+                    "seed": seed,
+                    "max_tokens": generation.max_output_tokens,
+                },
+                "steps": 1,
+            }
+        }
     if evaluation:
         config.pop("$schema")
         config.update(
@@ -129,6 +150,8 @@ def write_opencode_config_file(
     *,
     permission: dict | None = None,
     tools: dict | None = None,
+    generation: GenerationSettings | None = None,
+    seed: int | None = None,
 ) -> Path:
     """Write an explicit config path without creating a project `.opencode`.
 
@@ -141,7 +164,13 @@ def write_opencode_config_file(
     out.write_text(
         json.dumps(
             build_opencode_config(
-                model, ollama_host, permission=permission, tools=tools, evaluation=True
+                model,
+                ollama_host,
+                permission=permission,
+                tools=tools,
+                evaluation=True,
+                generation=generation,
+                seed=seed,
             ),
             indent=2,
         ),

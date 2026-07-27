@@ -4,6 +4,7 @@ from pathlib import Path
 
 import backend.agent_eval.raw_ollama as raw_module
 from backend.agent_eval.raw_ollama import build_raw_prompt, run_raw
+from backend.agent_eval.schedule import GenerationSettings, TrialSpec
 from backend.agent_eval.task import EvalScorer, EvalTask
 
 
@@ -79,6 +80,45 @@ def test_run_raw_sends_bounded_fixture_prompt_without_tools(tmp_path):
         "response_max_bytes": 8 * 1024 * 1024,
     }
     assert result.capture["response"]["overflowed"] is False
+
+
+def test_run_raw_applies_identical_trial_generation_to_body_and_metadata(
+    tmp_path,
+):
+    captured = {}
+    generation = GenerationSettings(1.0, 20260726, 128)
+    trial = TrialSpec(1, 1209934845, ("raw", "stock", "lac"))
+
+    result = run_raw(
+        _task(tmp_path),
+        "gpt-oss:20b",
+        "http://127.0.0.1:11434",
+        generation=generation,
+        trial=trial,
+        request_fn=lambda host, body, timeout: (
+            captured.update(host=host, body=body, timeout=timeout)
+            or {
+                "message": {"content": "ZeroDivisionError"},
+                "done": True,
+            }
+        ),
+    )
+
+    assert captured["body"]["options"] == {
+        "temperature": 1.0,
+        "seed": 1209934845,
+        "num_predict": 128,
+    }
+    assert result.request_metadata == {
+        "stream": False,
+        "options": {
+            "temperature": 1.0,
+            "seed": 1209934845,
+            "num_predict": 128,
+        },
+        "response_max_bytes": 8 * 1024 * 1024,
+        "trial_index": 1,
+    }
 
 
 def test_raw_prompt_builder_exposes_the_exact_auditable_input(tmp_path):

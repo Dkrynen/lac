@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import stat
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +31,7 @@ from .opencode import run_lac, run_stock
 from .ledger import atomic_write_json, seal_evidence
 from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
 from .result import ArmResult
+from .schedule import EvaluationSchedule, build_schedule
 from .scoring import ScoreResult, score_exact_text
 from .fixture import (
     FixtureManifest,
@@ -244,6 +247,224 @@ def _score_result(result: ArmResult, expected: str) -> ScoreResult:
     )
 
 
+def _artifact_token(path: Path) -> tuple[int, int, int, int, int, str]:
+    before = path.lstat()
+    if (
+        path.is_symlink()
+        or getattr(before, "st_file_attributes", 0) & 0x0400
+        or not stat.S_ISREG(before.st_mode)
+    ):
+        raise ValueError(f"artifact is linked or not regular: {path}")
+    payload = path.read_bytes()
+    after = path.stat()
+    before_token = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_token = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if before_token != after_token or len(payload) != before.st_size:
+        raise ValueError(f"artifact changed during measurement: {path}")
+    return (*before_token, hashlib.sha256(payload).hexdigest())
+
+
+def _sampling_metadata_matches(
+    arm: str,
+    metadata: object,
+    *,
+    trial_index: int,
+    seed: int,
+    temperature: float,
+    max_output_tokens: int,
+) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    if arm == "raw":
+        options = metadata.get("options")
+        return (
+            type(metadata.get("trial_index")) is int
+            and metadata["trial_index"] == trial_index
+            and metadata.get("stream") is False
+            and isinstance(options, dict)
+            and set(options) == {"temperature", "seed", "num_predict"}
+            and type(options.get("seed")) is int
+            and options["seed"] == seed
+            and not isinstance(options.get("temperature"), bool)
+            and options["temperature"] == temperature
+            and type(options.get("num_predict")) is int
+            and options["num_predict"] == max_output_tokens
+        )
+    return (
+        set(metadata)
+        == {
+            "source",
+            "observed",
+            "path",
+            "temperature",
+            "seed",
+            "max_output_tokens",
+            "trial_index",
+        }
+        and metadata.get("source")
+        == "opencode_1.18.4_ollama_http_capture"
+        and metadata.get("observed") is True
+        and metadata.get("path") == "/v1/chat/completions"
+        and type(metadata.get("trial_index")) is int
+        and metadata["trial_index"] == trial_index
+        and type(metadata.get("seed")) is int
+        and metadata["seed"] == seed
+        and not isinstance(metadata.get("temperature"), bool)
+        and metadata["temperature"] == temperature
+        and type(metadata.get("max_output_tokens")) is int
+        and metadata["max_output_tokens"] == max_output_tokens
+    )
+
+
+def _counterbalanced_sampling_result(
+    run_root: Path,
+    schedule_payload: dict[str, Any] | None,
+    schedule_token: tuple[int, int, int, int, int, str] | None,
+    result_tokens: dict[Path, tuple[int, int, int, int, int, str]],
+) -> EvidenceControlResult:
+    errors: list[str] = []
+    if schedule_payload is None or schedule_token is None:
+        return EvidenceControlResult(
+            "counterbalanced_deterministic_sampling",
+            EvidenceState.FAIL,
+            "persisted deterministic schedule was not available",
+            {"record_count": 0, "errors": ["schedule missing"]},
+        )
+    schedule_path = run_root / "schedule.json"
+    try:
+        if _artifact_token(schedule_path) != schedule_token:
+            errors.append("schedule was replaced or changed after persistence")
+        observed_schedule = json.loads(
+            schedule_path.read_text(encoding="utf-8")
+        )
+        if _artifact_token(schedule_path) != schedule_token:
+            errors.append("schedule changed while it was being validated")
+        if observed_schedule != schedule_payload:
+            errors.append("schedule payload does not match derived schedule")
+    except Exception as exc:
+        observed_schedule = None
+        errors.append(f"schedule read failed: {type(exc).__name__}: {exc}")
+
+    expected_paths: dict[Path, tuple[dict[str, Any], str, int]] = {}
+    for trial in schedule_payload["trials"]:
+        for position, arm in enumerate(trial["arm_order"]):
+            expected_paths[
+                (
+                    run_root
+                    / "trials"
+                    / f"{trial['index']:03d}"
+                    / arm
+                    / "result.json"
+                ).resolve()
+            ] = (trial, arm, position)
+    actual_paths = {
+        path.resolve()
+        for path in (run_root / "trials").glob("*/*/result.json")
+    }
+    if actual_paths != set(expected_paths):
+        missing = sorted(str(path) for path in set(expected_paths) - actual_paths)
+        extra = sorted(str(path) for path in actual_paths - set(expected_paths))
+        errors.append(f"result path set mismatch; missing={missing}; extra={extra}")
+
+    identities: set[tuple[int, str]] = set()
+    valid_records = 0
+    generation = schedule_payload["generation"]
+    for path, (trial, arm, position) in expected_paths.items():
+        try:
+            token = result_tokens.get(path)
+            if token is None or _artifact_token(path) != token:
+                errors.append(f"{path}: result was missing, replaced, or changed")
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if _artifact_token(path) != token:
+                errors.append(f"{path}: result changed while being validated")
+                continue
+            if not isinstance(payload, dict):
+                raise ValueError("record is not an object")
+            observed_trial = payload.get("trial")
+            expected_trial = {
+                "index": trial["index"],
+                "seed": trial["seed"],
+                "order_position": position,
+                "arm_order": trial["arm_order"],
+            }
+            if observed_trial != expected_trial:
+                raise ValueError("trial identity/order/seed mismatch")
+            if (
+                type(observed_trial.get("index")) is not int
+                or type(observed_trial.get("seed")) is not int
+                or type(observed_trial.get("order_position")) is not int
+            ):
+                raise ValueError("trial integer field has invalid type")
+            identity = (observed_trial["index"], arm)
+            if identity in identities:
+                raise ValueError("duplicate trial/arm identity")
+            identities.add(identity)
+            observed_generation = payload.get("generation")
+            if (
+                not isinstance(observed_generation, dict)
+                or set(observed_generation)
+                != {"temperature", "seed_base", "max_output_tokens"}
+                or type(observed_generation.get("temperature")) is not float
+                or type(observed_generation.get("seed_base")) is not int
+                or type(observed_generation.get("max_output_tokens"))
+                is not int
+                or observed_generation != generation
+            ):
+                raise ValueError("generation settings mismatch")
+            if payload.get("model_digest") != schedule_payload[
+                "model_digests"
+            ][arm]:
+                raise ValueError("model digest mismatch")
+            result = payload.get("result")
+            if (
+                not isinstance(result, dict)
+                or result.get("arm") != arm
+                or not _sampling_metadata_matches(
+                    arm,
+                    result.get("request_metadata"),
+                    trial_index=trial["index"],
+                    seed=trial["seed"],
+                    temperature=generation["temperature"],
+                    max_output_tokens=generation["max_output_tokens"],
+                )
+            ):
+                raise ValueError("captured request metadata mismatch")
+            valid_records += 1
+        except Exception as exc:
+            errors.append(f"{path}: {type(exc).__name__}: {exc}")
+
+    return EvidenceControlResult(
+        "counterbalanced_deterministic_sampling",
+        EvidenceState.FAIL if errors else EvidenceState.PASS,
+        (
+            "; ".join(errors)
+            if errors
+            else (
+                "three canonical cyclic trials and nine observed requests "
+                "matched the immutable deterministic schedule"
+            )
+        ),
+        {
+            "record_count": valid_records,
+            "expected_record_count": 9,
+            "errors": errors,
+        },
+    )
+
+
 def _valid_capture_record(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -263,21 +484,28 @@ def _bounded_capture_result(
 ) -> EvidenceControlResult:
     invalid: list[str] = []
     details: dict[str, Any] = {}
-    for arm in ("raw", "stock", "lac"):
-        capture = results[arm].capture
-        details[arm] = capture
+    for record_key, result in results.items():
+        arm = result.arm
+        capture = result.capture
+        details[record_key] = capture
         if not isinstance(capture, dict):
-            invalid.append(f"{arm}: capture evidence is not an object")
+            invalid.append(
+                f"{record_key}: capture evidence is not an object"
+            )
             continue
         if arm == "raw":
             if not _valid_capture_record(capture.get("response")):
-                invalid.append(f"{arm}: response capture is missing or invalid")
+                invalid.append(
+                    f"{record_key}: response capture is missing or invalid"
+                )
             continue
         if capture.get("cleanup_complete") is not True:
-            invalid.append(f"{arm}: capture cleanup was not complete")
+            invalid.append(f"{record_key}: capture cleanup was not complete")
         for stream in ("stdout", "stderr"):
             if not _valid_capture_record(capture.get(stream)):
-                invalid.append(f"{arm}: {stream} capture is missing or invalid")
+                invalid.append(
+                    f"{record_key}: {stream} capture is missing or invalid"
+                )
     return EvidenceControlResult(
         "bounded_process_and_http_capture",
         EvidenceState.FAIL if invalid else EvidenceState.PASS,
@@ -296,25 +524,30 @@ def _windows_containment_result(
 ) -> EvidenceControlResult:
     invalid: list[str] = []
     details: dict[str, Any] = {}
-    for arm in ("stock", "lac"):
-        capture = results[arm].capture
+    for record_key, result in results.items():
+        arm = result.arm
+        if arm == "raw":
+            continue
+        capture = result.capture
         measured = (
             capture.get("windows_job")
             if isinstance(capture, dict)
             else None
         )
-        details[arm] = measured
-        if arm not in measured_arms:
+        details[record_key] = measured
+        if record_key not in measured_arms:
             invalid.append(
-                f"{arm}: containment was not produced by the measured "
+                f"{record_key}: containment was not produced by the measured "
                 "default adapter"
             )
             continue
         if not isinstance(measured, dict):
-            invalid.append(f"{arm}: Windows Job evidence is missing")
+            invalid.append(f"{record_key}: Windows Job evidence is missing")
             continue
         if capture.get("windows_job_measured") is not True:
-            invalid.append(f"{arm}: typed Job measurement marker is missing")
+            invalid.append(
+                f"{record_key}: typed Job measurement marker is missing"
+            )
             continue
         expected = {
             "real_windows_job": True,
@@ -337,15 +570,19 @@ def _windows_containment_result(
         for name, value in expected.items():
             observed = measured.get(name)
             if name in boolean_fields and type(observed) is not bool:
-                invalid.append(f"{arm}: {name} is not an exact boolean")
+                invalid.append(
+                    f"{record_key}: {name} is not an exact boolean"
+                )
             elif name in {
                 "active_process_limit",
                 "final_active_processes",
             } and type(observed) is not int:
-                invalid.append(f"{arm}: {name} is not an exact integer")
+                invalid.append(
+                    f"{record_key}: {name} is not an exact integer"
+                )
             elif observed != value:
                 invalid.append(
-                    f"{arm}: {name} was not proven as {value!r}"
+                    f"{record_key}: {name} was not proven as {value!r}"
                 )
     return EvidenceControlResult(
         "windows_process_tree_containment",
@@ -449,16 +686,28 @@ def run_evaluation(
     if run_root.exists():
         raise EvalPlanError(f"evaluation run already exists: {run_root}")
 
+    v2_sampling = (
+        plan.task.schema_version == 2
+        and plan.task.trials == 3
+        and plan.task.generation is not None
+    )
     workspaces_root = run_root / "workspaces"
     arms_root = run_root / "arms"
-    workspaces_root.mkdir(parents=True)
-    arms_root.mkdir()
+    trials_root = run_root / "trials"
+    if v2_sampling:
+        trials_root.mkdir(parents=True)
+    else:
+        workspaces_root.mkdir(parents=True)
+        arms_root.mkdir()
     manifest = _manifest(plan, environment or {}, mode)
     atomic_write_json(run_root / "manifest.json", manifest)
 
     identity_results: tuple[EvidenceControlResult, ...]
     preflight: EvaluationIdentitySnapshot | None = None
     runtime_leases: Any | None = None
+    schedule: EvaluationSchedule | None = None
+    schedule_payload: dict[str, Any] | None = None
+    schedule_token: tuple[int, int, int, int, int, str] | None = None
     try:
         preflight = identity_capture_fn(plan)
         identity_root = run_root / "identities"
@@ -469,6 +718,28 @@ def run_evaluation(
         identity_results = _identity_failures(
             "identity postflight was not completed"
         )
+        if v2_sampling:
+            model_digests = {
+                "raw": preflight.models.base.digest,
+                "stock": preflight.models.base.digest,
+                "lac": preflight.models.lac.digest,
+            }
+            schedule = build_schedule(
+                task_contract_sha256(plan.task),
+                model_digests,
+                plan.task.generation,
+                plan.task.trials,
+            )
+            schedule_payload = {
+                "schema_version": 1,
+                "task_contract_sha256": task_contract_sha256(plan.task),
+                "model_digests": dict(sorted(model_digests.items())),
+                "generation": plan.task.generation.to_dict(),
+                **schedule.to_dict(),
+            }
+            schedule_path = run_root / "schedule.json"
+            atomic_write_json(schedule_path, schedule_payload)
+            schedule_token = _artifact_token(schedule_path)
     except Exception as exc:
         reason = f"identity preflight failed: {type(exc).__name__}: {exc}"
         identity_results = _identity_failures(reason)
@@ -504,18 +775,43 @@ def run_evaluation(
         )
 
     results: dict[str, ArmResult] = {}
+    all_results: dict[str, ArmResult] = {}
     measured_windows_arms: set[str] = set()
     scores: dict[str, ScoreResult] = {}
+    all_scores: dict[str, ScoreResult] = {}
+    result_tokens: dict[
+        Path, tuple[int, int, int, int, int, str]
+    ] = {}
     fixture_controls: list[EvidenceControlResult] = []
     try:
-        for arm, model, adapter in (
-            ("raw", plan.base_model, raw_fn),
-            ("stock", plan.base_model, stock_fn),
-            ("lac", plan.lac_model, lac_fn),
-        ):
-            workspace = workspaces_root / arm
-            arm_dir = arms_root / arm
-            arm_dir.mkdir()
+        adapters = {
+            "raw": (plan.base_model, raw_fn),
+            "stock": (plan.base_model, stock_fn),
+            "lac": (plan.lac_model, lac_fn),
+        }
+        if v2_sampling and schedule is not None:
+            execution_specs = [
+                (trial, arm, *adapters[arm])
+                for trial in schedule.trials
+                for arm in trial.arm_order
+            ]
+        elif v2_sampling:
+            execution_specs = []
+        else:
+            execution_specs = [
+                (None, arm, model, adapter)
+                for arm, (model, adapter) in adapters.items()
+            ]
+        for trial, arm, model, adapter in execution_specs:
+            if trial is None:
+                workspace = workspaces_root / arm
+                arm_dir = arms_root / arm
+                result_key = arm
+            else:
+                arm_dir = trials_root / f"{trial.index:03d}" / arm
+                workspace = arm_dir / "workspace"
+                result_key = f"{trial.index:03d}/{arm}"
+            arm_dir.mkdir(parents=True)
             try:
                 seal = materialize_fixture(plan.fixture_manifest, plan.task.fixture_root, workspace)
                 atomic_write_json(arm_dir / "fixture-manifest.before.json", plan.fixture_manifest.to_dict())
@@ -540,10 +836,23 @@ def run_evaluation(
                     )
                 if seal is None or not seal.ok or not seal.acl_hardened:
                     raise EvalPlanError("sealed fixture materialization was not available")
+                sampling_kwargs = (
+                    {}
+                    if trial is None
+                    else {
+                        "generation": plan.task.generation,
+                        "trial": trial,
+                    }
+                )
                 if arm == "raw":
-                    candidate = adapter(arm_task, model, plan.ollama_host)
+                    candidate = adapter(
+                        arm_task,
+                        model,
+                        plan.ollama_host,
+                        **sampling_kwargs,
+                    )
                 else:
-                    adapter_kwargs = {}
+                    adapter_kwargs = dict(sampling_kwargs)
                     if adapter in (run_stock, run_lac):
                         if preflight is None or runtime_leases is None:
                             raise EvalPlanError(
@@ -573,12 +882,14 @@ def run_evaluation(
                     and adapter in (run_stock, run_lac)
                     and result.capture.get("windows_job_measured") is True
                 ):
-                    measured_windows_arms.add(arm)
+                    measured_windows_arms.add(result_key)
             except Exception as exc:
                 result = _adapter_failure(arm, model, exc)
             score = _score_result(result, plan.task.scorer.expected)
             results[arm] = result
             scores[arm] = score
+            all_results[result_key] = result
+            all_scores[result_key] = score
 
             if arm == "raw":
                 try:
@@ -596,10 +907,28 @@ def run_evaluation(
             (arm_dir / "stderr.log").write_text(
                 result.raw_stderr, encoding="utf-8"
             )
-            atomic_write_json(
-                arm_dir / "result.json",
-                {"result": asdict(result), "score": asdict(score)},
-            )
+            result_payload: dict[str, Any] = {
+                "result": asdict(result),
+                "score": asdict(score),
+            }
+            if trial is not None and schedule_payload is not None:
+                result_payload.update(
+                    {
+                        "trial": {
+                            "index": trial.index,
+                            "seed": trial.seed,
+                            "order_position": trial.arm_order.index(arm),
+                            "arm_order": list(trial.arm_order),
+                        },
+                        "generation": plan.task.generation.to_dict(),
+                        "model_digest": schedule_payload[
+                            "model_digests"
+                        ][arm],
+                    }
+                )
+            result_path = arm_dir / "result.json"
+            atomic_write_json(result_path, result_payload)
+            result_tokens[result_path.resolve()] = _artifact_token(result_path)
             verification = verify_materialized_fixture(plan.fixture_manifest, workspace)
             atomic_write_json(
                 arm_dir / "fixture-manifest.after.json",
@@ -639,6 +968,21 @@ def run_evaluation(
                         ),
                         {"arm": arm, "acl_hardened": seal.acl_hardened},
                     )
+                )
+
+        for arm, (model, _adapter) in adapters.items():
+            if arm not in results:
+                result = _adapter_failure(
+                    arm,
+                    model,
+                    EvalPlanError(
+                        "deterministic schedule was not available"
+                    ),
+                )
+                results[arm] = result
+                scores[arm] = _score_result(
+                    result,
+                    plan.task.scorer.expected,
                 )
 
         if preflight is not None and runtime_leases is not None:
@@ -698,9 +1042,12 @@ def run_evaluation(
 
     config_evidence: dict[str, Any] = {}
     config_ok = True
-    for arm in ("stock", "lac"):
-        measured = results[arm].metrics.get("opencode_config_identity")
-        config_evidence[arm] = measured
+    config_candidates = all_results if v2_sampling else results
+    for record_key, result in config_candidates.items():
+        if result.arm == "raw":
+            continue
+        measured = result.metrics.get("opencode_config_identity")
+        config_evidence[record_key] = measured
         if (
             not isinstance(measured, dict)
             or not _complete_config_identity(measured.get("before"))
@@ -726,8 +1073,26 @@ def run_evaluation(
         "run_root": str(run_root),
         "artifact_written": True,
         "evidence_blockers": list(_EVIDENCE_BLOCKERS),
-        "all_arms_executed": all(result.completed for result in results.values()),
-        "all_arms_passed": all(score.passed for score in scores.values()),
+        "all_arms_executed": (
+            len(all_results) == 9
+            if v2_sampling
+            else len(results) == 3
+        ) and all(
+            result.completed
+            for result in (
+                all_results.values() if v2_sampling else results.values()
+            )
+        ),
+        "all_arms_passed": (
+            len(all_scores) == 9
+            if v2_sampling
+            else len(scores) == 3
+        ) and all(
+            score.passed
+            for score in (
+                all_scores.values() if v2_sampling else scores.values()
+            )
+        ),
         "scores": {arm: score.score for arm, score in scores.items()},
         "passes": {arm: score.passed for arm, score in scores.items()},
         "models": {arm: result.model for arm, result in results.items()},
@@ -739,6 +1104,35 @@ def run_evaluation(
         ],
         "opencode_config_identities": config_evidence,
     }
+    if v2_sampling and schedule is not None:
+        per_trial = []
+        pass_counts = {"raw": 0, "stock": 0, "lac": 0}
+        for trial in schedule.trials:
+            trial_scores = {
+                arm: all_scores[f"{trial.index:03d}/{arm}"].score
+                for arm in trial.arm_order
+            }
+            trial_passes = {
+                arm: all_scores[f"{trial.index:03d}/{arm}"].passed
+                for arm in trial.arm_order
+            }
+            for arm, passed in trial_passes.items():
+                pass_counts[arm] += int(passed)
+            per_trial.append(
+                {
+                    "index": trial.index,
+                    "seed": trial.seed,
+                    "arm_order": list(trial.arm_order),
+                    "scores": trial_scores,
+                    "passes": trial_passes,
+                }
+            )
+        comparison["trials"] = per_trial
+        comparison["aggregate"] = {
+            "trial_count": 3,
+            "record_count": len(all_results),
+            "pass_counts": pass_counts,
+        }
     atomic_write_json(run_root / "comparison.json", comparison)
     carried_results = [
         item
@@ -750,21 +1144,34 @@ def run_evaluation(
             "bounded_process_and_http_capture",
             "windows_process_tree_containment",
             "os_loopback_only_egress",
+            "counterbalanced_deterministic_sampling",
         }
     ]
-    fixture_ok = len(fixture_controls) == 3 and all(
+    expected_fixture_controls = 9 if v2_sampling else 3
+    fixture_ok = len(fixture_controls) == expected_fixture_controls and all(
         item.state is EvidenceState.PASS for item in fixture_controls
     )
     fixture_result = EvidenceControlResult(
         "sealed_fixture_materialization",
         EvidenceState.PASS if fixture_ok else EvidenceState.FAIL,
-        "all arms received distinct post-verified sealed fixtures" if fixture_ok else "one or more sealed fixture checks failed",
+        (
+            "all scheduled arms received distinct post-verified sealed fixtures"
+            if fixture_ok
+            else "one or more sealed fixture checks failed"
+        ),
         {"arms": [item.details for item in fixture_controls]},
     )
-    capture_result = _bounded_capture_result(results)
+    control_results = all_results if v2_sampling else results
+    capture_result = _bounded_capture_result(control_results)
     windows_containment_result = _windows_containment_result(
-        results,
+        control_results,
         measured_windows_arms,
+    )
+    sampling_result = _counterbalanced_sampling_result(
+        run_root,
+        schedule_payload,
+        schedule_token,
+        result_tokens,
     )
     evidence = seal_evidence(
         run_root,
@@ -776,6 +1183,7 @@ def run_evaluation(
             fixture_result,
             windows_containment_result,
             capture_result,
+            sampling_result,
         ],
     )
     return {**comparison, "evidence": evidence}

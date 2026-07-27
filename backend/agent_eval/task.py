@@ -10,18 +10,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .evidence import (
+    EvidenceControlResult,
+    EvidenceMode,
+    EvidenceState,
+)
 from .identity import canonical_sha256
+from .schedule import GenerationSettings, ScheduleError
 from backend.project_security import is_sensitive_project_path
 
 
-TASK_SCHEMA_VERSION = 1
+TASK_SCHEMA_VERSION = 2
 MAX_FIXTURE_FILE_BYTES = 128 * 1024
 MAX_FIXTURE_TOTAL_BYTES = 192 * 1024
 MAX_TIMEOUT_SECONDS = 900
 
 _TASK_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
-_MANIFEST_KEYS = frozenset(
+_MANIFEST_KEYS_V1 = frozenset(
     {"schema_version", "id", "prompt", "fixture", "timeout_seconds", "scorer"}
+)
+_MANIFEST_KEYS_V2 = _MANIFEST_KEYS_V1 | frozenset({"trials", "generation"})
+_GENERATION_KEYS = frozenset(
+    {"temperature", "seed_base", "max_output_tokens"}
 )
 _SCORER_KEYS = frozenset({"type", "expected"})
 
@@ -44,25 +54,33 @@ class EvalTask:
     fixture_root: Path
     timeout_seconds: int
     scorer: EvalScorer
+    trials: int = 1
+    generation: GenerationSettings | None = None
 
 
 def task_contract_sha256(task: EvalTask) -> str:
     """Hash the task behavior that a sealed fixture is allowed to serve."""
 
-    return canonical_sha256(
-        {
-            "schema_version": task.schema_version,
-            "id": task.id,
-            "prompt": task.prompt,
-            "timeout_seconds": task.timeout_seconds,
-            "scorer": {
-                "type": task.scorer.type,
-                "expected_sha256": hashlib.sha256(
-                    task.scorer.expected.encode("utf-8")
-                ).hexdigest(),
-            },
-        }
-    )
+    contract: dict[str, Any] = {
+        "schema_version": task.schema_version,
+        "id": task.id,
+        "prompt": task.prompt,
+        "timeout_seconds": task.timeout_seconds,
+        "scorer": {
+            "type": task.scorer.type,
+            "expected_sha256": hashlib.sha256(
+                task.scorer.expected.encode("utf-8")
+            ).hexdigest(),
+        },
+    }
+    if task.schema_version == 2:
+        if task.generation is None:
+            raise EvalTaskError("schema v2 task is missing generation settings")
+        contract.update(
+            trials=task.trials,
+            generation=task.generation.to_dict(),
+        )
+    return canonical_sha256(contract)
 
 
 def _require_exact_keys(data: dict[str, Any], allowed: frozenset[str], label: str) -> None:
@@ -84,7 +102,25 @@ def _safe_child(root: Path, child: Path, label: str) -> Path:
     return resolved
 
 
-def load_task(task_id: str, suite_root: str | Path) -> EvalTask:
+def _legacy_schema_allowed(
+    mode: EvidenceMode,
+    evidence_results: tuple[EvidenceControlResult, ...],
+) -> bool:
+    return mode is EvidenceMode.DIAGNOSTIC and any(
+        isinstance(item, EvidenceControlResult)
+        and item.name == "legacy_task_schema"
+        and item.state is EvidenceState.PASS
+        for item in evidence_results
+    )
+
+
+def load_task(
+    task_id: str,
+    suite_root: str | Path,
+    *,
+    mode: EvidenceMode = EvidenceMode.VERIFIED,
+    evidence_results: tuple[EvidenceControlResult, ...] = (),
+) -> EvalTask:
     if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
         raise EvalTaskError("task id must be lowercase letters, digits, and hyphens")
 
@@ -98,12 +134,23 @@ def load_task(task_id: str, suite_root: str | Path) -> EvalTask:
         raise EvalTaskError(f"cannot read task manifest {task_id}: {exc}") from exc
     if not isinstance(raw, dict):
         raise EvalTaskError("task manifest must be a JSON object")
-    _require_exact_keys(raw, _MANIFEST_KEYS, "task manifest")
-
-    if raw["schema_version"] != TASK_SCHEMA_VERSION:
+    schema_version = raw.get("schema_version")
+    if type(schema_version) is not int or schema_version not in {1, 2}:
         raise EvalTaskError(
-            f"schema_version must be exactly {TASK_SCHEMA_VERSION}"
+            "schema_version must be exactly 2"
         )
+    if schema_version == 1:
+        _require_exact_keys(raw, _MANIFEST_KEYS_V1, "task manifest")
+        if not _legacy_schema_allowed(mode, evidence_results):
+            if mode is EvidenceMode.VERIFIED:
+                raise EvalTaskError(
+                    "schema_version 1 is forbidden in verified mode"
+                )
+            raise EvalTaskError(
+                "schema_version 1 requires legacy_task_schema evidence"
+            )
+    else:
+        _require_exact_keys(raw, _MANIFEST_KEYS_V2, "task manifest")
     if raw["id"] != task_id:
         raise EvalTaskError("manifest id must match the requested task id")
     prompt = raw["prompt"]
@@ -142,13 +189,38 @@ def load_task(task_id: str, suite_root: str | Path) -> EvalTask:
     if not isinstance(expected, str) or not expected.strip():
         raise EvalTaskError("scorer expected must be a non-empty string")
 
+    trials = 1
+    generation = None
+    if schema_version == 2:
+        trials = raw["trials"]
+        if type(trials) is not int or trials != 3:
+            raise EvalTaskError("trials must be exactly 3")
+        generation_raw = raw["generation"]
+        if not isinstance(generation_raw, dict):
+            raise EvalTaskError("generation must be an object")
+        _require_exact_keys(
+            generation_raw,
+            _GENERATION_KEYS,
+            "generation",
+        )
+        try:
+            generation = GenerationSettings(
+                generation_raw["temperature"],
+                generation_raw["seed_base"],
+                generation_raw["max_output_tokens"],
+            )
+        except ScheduleError as exc:
+            raise EvalTaskError(str(exc)) from exc
+
     return EvalTask(
-        schema_version=TASK_SCHEMA_VERSION,
+        schema_version=schema_version,
         id=task_id,
         prompt=prompt.strip(),
         fixture_root=fixture_root,
         timeout_seconds=timeout,
         scorer=EvalScorer(type="exact_text", expected=expected.strip()),
+        trials=trials,
+        generation=generation,
     )
 
 

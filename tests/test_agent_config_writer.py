@@ -10,6 +10,7 @@ from backend.agent_launch.config_writer import (
     write_opencode_config_file,
     write_stock_opencode_config,
 )
+from backend.agent_eval.schedule import GenerationSettings
 
 
 def test_evaluation_config_is_local_only_and_disables_ambient_features(tmp_path):
@@ -26,6 +27,28 @@ def test_evaluation_config_is_local_only_and_disables_ambient_features(tmp_path)
     assert cfg["instructions"] == []
     assert cfg["formatter"] is False
     assert cfg["snapshot"] is False
+
+
+def test_evaluation_config_pins_build_agent_generation_settings(tmp_path):
+    generation = GenerationSettings(1.0, 20260726, 128)
+
+    out = write_opencode_config_file(
+        tmp_path / "runtime" / "opencode.json",
+        "gpt-oss:20b",
+        "http://127.0.0.1:11434",
+        generation=generation,
+        seed=1209934845,
+    )
+
+    cfg = json.loads(out.read_text(encoding="utf-8"))
+    assert cfg["agent"]["build"] == {
+        "temperature": 1.0,
+        "options": {
+            "seed": 1209934845,
+            "max_tokens": 128,
+        },
+        "steps": 1,
+    }
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,7 @@ import stat
 import subprocess
 import time
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,6 +28,7 @@ from .capture import (
 )
 from .raw_ollama import _is_loopback_ollama_host
 from .result import ArmResult
+from .schedule import GenerationSettings, TrialSpec
 from .task import EvalTask
 
 
@@ -79,6 +80,7 @@ class _ProcessOutcome:
     raw_stdout: bytes
     raw_stderr: bytes
     capture: dict[str, Any]
+    ollama_http_capture: dict[str, Any] = field(default_factory=dict)
 
 
 def _nonnegative_number(value: Any) -> float | int | None:
@@ -243,6 +245,7 @@ def _failure(
     stderr: str = "",
     metrics: dict[str, Any] | None = None,
     capture: dict[str, Any] | None = None,
+    request_metadata: dict[str, Any] | None = None,
 ) -> ArmResult:
     return ArmResult(
         arm=arm,
@@ -257,7 +260,38 @@ def _failure(
         raw_stdout=stdout,
         raw_stderr=stderr,
         capture=capture or {},
+        request_metadata=request_metadata or {},
     )
+
+
+def _observed_sampling_metadata(
+    capture: dict[str, Any],
+    trial: TrialSpec | None,
+) -> dict[str, Any]:
+    if trial is None or capture.get("path") != "/v1/chat/completions":
+        return {}
+    body = capture.get("body")
+    if not isinstance(body, dict):
+        return {}
+    temperature = body.get("temperature")
+    seed = body.get("seed")
+    max_output_tokens = body.get("max_tokens")
+    if (
+        isinstance(temperature, bool)
+        or not isinstance(temperature, (int, float))
+        or type(seed) is not int
+        or type(max_output_tokens) is not int
+    ):
+        return {}
+    return {
+        "source": "opencode_1.18.4_ollama_http_capture",
+        "observed": True,
+        "path": "/v1/chat/completions",
+        "temperature": float(temperature),
+        "seed": seed,
+        "max_output_tokens": max_output_tokens,
+        "trial_index": trial.index,
+    }
 
 
 def _config_identity(fd: int, path: Path) -> dict[str, Any]:
@@ -374,6 +408,9 @@ def _run_process_outcome(
         if launcher is not None:
             kwargs["launcher"] = launcher
         process = run_fn(argv, **kwargs)
+        ollama_http_capture = getattr(process, "ollama_http_capture", {})
+        if not isinstance(ollama_http_capture, dict):
+            ollama_http_capture = {}
         if isinstance(process, CapturedProcess):
             capture = {
                 "cleanup_complete": process.cleanup_complete,
@@ -401,6 +438,7 @@ def _run_process_outcome(
                 process.raw_stdout,
                 process.raw_stderr,
                 capture,
+                ollama_http_capture,
             )
         exit_code = int(getattr(process, "returncode", 1))
         stdout = _as_text(getattr(process, "stdout", ""))
@@ -429,6 +467,7 @@ def _run_process_outcome(
             raw_stdout,
             raw_stderr,
             capture,
+            ollama_http_capture,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = _as_text(exc.output)
@@ -522,6 +561,8 @@ def _run_opencode(
     workspace: str | Path,
     arm: str,
     *,
+    generation: GenerationSettings | None = None,
+    trial: TrialSpec | None = None,
     resolve_bin_fn: Callable[[], Path] = resolve_opencode_binary,
     run_fn: Callable[..., Any] = run_bounded_process,
     capture_limits: CaptureLimits = DEFAULT_CAPTURE_LIMITS,
@@ -531,6 +572,14 @@ def _run_opencode(
     workspace_path = Path(workspace).resolve()
     config_measurement: dict[str, Any] = {"before": None, "after": None}
     config_metrics = {"opencode_config_identity": config_measurement}
+    if (generation is None) != (trial is None):
+        return _failure(
+            arm,
+            model,
+            started,
+            ("ValueError: generation and trial must be provided together",),
+            metrics=config_metrics,
+        )
     if not _is_loopback_ollama_host(ollama_host):
         return _failure(
             arm,
@@ -555,6 +604,8 @@ def _run_opencode(
             ollama_host,
             permission=permission,
             tools=_READ_ONLY_EVAL_TOOLS,
+            generation=generation,
+            seed=None if trial is None else trial.seed,
         )
         environment = _isolated_environment(
             workspace_path, runtime_root, config_path, ollama_host
@@ -641,6 +692,10 @@ def _run_opencode(
             {},
         )
     outcome_errors = (*outcome.errors, *lifecycle_errors)
+    request_metadata = _observed_sampling_metadata(
+        outcome.ollama_http_capture,
+        trial,
+    )
     if outcome_errors:
         return _failure(
             arm,
@@ -653,6 +708,7 @@ def _run_opencode(
             stderr=outcome.stderr,
             metrics=config_metrics,
             capture=outcome.capture,
+            request_metadata=request_metadata,
         )
 
     parsed = parse_opencode_jsonl(
@@ -679,6 +735,7 @@ def _run_opencode(
         events=parsed.events,
         unknown_event_types=parsed.unknown_event_types,
         capture=outcome.capture,
+        request_metadata=request_metadata,
     )
 
 

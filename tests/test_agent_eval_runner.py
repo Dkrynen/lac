@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import inspect
+import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,11 @@ from backend.agent_eval.identity import (
     file_identity,
 )
 from backend.agent_eval.result import ArmResult
+from backend.agent_eval.schedule import (
+    GenerationSettings,
+    TrialSpec,
+    build_schedule,
+)
 from backend.agent_eval.fixture import FixtureSealResult
 from backend.agent_eval.runner import (
     EvalPlanError,
@@ -31,7 +37,7 @@ from backend.agent_eval.runner import (
     build_plan,
     run_evaluation,
 )
-from backend.agent_eval.task import EvalScorer, EvalTask
+from backend.agent_eval.task import EvalScorer, EvalTask, task_contract_sha256
 from backend.agent_eval.windows_job import WindowsJobProcess
 
 
@@ -50,6 +56,15 @@ def _task(tmp_path: Path) -> EvalTask:
         fixture_root=fixture,
         timeout_seconds=180,
         scorer=EvalScorer(type="exact_text", expected="ZeroDivisionError"),
+    )
+
+
+def _task_v2(tmp_path: Path) -> EvalTask:
+    return replace(
+        _task(tmp_path),
+        schema_version=2,
+        trials=3,
+        generation=GenerationSettings(1.0, 20260726, 128),
     )
 
 
@@ -130,6 +145,45 @@ def _plan(tmp_path: Path):
     )
 
 
+def _plan_v2(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    return build_plan(
+        _task_v2(tmp_path),
+        base_model="gpt-oss:20b",
+        lac_model="gpt-oss:20b-agent",
+        ollama_host="http://127.0.0.1:11434",
+        output_root=tmp_path / "evidence",
+        installed_models=["gpt-oss:20b", "gpt-oss:20b-agent"],
+        opencode_binary=Path(r"C:\tools\opencode.cmd"),
+        opencode_version="1.18.4",
+        source_root=source,
+    )
+
+
+def _sampling_metadata(arm: str, trial: TrialSpec) -> dict:
+    if arm == "raw":
+        return {
+            "stream": False,
+            "options": {
+                "temperature": 1.0,
+                "seed": trial.seed,
+                "num_predict": 128,
+            },
+            "response_max_bytes": 8 * 1024 * 1024,
+            "trial_index": trial.index,
+        }
+    return {
+        "source": "opencode_1.18.4_ollama_http_capture",
+        "observed": True,
+        "path": "/v1/chat/completions",
+        "temperature": 1.0,
+        "seed": trial.seed,
+        "max_output_tokens": 128,
+        "trial_index": trial.index,
+    }
+
+
 def _runtime_snapshot(tmp_path):
     runtime = tmp_path / "runtime.exe"
     runtime.write_bytes(b"runtime")
@@ -178,6 +232,9 @@ def _restore_workspace_acls_after_test(tmp_path):
     if not evidence_root.exists():
         return
     for workspace in evidence_root.glob("*/workspaces/*"):
+        if workspace.is_dir():
+            fixture_module._restore_fixture_access(workspace)
+    for workspace in evidence_root.glob("*/trials/*/*/workspace"):
         if workspace.is_dir():
             fixture_module._restore_fixture_access(workspace)
 
@@ -347,6 +404,245 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
         assert after["observed"]["entries"] == before["entries"]
         assert after["observed"]["aggregate_sha256"] == before["aggregate_sha256"]
         assert after["observed"]["directories"] == []
+
+
+def test_v2_runner_persists_schedule_before_first_arm_and_nine_records(
+    tmp_path,
+):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path)
+    calls = []
+
+    def adapter_for(arm):
+        def run(task, model, host, workspace=None, *, generation, trial):
+            run_root = plan.output_root / "v2-nine"
+            schedule_path = run_root / "schedule.json"
+            assert schedule_path.is_file()
+            assert generation == plan.task.generation
+            assert task.fixture_root == (
+                run_root
+                / "trials"
+                / f"{trial.index:03d}"
+                / arm
+                / "workspace"
+            )
+            if workspace is not None:
+                assert Path(workspace) == task.fixture_root
+            calls.append((trial.index, arm, trial.seed))
+            return replace(
+                _result(arm, model, "ZeroDivisionError"),
+                request_metadata=_sampling_metadata(arm, trial),
+            )
+
+        return run
+
+    comparison = run_evaluation(
+        plan,
+        run_id="v2-nine",
+        raw_fn=adapter_for("raw"),
+        stock_fn=adapter_for("stock"),
+        lac_fn=adapter_for("lac"),
+        identity_capture_fn=lambda _plan: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=_noop_identity_lease,
+    )
+
+    expected_schedule = build_schedule(
+        task_contract_sha256(plan.task),
+        {
+            "raw": snapshot.models.base.digest,
+            "stock": snapshot.models.base.digest,
+            "lac": snapshot.models.lac.digest,
+        },
+        plan.task.generation,
+        3,
+    )
+    expected_seeds = [trial.seed for trial in expected_schedule.trials]
+    expected_calls = [
+        (1, "raw", expected_seeds[0]),
+        (1, "stock", expected_seeds[0]),
+        (1, "lac", expected_seeds[0]),
+        (2, "stock", expected_seeds[1]),
+        (2, "lac", expected_seeds[1]),
+        (2, "raw", expected_seeds[1]),
+        (3, "lac", expected_seeds[2]),
+        (3, "raw", expected_seeds[2]),
+        (3, "stock", expected_seeds[2]),
+    ]
+    assert calls == expected_calls
+
+    run_root = plan.output_root / "v2-nine"
+    schedule = json.loads(
+        (run_root / "schedule.json").read_text(encoding="utf-8")
+    )
+    assert [item["seed"] for item in schedule["trials"]] == expected_seeds
+    assert [item["arm_order"] for item in schedule["trials"]] == [
+        ["raw", "stock", "lac"],
+        ["stock", "lac", "raw"],
+        ["lac", "raw", "stock"],
+    ]
+    assert schedule["generation"] == {
+        "temperature": 1.0,
+        "seed_base": 20260726,
+        "max_output_tokens": 128,
+    }
+    result_paths = sorted(run_root.glob("trials/*/*/result.json"))
+    assert len(result_paths) == 9
+    for trial_index, arm, seed in expected_calls:
+        payload = json.loads(
+            (
+                run_root
+                / "trials"
+                / f"{trial_index:03d}"
+                / arm
+                / "result.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert payload["trial"] == {
+            "index": trial_index,
+            "seed": seed,
+            "order_position": schedule["trials"][trial_index - 1][
+                "arm_order"
+            ].index(arm),
+            "arm_order": schedule["trials"][trial_index - 1]["arm_order"],
+        }
+        assert payload["generation"] == schedule["generation"]
+        assert payload["model_digest"] == schedule["model_digests"][arm]
+    assert comparison["aggregate"] == {
+        "trial_count": 3,
+        "record_count": 9,
+        "pass_counts": {"raw": 3, "stock": 3, "lac": 3},
+    }
+    assert len(comparison["trials"]) == 3
+    sampling = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "counterbalanced_deterministic_sampling"
+    )
+    assert sampling["state"] == "pass"
+    assert sampling["details"]["record_count"] == 9
+
+
+def test_v2_runner_continues_in_schedule_order_after_arm_failure(tmp_path):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path)
+    calls = []
+
+    def adapter_for(arm):
+        def run(task, model, host, workspace=None, *, generation, trial):
+            calls.append((trial.index, arm))
+            if trial.index == 1 and arm == "stock":
+                raise RuntimeError("planned adapter failure")
+            return replace(
+                _result(arm, model, "ZeroDivisionError"),
+                request_metadata=_sampling_metadata(arm, trial),
+            )
+
+        return run
+
+    comparison = run_evaluation(
+        plan,
+        run_id="v2-continue",
+        raw_fn=adapter_for("raw"),
+        stock_fn=adapter_for("stock"),
+        lac_fn=adapter_for("lac"),
+        identity_capture_fn=lambda _plan: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=_noop_identity_lease,
+    )
+
+    assert calls == [
+        (1, "raw"), (1, "stock"), (1, "lac"),
+        (2, "stock"), (2, "lac"), (2, "raw"),
+        (3, "lac"), (3, "raw"), (3, "stock"),
+    ]
+    assert comparison["aggregate"]["record_count"] == 9
+    assert comparison["aggregate"]["pass_counts"]["stock"] == 2
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["missing", "duplicate", "mismatch", "bool", "extra", "schedule_replace"],
+)
+def test_v2_runner_derives_sampling_and_rejects_disk_tampering(
+    tmp_path,
+    tamper,
+):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path)
+
+    def alter_json(path, mutate):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        mutate(payload)
+        replacement = path.with_suffix(".replacement")
+        replacement.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(replacement, path)
+
+    def adapter_for(arm):
+        def run(task, model, host, workspace=None, *, generation, trial):
+            if trial.index == 3 and arm == "stock":
+                run_root = plan.output_root / f"v2-{tamper}"
+                first = run_root / "trials" / "001" / "raw" / "result.json"
+                if tamper == "missing":
+                    first.unlink()
+                elif tamper == "duplicate":
+                    alter_json(
+                        first,
+                        lambda payload: payload["trial"].update(index=2),
+                    )
+                elif tamper == "mismatch":
+                    alter_json(
+                        first,
+                        lambda payload: payload["trial"].update(seed=7),
+                    )
+                elif tamper == "bool":
+                    alter_json(
+                        first,
+                        lambda payload: payload["trial"].update(seed=True),
+                    )
+                elif tamper == "extra":
+                    extra = run_root / "trials" / "004" / "raw"
+                    extra.mkdir(parents=True)
+                    (extra / "result.json").write_text(
+                        json.dumps({"unexpected": True}),
+                        encoding="utf-8",
+                    )
+                else:
+                    alter_json(
+                        run_root / "schedule.json",
+                        lambda payload: payload["trials"][0].update(seed=7),
+                    )
+            return replace(
+                _result(arm, model, "ZeroDivisionError"),
+                request_metadata=_sampling_metadata(arm, trial),
+            )
+
+        return run
+
+    injected = EvidenceControlResult(
+        "counterbalanced_deterministic_sampling",
+        EvidenceState.PASS,
+        "caller says pass",
+        {"injected": True},
+    )
+    comparison = run_evaluation(
+        plan,
+        run_id=f"v2-{tamper}",
+        raw_fn=adapter_for("raw"),
+        stock_fn=adapter_for("stock"),
+        lac_fn=adapter_for("lac"),
+        preliminary_results=(injected,),
+        identity_capture_fn=lambda _plan: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=_noop_identity_lease,
+    )
+    sampling = next(
+        item
+        for item in comparison["evidence"]["controls"]["results"]
+        if item["name"] == "counterbalanced_deterministic_sampling"
+    )
+    assert sampling["state"] == "fail"
+    assert sampling["details"].get("injected") is not True
 
 
 @pytest.mark.parametrize("change", ["mutation", "addition", "deletion"])
