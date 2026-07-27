@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -30,6 +31,9 @@ from backend.agent_eval.evidence import (
     EvidenceVerdict,
 )
 from backend.agent_eval.identity import capture_preflight_identities
+from backend.agent_eval.capture import CaptureLimits
+from backend.agent_eval.fixture import _ACL_TIMEOUT_SECONDS
+from backend.agent_eval.http_observer import DEFAULT_FINISH_TIMEOUT_SECONDS
 from backend.agent_eval.runner import build_plan, run_evaluation
 from backend.agent_eval.task import load_task
 from backend.agent_launch.opencode_bin import (
@@ -170,8 +174,9 @@ def _containment_preflight(
     identity_capture: Callable[..., Any],
     *,
     wfp_api: object | None = None,
-) -> tuple[EvidenceControlResult, list[str]]:
+) -> tuple[EvidenceControlResult, list[str], Any | None]:
     provider = None
+    identity_snapshot = None
     application_paths: list[str] = []
     result = EvidenceControlResult(
         "os_loopback_only_egress",
@@ -182,8 +187,8 @@ def _containment_preflight(
     try:
         applications = []
         if mode is EvidenceMode.VERIFIED:
-            snapshot = identity_capture(plan)
-            applications = [snapshot.opencode]
+            identity_snapshot = identity_capture(plan)
+            applications = [identity_snapshot.opencode]
             application_paths = [str(item.path) for item in applications]
         provider = select_containment_provider(
             mode,
@@ -232,7 +237,7 @@ def _containment_preflight(
                         ),
                     },
                 )
-    return result, application_paths
+    return result, application_paths, identity_snapshot
 
 
 class _DefaultContainment:
@@ -358,6 +363,153 @@ def _fallback_command(request: EvalCommandRequest) -> str:
     return subprocess.list2cmdline(argv)
 
 
+def _is_lower_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _exact_model_identity(plan, identity_snapshot) -> dict[str, Any] | None:
+    try:
+        base = identity_snapshot.models.base
+        lac = identity_snapshot.models.lac
+        base_name = base.name
+        lac_name = lac.name
+        base_digest = base.digest
+        lac_digest = lac.digest
+        base_from = base.from_blob_sha256
+        lac_from = lac.from_blob_sha256
+        lac_parent = lac.parent_model
+    except (AttributeError, TypeError):
+        return None
+    if (
+        base_name != plan.base_model
+        or lac_name != plan.lac_model
+        or lac_parent != plan.base_model
+        or not _is_lower_sha256(base_digest)
+        or not _is_lower_sha256(lac_digest)
+        or not _is_lower_sha256(base_from)
+        or not _is_lower_sha256(lac_from)
+        or lac_from != base_from
+    ):
+        return None
+    return {
+        "base": {
+            "name": base_name,
+            "digest": base_digest,
+            "from_blob_sha256": base_from,
+        },
+        "lac": {
+            "name": lac_name,
+            "digest": lac_digest,
+            "parent_model": lac_parent,
+            "from_blob_sha256": lac_from,
+        },
+        "arms": {
+            "raw": {"name": base_name, "digest": base_digest},
+            "stock": {"name": base_name, "digest": base_digest},
+            "lac": {"name": lac_name, "digest": lac_digest},
+        },
+    }
+
+
+def _positive_finite_number(value: object) -> bool:
+    return (
+        type(value) in (int, float)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def _runtime_bounds_disclosure(plan) -> dict[str, Any] | None:
+    trials = getattr(plan.task, "trials", None)
+    timeout_seconds = getattr(plan.task, "timeout_seconds", None)
+    if (
+        type(trials) is not int
+        or trials != 3
+        or not _positive_finite_number(timeout_seconds)
+    ):
+        return None
+    planned_arm_runs = trials * 3
+    opencode_arm_runs = trials * 2
+    fixture_acl_calls_per_arm = 3
+    fixture_acl_timeout_seconds = _ACL_TIMEOUT_SECONDS
+    observer_finish_timeout_seconds = DEFAULT_FINISH_TIMEOUT_SECONDS
+    process_cleanup_grace_seconds = CaptureLimits().cleanup_grace_seconds
+    if not all(
+        _positive_finite_number(value)
+        for value in (
+            fixture_acl_timeout_seconds,
+            observer_finish_timeout_seconds,
+            process_cleanup_grace_seconds,
+        )
+    ):
+        return None
+    task_timeout_budget = planned_arm_runs * timeout_seconds
+    bounded_arm_path_subtotal = (
+        planned_arm_runs
+        * (
+            fixture_acl_calls_per_arm * fixture_acl_timeout_seconds
+            + timeout_seconds
+            + observer_finish_timeout_seconds
+        )
+        + opencode_arm_runs * process_cleanup_grace_seconds
+    )
+    return {
+        "planned_arm_runs": planned_arm_runs,
+        "task_timeout_budget": {
+            "value": task_timeout_budget,
+            "unit": "seconds",
+            "derivation": (
+                "planned_arm_runs * per_arm_timeout_seconds"
+            ),
+            "per_arm_timeout_seconds": timeout_seconds,
+            "scope": "model_and_process_task_deadlines_only",
+        },
+        "bounded_arm_path_subtotal": {
+            "value": bounded_arm_path_subtotal,
+            "unit": "seconds",
+            "derivation": (
+                "planned_arm_runs * "
+                "(fixture_acl_calls_per_arm * "
+                "fixture_acl_timeout_seconds + "
+                "per_arm_timeout_seconds + "
+                "observer_finish_timeout_seconds) + "
+                "opencode_arm_runs * "
+                "process_cleanup_grace_seconds"
+            ),
+            "fixture_acl_calls_per_arm": fixture_acl_calls_per_arm,
+            "fixture_acl_timeout_seconds": fixture_acl_timeout_seconds,
+            "per_arm_timeout_seconds": timeout_seconds,
+            "observer_finish_timeout_seconds": (
+                observer_finish_timeout_seconds
+            ),
+            "opencode_arm_runs": opencode_arm_runs,
+            "process_cleanup_grace_seconds": (
+                process_cleanup_grace_seconds
+            ),
+            "scope": (
+                "bounded_per_arm_stages_only_not_whole_run_wall_clock"
+            ),
+        },
+        "whole_run_maximum": {
+            "value": None,
+            "unit": "seconds",
+            "status": "unavailable_no_enforced_global_deadline",
+            "derivation": None,
+            "unbounded_stages": [
+                "runtime_dependency_bootstrap",
+                "identity_capture_and_hashing",
+                "filesystem_operations_outside_acl_helpers",
+                "wfp_and_proxy_lifecycle",
+                "final_artifact_sealing_and_cleanup",
+            ],
+        },
+    }
+
+
 def _dry_report(
     request: EvalCommandRequest,
     plan,
@@ -365,11 +517,23 @@ def _dry_report(
     verdict: EvidenceVerdict,
     containment: EvidenceControlResult,
     application_paths: list[str],
+    identity_snapshot,
 ) -> dict[str, Any]:
-    missing = _unready_controls(verdict)
+    model_identity = _exact_model_identity(plan, identity_snapshot)
+    runtime_bounds = _runtime_bounds_disclosure(plan)
+    missing_controls = _unready_controls(verdict)
+    evidence_blockers = list(missing_controls)
+    if model_identity is None:
+        evidence_blockers.append("exact_model_identity")
+    if runtime_bounds is None:
+        evidence_blockers.append("runtime_bounds_unavailable")
+    else:
+        evidence_blockers.append(
+            "runtime_dependency_bootstrap_unbounded"
+        )
     evidence_ready = (
         mode is EvidenceMode.VERIFIED
-        and not missing
+        and not evidence_blockers
         and all(item.state is EvidenceState.PASS for item in verdict.results)
     )
     report = {
@@ -382,6 +546,8 @@ def _dry_report(
             "stock": plan.base_model,
             "lac": plan.lac_model,
         },
+        "model_identities": model_identity,
+        "runtime_bounds": runtime_bounds,
         "ollama_host": plan.ollama_host,
         "opencode": {
             "binary": str(plan.opencode_binary),
@@ -405,10 +571,14 @@ def _dry_report(
         "evidence_ready": evidence_ready,
         "controls": verdict.to_dict(),
         "artifact_valid": False,
-        "missing_controls": missing,
-        "evidence_blockers": missing,
+        "missing_controls": missing_controls,
+        "evidence_blockers": evidence_blockers,
         "model_downloads": "forbidden",
-        "planned_arm_runs": 9,
+        "planned_arm_runs": (
+            runtime_bounds["planned_arm_runs"]
+            if runtime_bounds is not None
+            else None
+        ),
         "operator_runtime_approval_required": True,
         "runtime_dependency_bootstrap": (
             "possible_on_cold_opencode_config; source is not yet traced"
@@ -428,8 +598,16 @@ def _dry_report(
             "Reopen PowerShell as Administrator and rerun:\n"
             f"{command}"
         )
-    elif mode is EvidenceMode.VERIFIED and missing:
+    elif (
+        mode is EvidenceMode.VERIFIED
+        and containment.state is not EvidenceState.PASS
+    ):
         report["error"] = containment.reason
+    elif mode is EvidenceMode.VERIFIED and evidence_blockers:
+        report["error"] = (
+            "verified evidence preflight is incomplete: "
+            + ", ".join(evidence_blockers)
+        )
     return report
 
 
@@ -514,7 +692,11 @@ def execute_eval_command(
             opencode_version=SUPPORTED_OPENCODE_VERSION,
             source_root=OUTPUT_PROTECTED_ROOT,
         )
-        containment, application_paths = deps.containment.preflight(
+        (
+            containment,
+            application_paths,
+            identity_snapshot,
+        ) = deps.containment.preflight(
             plan,
             mode,
             deps.capture_identity,
@@ -529,17 +711,18 @@ def execute_eval_command(
         ):
             readiness_results = deps.legacy_non_dry_readiness_results()
         verdict = EvidenceVerdict.from_results(mode, readiness_results)
-        missing = _unready_controls(verdict)
+        preflight_report = _dry_report(
+            request,
+            plan,
+            mode,
+            verdict,
+            containment,
+            application_paths,
+            identity_snapshot,
+        )
 
         if request.dry_run:
-            report = _dry_report(
-                request,
-                plan,
-                mode,
-                verdict,
-                containment,
-                application_paths,
-            )
+            report = preflight_report
             if getattr(deps, "legacy_dry_run_semantics", False):
                 report["ok"] = (
                     mode is EvidenceMode.DIAGNOSTIC
@@ -547,15 +730,11 @@ def execute_eval_command(
                 )
             return EvalCommandResult(0 if report["ok"] else 2, report)
 
-        if mode is EvidenceMode.VERIFIED and missing:
-            report = _dry_report(
-                request,
-                plan,
-                mode,
-                verdict,
-                containment,
-                application_paths,
-            )
+        if (
+            mode is EvidenceMode.VERIFIED
+            and preflight_report["evidence_ready"] is not True
+        ):
+            report = preflight_report
             report["dry_run"] = False
             report["error"] = report.get(
                 "error",
