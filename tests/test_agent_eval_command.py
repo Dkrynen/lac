@@ -16,6 +16,9 @@ LAC_MODEL = "gpt-oss:20b-agent"
 BASE_DIGEST = "a" * 64
 LAC_DIGEST = "b" * 64
 FROM_BLOB_SHA256 = "c" * 64
+OPENCODE_SHA256 = (
+    "59b66e1983b2665b498f234a17bf92e78e0e9e3f8c77406edf8dcf3e6239ee5c"
+)
 
 
 def realistic_identity_snapshot(**changes):
@@ -30,6 +33,11 @@ def realistic_identity_snapshot(**changes):
     }
     values.update(changes)
     return SimpleNamespace(
+        opencode=SimpleNamespace(
+            path=Path(r"C:\tools\opencode.exe"),
+            version="1.18.4",
+            sha256=OPENCODE_SHA256,
+        ),
         models=SimpleNamespace(
             base=SimpleNamespace(
                 name=values["base_name"],
@@ -149,8 +157,8 @@ def test_verified_dry_run_exposes_digests_and_truthful_runtime_bounds(
         dry_run=True,
     )
     result = execute_eval_command(request, dependencies=ready_dependencies())
-    assert result.exit_code == 2
-    assert result.report["evidence_ready"] is False
+    assert result.exit_code == 0
+    assert result.report["evidence_ready"] is True
     assert result.report["artifact_valid"] is False
     assert result.report["model_identities"] == {
         "base": {
@@ -190,10 +198,13 @@ def test_verified_dry_run_exposes_digests_and_truthful_runtime_bounds(
         "unavailable_no_enforced_global_deadline"
     )
     assert "whole_run_maximum_runtime" not in result.report["evidence_blockers"]
-    assert (
-        "runtime_dependency_bootstrap_unbounded"
-        in result.report["evidence_blockers"]
-    )
+    assert "runtime_dependency_bootstrap_unbounded" not in result.report[
+        "evidence_blockers"
+    ]
+    assert result.report["runtime_bootstrap_attestation"]["ok"] is True
+    assert len(
+        result.report["runtime_bootstrap_attestation"]["config_manifest"]
+    ) == 6
 
 
 def test_verified_dry_run_fails_closed_without_exact_model_identity(tmp_path):
@@ -358,16 +369,28 @@ def test_non_elevated_verified_request_stops_before_model_or_network_checks(
     )
 
 
-def test_verified_command_stops_for_unproven_runtime_bootstrap(tmp_path):
+def test_verified_command_runs_after_runtime_bootstrap_attestation(tmp_path):
     deps = ready_dependencies()
     result = execute_eval_command(verified_request(tmp_path), dependencies=deps)
+    assert result.exit_code == 0
+    assert deps.runner_calls == 1
+
+
+def test_verified_command_stops_before_runner_on_bootstrap_hash_mismatch(
+    tmp_path,
+):
+    deps = ready_dependencies()
+    deps.containment.identity_snapshot.opencode.sha256 = "0" * 64
+
+    result = execute_eval_command(
+        verified_request(tmp_path),
+        dependencies=deps,
+    )
+
     assert result.exit_code == 2
     assert result.report["evidence_ready"] is False
-    assert "whole_run_maximum_runtime" not in result.report[
-        "evidence_blockers"
-    ]
-    assert "runtime_dependency_bootstrap_unbounded" in result.report[
-        "evidence_blockers"
+    assert result.report["evidence_blockers"] == [
+        "runtime_dependency_bootstrap"
     ]
     assert deps.runner_calls == 0
 
@@ -381,6 +404,10 @@ def test_diagnostic_command_runs_but_can_never_report_valid_evidence(tmp_path):
     assert result.exit_code == 1
     assert result.report["mode"] == "diagnostic"
     assert result.report["evidence"]["artifact_valid"] is False
+    assert result.report["runtime_bootstrap_attestation"]["state"] == (
+        "not_required"
+    )
+    assert result.report["runtime_bootstrap_attestation"]["ok"] is not True
     assert deps.runner_calls == 1
 
 

@@ -15,8 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.agent_launch.config_writer import (
-    _FAIL_CLOSED_PERMISSIONS,
-    write_opencode_config_file,
+    write_opencode_config_payload,
 )
 from backend.agent_launch.opencode_bin import resolve_opencode_binary
 
@@ -27,6 +26,14 @@ from .capture import (
     run_bounded_process,
 )
 from .raw_ollama import _is_loopback_ollama_host
+from .opencode_contract import (
+    build_evaluation_argv,
+    build_evaluation_config,
+    canonical_config_sha256,
+    evaluation_environment_flags,
+    valid_config_binding,
+    valid_evaluation_config,
+)
 from .result import ArmResult
 from .schedule import GenerationSettings, TrialSpec
 from .task import EvalTask
@@ -35,13 +42,6 @@ from .task import EvalTask
 _KNOWN_EVENTS = frozenset(
     {"step_start", "tool_use", "text", "step_finish", "reasoning", "error"}
 )
-_READ_ONLY_EVAL_TOOLS = {
-    "*": False,
-    "read": True,
-    "glob": True,
-    "grep": True,
-}
-_STOCK_EVAL_PERMISSIONS = {"external_directory": "deny"}
 _ENV_ALLOWLIST = (
     "COMSPEC",
     "PATH",
@@ -266,6 +266,7 @@ def _config_identity(fd: int, path: Path) -> dict[str, Any]:
     if not stat.S_ISREG(before.st_mode):
         raise ValueError("evaluation config handle is not a regular file")
     digest = hashlib.sha256()
+    chunks = []
     measured_size = 0
     os.lseek(fd, 0, os.SEEK_SET)
     while True:
@@ -274,6 +275,7 @@ def _config_identity(fd: int, path: Path) -> dict[str, Any]:
             break
         measured_size += len(chunk)
         digest.update(chunk)
+        chunks.append(chunk)
     after = os.fstat(fd)
     before_token = (
         before.st_dev,
@@ -291,10 +293,17 @@ def _config_identity(fd: int, path: Path) -> dict[str, Any]:
     )
     if before_token != after_token or measured_size != before.st_size:
         raise ValueError("evaluation config changed during identity capture")
+    try:
+        config = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("evaluation config is not valid UTF-8 JSON") from exc
+    if not isinstance(config, dict):
+        raise ValueError("evaluation config root is not an object")
     return {
         "path": str(path.resolve(strict=True)),
         "size": measured_size,
         "sha256": digest.hexdigest(),
+        "canonical_sha256": canonical_config_sha256(config),
     }
 
 
@@ -501,17 +510,7 @@ def _isolated_environment(
             "NO_PROXY": "localhost,127.0.0.1,::1",
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_DIR": str(runtime_root),
-            "OPENCODE_DISABLE_AUTOUPDATE": "1",
-            "OPENCODE_DISABLE_PRUNE": "1",
-            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
-            "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
-            "OPENCODE_DISABLE_MODELS_FETCH": "1",
-            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-            "OPENCODE_DISABLE_CLAUDE_CODE": "1",
-            "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "1",
-            "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
-            "OPENCODE_AUTO_SHARE": "false",
-            "OPENCODE_ENABLE_EXA": "0",
+            **evaluation_environment_flags(),
         }
     )
     return environment
@@ -530,10 +529,15 @@ def _run_opencode(
     run_fn: Callable[..., Any] = run_bounded_process,
     capture_limits: CaptureLimits = DEFAULT_CAPTURE_LIMITS,
     launcher: Callable[..., object] | None = None,
+    expected_config_binding: dict[str, Any] | None = None,
 ) -> ArmResult:
     started = time.perf_counter()
     workspace_path = Path(workspace).resolve()
-    config_measurement: dict[str, Any] = {"before": None, "after": None}
+    config_measurement: dict[str, Any] = {
+        "expected_canonical_sha256": None,
+        "before": None,
+        "after": None,
+    }
     config_metrics = {"opencode_config_identity": config_measurement}
     if (generation is None) != (trial is None):
         return _failure(
@@ -556,20 +560,46 @@ def _run_opencode(
             raise ValueError(f"unknown OpenCode evaluation arm: {arm}")
         runtime_root = workspace_path.parent / f".lac-eval-runtime-{arm}"
         config_path = runtime_root / "opencode.json"
-        permission = (
-            _STOCK_EVAL_PERMISSIONS
-            if arm == "stock"
-            else _FAIL_CLOSED_PERMISSIONS
-        )
-        write_opencode_config_file(
-            config_path,
+        config = build_evaluation_config(
             model,
             ollama_host,
-            permission=permission,
-            tools=_READ_ONLY_EVAL_TOOLS,
+            arm=arm,
             generation=generation,
             seed=None if trial is None else trial.seed,
         )
+        if not valid_evaluation_config(
+            config,
+            arm=arm,
+            model=model,
+            ollama_host=ollama_host,
+            generation=generation,
+            seed=None if trial is None else trial.seed,
+        ):
+            raise ValueError(
+                "evaluation config violates the independently validated contract"
+            )
+        expected_config_sha256 = canonical_config_sha256(config)
+        if expected_config_binding is not None:
+            if generation is None or trial is None or not valid_config_binding(
+                expected_config_binding,
+                config,
+                trial_index=trial.index,
+                arm=arm,
+                model=model,
+                ollama_host=ollama_host,
+                generation=generation,
+                seed=trial.seed,
+            ):
+                raise ValueError(
+                    "evaluation config binding does not match runtime contract"
+                )
+            expected_config_sha256 = expected_config_binding[
+                "expected_canonical_sha256"
+            ]
+        config_measurement["expected_canonical_sha256"] = (
+            expected_config_sha256
+        )
+        write_opencode_config_payload(config_path, config)
         environment = _isolated_environment(
             workspace_path, runtime_root, config_path, ollama_host
         )
@@ -584,27 +614,25 @@ def _run_opencode(
             metrics=config_metrics,
         )
 
-    argv = [
-        str(binary),
-        "run",
+    argv = build_evaluation_argv(
+        binary,
         task.prompt,
-        "--format",
-        "json",
-        "--pure",
-        "--auto",
-        "--model",
-        f"ollama/{model}",
-        "--dir",
-        str(workspace_path),
-    ]
+        model,
+        workspace_path,
+    )
     outcome: _ProcessOutcome | None = None
     lifecycle_errors: list[str] = []
     try:
         try:
-            config_measurement["before"] = _config_identity(
+            before = _config_identity(
                 config_lock,
                 config_path,
             )
+            config_measurement["before"] = before
+            if before["canonical_sha256"] != expected_config_sha256:
+                raise ValueError(
+                    "locked evaluation config does not match expected contract"
+                )
         except Exception as exc:
             outcome = _ProcessOutcome(
                 None,
@@ -628,10 +656,15 @@ def _run_opencode(
             )
     finally:
         try:
-            config_measurement["after"] = _config_identity(
+            after = _config_identity(
                 config_lock,
                 config_path,
             )
+            config_measurement["after"] = after
+            if after["canonical_sha256"] != expected_config_sha256:
+                raise ValueError(
+                    "post-run evaluation config does not match expected contract"
+                )
         except Exception as exc:
             lifecycle_errors.append(
                 f"config_post_measurement_failed:{type(exc).__name__}: {exc}"

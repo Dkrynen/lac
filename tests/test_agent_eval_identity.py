@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 
@@ -159,6 +160,74 @@ def test_runtime_lease_acquisition_closes_prior_files_on_failure(
         identity_module.acquire_runtime_identity_leases(snapshot)
 
     assert closed == ["closed"]
+
+
+def test_runtime_leases_include_target_and_wrapper(monkeypatch):
+    snapshot = identity_module.EvaluationIdentitySnapshot.for_test()
+    wrapper = identity_module.FileIdentity(
+        Path("C:/test/opencode.cmd"),
+        1,
+        "f" * 64,
+        None,
+        "unsigned",
+    )
+    snapshot = replace(snapshot, opencode_wrapper=wrapper)
+    acquired = []
+
+    class Lease:
+        def close(self):
+            return None
+
+    def acquire(expected):
+        acquired.append(expected)
+        return Lease()
+
+    monkeypatch.setattr(identity_module, "_acquire_file_lease", acquire)
+
+    leases = identity_module.acquire_runtime_identity_leases(snapshot)
+    leases.close()
+
+    assert snapshot.opencode in acquired
+    assert wrapper in acquired
+
+
+def test_runtime_lease_rejects_wrapper_mutation(tmp_path):
+    target = tmp_path / "opencode.exe"
+    wrapper = tmp_path / "opencode.cmd"
+    target.write_bytes(b"target")
+    wrapper.write_bytes(b"wrapper-before")
+    snapshot = identity_module.EvaluationIdentitySnapshot.for_test()
+    snapshot = replace(
+        snapshot,
+        lac=file_identity(
+            target,
+            version=None,
+            authenticode_fn=lambda _path: "unsigned",
+        ),
+        ollama=file_identity(
+            target,
+            version="0.1",
+            authenticode_fn=lambda _path: "unsigned",
+        ),
+        opencode=file_identity(
+            target,
+            version="1.18.4",
+            authenticode_fn=lambda _path: "unsigned",
+        ),
+        opencode_wrapper=file_identity(
+            wrapper,
+            version=None,
+            authenticode_fn=lambda _path: "unsigned",
+        ),
+        package_metadata=None,
+    )
+    wrapper.write_bytes(b"wrapper-after")
+
+    with pytest.raises(
+        IdentityError,
+        match="runtime lease does not match captured identity",
+    ):
+        identity_module.acquire_runtime_identity_leases(snapshot)
 
 
 def test_model_identity_requires_full_digest_and_exact_variant_parent():

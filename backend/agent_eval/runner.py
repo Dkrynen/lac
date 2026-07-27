@@ -36,6 +36,8 @@ from .http_observer import (
 from .ledger import atomic_write_json, seal_evidence
 from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
 from .result import ArmResult
+from .runtime_provenance import attest_runtime_bootstrap
+from .opencode_contract import rebind_config_manifest
 from .schedule import EvaluationSchedule, build_schedule
 from .scoring import ScoreResult, score_exact_text
 from .fixture import (
@@ -208,7 +210,7 @@ def _manifest(
             "external_directory": "deny",
             "model_downloads": "forbidden",
             "runtime_dependency_bootstrap": (
-                "possible_on_cold_opencode_config; source is not yet traced"
+                "verified_by_runtime_attestation_in_verified_mode"
             ),
             "os_egress_enforced": False,
         },
@@ -634,13 +636,24 @@ def _windows_containment_result(
 def _complete_config_identity(value: Any) -> bool:
     return (
         isinstance(value, dict)
-        and set(value) == {"path", "size", "sha256"}
+        and set(value) == {
+            "path",
+            "size",
+            "sha256",
+            "canonical_sha256",
+        }
         and isinstance(value["path"], str)
         and bool(value["path"])
         and type(value["size"]) is int
         and value["size"] >= 0
         and isinstance(value["sha256"], str)
         and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
+        and isinstance(value["canonical_sha256"], str)
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            value["canonical_sha256"],
+        )
+        is not None
     )
 
 
@@ -696,6 +709,24 @@ def _default_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _close_startup_resources(
+    observer: Any | None,
+    runtime_leases: Any | None,
+) -> tuple[str, ...]:
+    errors = []
+    for label, resource in (
+        ("observer", observer),
+        ("runtime lease", runtime_leases),
+    ):
+        if resource is None:
+            continue
+        try:
+            resource.close()
+        except Exception as exc:
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+    return tuple(errors)
+
+
 def run_evaluation(
     plan: EvaluationPlan,
     *,
@@ -726,13 +757,6 @@ def run_evaluation(
     workspaces_root = run_root / "workspaces"
     arms_root = run_root / "arms"
     trials_root = run_root / "trials"
-    if v2_sampling:
-        trials_root.mkdir(parents=True)
-    else:
-        workspaces_root.mkdir(parents=True)
-        arms_root.mkdir()
-    manifest = _manifest(plan, environment or {}, mode)
-    atomic_write_json(run_root / "manifest.json", manifest)
 
     identity_results: tuple[EvidenceControlResult, ...]
     preflight: EvaluationIdentitySnapshot | None = None
@@ -740,12 +764,40 @@ def run_evaluation(
     schedule: EvaluationSchedule | None = None
     schedule_payload: dict[str, Any] | None = None
     schedule_token: tuple[int, int, int, int, int, str] | None = None
+    runtime_bootstrap_attestation: dict[str, Any] = {
+        "state": (
+            "not_required"
+            if mode is not EvidenceMode.VERIFIED
+            else "failed"
+        ),
+        "ok": None if mode is not EvidenceMode.VERIFIED else False,
+        "mode": mode.value,
+        "reason": (
+            "verified attestation is not required in diagnostic mode"
+            if mode is not EvidenceMode.VERIFIED
+            else "verified runtime attestation did not complete"
+        ),
+    }
+    bootstrap_ready = mode is not EvidenceMode.VERIFIED
+    identity_preflight_ready = False
     try:
         preflight = identity_capture_fn(plan)
-        identity_root = run_root / "identities"
-        identity_root.mkdir()
-        for name, payload in preflight.artifact_payloads().items():
-            atomic_write_json(identity_root / f"{name}.json", payload)
+        if mode is EvidenceMode.VERIFIED:
+            runtime_bootstrap_attestation = attest_runtime_bootstrap(
+                plan,
+                preflight,
+            )
+            if runtime_bootstrap_attestation.get("ok") is not True:
+                raise EvalPlanError(
+                    "runtime bootstrap attestation failed: "
+                    + ", ".join(
+                        runtime_bootstrap_attestation.get(
+                            "blockers",
+                            ["unknown"],
+                        )
+                    )
+                )
+            bootstrap_ready = True
         runtime_leases = identity_lease_fn(preflight)
         identity_results = _identity_failures(
             "identity postflight was not completed"
@@ -769,21 +821,141 @@ def run_evaluation(
                 "generation": plan.task.generation.to_dict(),
                 **schedule.to_dict(),
             }
-            schedule_path = run_root / "schedule.json"
-            atomic_write_json(schedule_path, schedule_payload)
-            schedule_token = _artifact_token(schedule_path)
+        identity_preflight_ready = True
     except Exception as exc:
         reason = f"identity preflight failed: {type(exc).__name__}: {exc}"
+        cleanup_errors = _close_startup_resources(None, runtime_leases)
+        runtime_leases = None
+        if cleanup_errors:
+            reason += "; cleanup failed: " + "; ".join(cleanup_errors)
         identity_results = _identity_failures(reason)
+
+    if (
+        mode is EvidenceMode.VERIFIED
+        and not identity_preflight_ready
+    ):
+        return {
+            "evidence": {
+                "artifact_valid": False,
+                "mode": mode.value,
+            },
+            "identity_valid": False,
+            "identity_controls": [
+                {
+                    "name": item.name,
+                    "state": item.state,
+                    "reason": item.reason,
+                    "details": item.details,
+                }
+                for item in identity_results
+            ],
+            "runtime_bootstrap_attestation": (
+                runtime_bootstrap_attestation
+            ),
+            "all_arms_executed": False,
+            "all_arms_passed": False,
+        }
 
     http_observer: LoopbackRecordingProxy | None = None
     observer_start_error: str | None = None
     observer_cleanup_complete = not v2_sampling
     containment_endpoint = plan.ollama_host
-    if v2_sampling:
+    runtime_config_bindings: dict[
+        tuple[int, str],
+        dict[str, Any],
+    ] = {}
+    if v2_sampling and identity_preflight_ready:
         try:
             http_observer = LoopbackRecordingProxy.open(plan.ollama_host)
             containment_endpoint = http_observer.endpoint
+            if mode is EvidenceMode.VERIFIED:
+                runtime_config_bindings = rebind_config_manifest(
+                    runtime_bootstrap_attestation["config_manifest"],
+                    containment_endpoint,
+                )
+                runtime_bootstrap_attestation = {
+                    **runtime_bootstrap_attestation,
+                    "runtime_config_bindings": [
+                        runtime_config_bindings[key]
+                        for key in sorted(runtime_config_bindings)
+                    ],
+                }
+        except Exception as exc:
+            observer_start_error = (
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    if (
+        mode is EvidenceMode.VERIFIED
+        and (
+            http_observer is None
+            or len(runtime_config_bindings) != 6
+        )
+    ):
+        cleanup_errors = _close_startup_resources(
+            http_observer,
+            runtime_leases,
+        )
+        http_observer = None
+        runtime_leases = None
+        if cleanup_errors:
+            raise RuntimeError(
+                "verified startup cleanup failed: "
+                + "; ".join(cleanup_errors)
+            )
+        return {
+            "evidence": {
+                "artifact_valid": False,
+                "mode": mode.value,
+            },
+            "identity_valid": False,
+            "identity_controls": [
+                {
+                    "name": "runtime_dependency_provenance",
+                    "state": EvidenceState.FAIL,
+                    "reason": (
+                        "runtime config manifest binding failed: "
+                        f"{observer_start_error}"
+                    ),
+                    "details": {},
+                }
+            ],
+            "runtime_bootstrap_attestation": (
+                runtime_bootstrap_attestation
+            ),
+            "all_arms_executed": False,
+            "all_arms_passed": False,
+        }
+
+    try:
+        if v2_sampling:
+            trials_root.mkdir(parents=True)
+        else:
+            workspaces_root.mkdir(parents=True)
+            arms_root.mkdir()
+        manifest = _manifest(plan, environment or {}, mode)
+        atomic_write_json(
+            run_root / "manifest.json",
+            manifest,
+        )
+        identity_root = run_root / "identities"
+        identity_root.mkdir()
+        if preflight is not None:
+            for name, payload in preflight.artifact_payloads().items():
+                atomic_write_json(
+                    identity_root / f"{name}.json",
+                    payload,
+                )
+        if mode is EvidenceMode.VERIFIED:
+            atomic_write_json(
+                identity_root / "runtime-bootstrap.json",
+                runtime_bootstrap_attestation,
+            )
+        if schedule_payload is not None:
+            schedule_path = run_root / "schedule.json"
+            atomic_write_json(schedule_path, schedule_payload)
+            schedule_token = _artifact_token(schedule_path)
+        if http_observer is not None:
             atomic_write_json(
                 run_root / "http-observer.before.json",
                 {
@@ -793,10 +965,19 @@ def run_evaluation(
                     "active": True,
                 },
             )
-        except Exception as exc:
-            observer_start_error = (
-                f"{type(exc).__name__}: {exc}"
-            )
+    except Exception as exc:
+        cleanup_errors = _close_startup_resources(
+            http_observer,
+            runtime_leases,
+        )
+        http_observer = None
+        runtime_leases = None
+        if cleanup_errors:
+            raise RuntimeError(
+                "verified startup cleanup failed: "
+                + "; ".join(cleanup_errors)
+            ) from exc
+        raise
 
     containment_provider: Any | None = None
     containment_result = EvidenceControlResult(
@@ -805,8 +986,16 @@ def run_evaluation(
         "containment provider was not initialized",
         {},
     )
-    applications = [preflight.opencode] if preflight is not None else []
+    applications = (
+        [preflight.opencode]
+        if preflight is not None and bootstrap_ready
+        else []
+    )
     try:
+        if mode is EvidenceMode.VERIFIED and not bootstrap_ready:
+            raise EvalPlanError(
+                "verified runtime bootstrap attestation was not ready"
+            )
         if v2_sampling and http_observer is None:
             raise EvalPlanError(
                 "loopback HTTP observer was not initialized: "
@@ -848,7 +1037,12 @@ def run_evaluation(
             "stock": (plan.base_model, stock_fn),
             "lac": (plan.lac_model, lac_fn),
         }
-        if v2_sampling and schedule is not None:
+        if (
+            mode is EvidenceMode.VERIFIED
+            and not bootstrap_ready
+        ):
+            execution_specs = []
+        elif v2_sampling and schedule is not None:
             execution_specs = [
                 (trial, arm, *adapters[arm])
                 for trial in schedule.trials
@@ -927,6 +1121,20 @@ def run_evaluation(
                     )
                 else:
                     adapter_kwargs = dict(sampling_kwargs)
+                    binding = None
+                    if (
+                        mode is EvidenceMode.VERIFIED
+                        and trial is not None
+                    ):
+                        binding = runtime_config_bindings.pop(
+                            (trial.index, arm),
+                            None,
+                        )
+                        if binding is None:
+                            raise EvalPlanError(
+                                "runtime config manifest entry was "
+                                "missing or already consumed"
+                            )
                     if adapter in (run_stock, run_lac):
                         if preflight is None or runtime_leases is None:
                             raise EvalPlanError(
@@ -936,6 +1144,10 @@ def run_evaluation(
                         adapter_kwargs["resolve_bin_fn"] = (
                             lambda: preflight.opencode.path
                         )
+                        if binding is not None:
+                            adapter_kwargs[
+                                "expected_config_binding"
+                            ] = binding
                         if os.name == "nt":
                             adapter_kwargs["launcher"] = (
                                 containment_provider.launcher
@@ -1172,18 +1384,51 @@ def run_evaluation(
                 )
 
     config_evidence: dict[str, Any] = {}
-    config_ok = True
+    config_ok = not (
+        mode is EvidenceMode.VERIFIED
+        and bool(runtime_config_bindings)
+    )
+    attested_binding_by_record = {
+        f"{item['trial_index']:03d}/{item['arm']}": item
+        for item in runtime_bootstrap_attestation.get(
+            "runtime_config_bindings",
+            [],
+        )
+        if isinstance(item, dict)
+        and type(item.get("trial_index")) is int
+        and isinstance(item.get("arm"), str)
+    }
     config_candidates = all_results if v2_sampling else results
     for record_key, result in config_candidates.items():
         if result.arm == "raw":
             continue
         measured = result.metrics.get("opencode_config_identity")
         config_evidence[record_key] = measured
+        expected_digest = (
+            measured.get("expected_canonical_sha256")
+            if isinstance(measured, dict)
+            else None
+        )
+        attested_binding = attested_binding_by_record.get(record_key)
         if (
             not isinstance(measured, dict)
+            or not isinstance(expected_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
             or not _complete_config_identity(measured.get("before"))
             or not _complete_config_identity(measured.get("after"))
             or measured["before"] != measured["after"]
+            or measured["before"]["canonical_sha256"]
+            != expected_digest
+            or (
+                mode is EvidenceMode.VERIFIED
+                and (
+                    attested_binding is None
+                    or attested_binding.get(
+                        "expected_canonical_sha256"
+                    )
+                    != expected_digest
+                )
+            )
         ):
             config_ok = False
     identity_root = run_root / "identities"
@@ -1234,6 +1479,7 @@ def run_evaluation(
             for item in identity_results
         ],
         "opencode_config_identities": config_evidence,
+        "runtime_bootstrap_attestation": runtime_bootstrap_attestation,
     }
     if v2_sampling and schedule is not None:
         per_trial = []

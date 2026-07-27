@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import backend.agent_eval.opencode as opencode_module
+from backend.agent_eval import opencode_contract
 from backend.agent_eval.opencode import (
     _lock_config,
     parse_opencode_jsonl,
@@ -316,6 +318,7 @@ def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     assert env["OPENCODE_DISABLE_CLAUDE_CODE"] == "1"
     assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
     assert env["OPENCODE_AUTO_SHARE"] == "false"
+    assert env["OPENCODE_PURE"] == "1"
     assert "ANTHROPIC_API_KEY" not in env
     assert "OPENAI_API_KEY" not in env
     assert result.arm == "stock"
@@ -433,9 +436,241 @@ def test_real_generated_config_is_measured_before_and_after_process(tmp_path, ar
     )
     measured = result.metrics["opencode_config_identity"]
     assert measured["before"] == measured["after"]
+    assert measured["expected_canonical_sha256"] == measured["before"][
+        "canonical_sha256"
+    ]
     assert Path(measured["before"]["path"]).is_file()
     assert measured["before"]["size"] > 0
     assert len(measured["before"]["sha256"]) == 64
+
+
+def test_stable_wrong_locked_config_fails_before_process(tmp_path, monkeypatch):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+
+    def write_wrong(path, payload):
+        wrong = dict(payload)
+        wrong["plugin"] = ["unsafe"]
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(json.dumps(wrong), encoding="utf-8")
+        return Path(path)
+
+    monkeypatch.setattr(
+        opencode_module,
+        "write_opencode_config_payload",
+        write_wrong,
+    )
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        resolve_bin_fn=lambda: Path("opencode"),
+        run_fn=lambda *_a, **_kw: pytest.fail("process must not run"),
+    )
+
+    measured = result.metrics["opencode_config_identity"]
+    assert result.completed is False
+    assert measured["before"] == measured["after"]
+    assert measured["expected_canonical_sha256"] != measured["before"][
+        "canonical_sha256"
+    ]
+    assert "config_pre_measurement_failed" in result.errors[0]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "base_url",
+        "selected_model",
+        "model_map",
+        "permission",
+        "tools",
+        "generation",
+        "seed",
+    ),
+)
+def test_semantically_wrong_shared_builder_output_fails_before_process(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    generation = GenerationSettings(1.0, 20260726, 128)
+    trial = TrialSpec(1, 1209934845, ("raw", "stock", "lac"))
+    original = opencode_module.build_evaluation_config
+
+    def stable_wrong(*args, **kwargs):
+        config = copy.deepcopy(original(*args, **kwargs))
+        if mutation == "base_url":
+            config["provider"]["ollama"]["options"]["baseURL"] = (
+                "http://127.0.0.1:11434"
+            )
+        elif mutation == "selected_model":
+            config["model"] = "ollama/wrong"
+        elif mutation == "model_map":
+            config["provider"]["ollama"]["models"] = {
+                "wrong": {"name": "wrong"}
+            }
+        elif mutation == "permission":
+            config["permission"] = {"*": "allow"}
+        elif mutation == "tools":
+            config["tools"] = {"*": True}
+        elif mutation == "generation":
+            config["agent"]["build"]["temperature"] = 0.25
+        elif mutation == "seed":
+            config["agent"]["build"]["options"]["seed"] += 1
+        return config
+
+    monkeypatch.setattr(
+        opencode_module,
+        "build_evaluation_config",
+        stable_wrong,
+    )
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://localhost:11434",
+        workspace,
+        generation=generation,
+        trial=trial,
+        resolve_bin_fn=lambda: Path("opencode.exe"),
+        run_fn=lambda *_a, **_kw: pytest.fail("process must not run"),
+    )
+
+    assert result.completed is False
+    assert "evaluation config violates" in result.errors[0]
+
+
+def test_mutated_builder_owned_lac_permissions_fail_before_process(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "lac"
+    workspace.mkdir()
+    generation = GenerationSettings(1.0, 20260726, 128)
+    trial = TrialSpec(1, 1209934845, ("raw", "stock", "lac"))
+    monkeypatch.setattr(
+        opencode_contract.config_writer,
+        "_FAIL_CLOSED_PERMISSIONS",
+        {"*": "allow"},
+    )
+
+    result = run_lac(
+        _task(workspace),
+        "gpt-oss:20b-agent",
+        "http://127.0.0.1:54321",
+        workspace,
+        generation=generation,
+        trial=trial,
+        resolve_bin_fn=lambda: Path("opencode.exe"),
+        run_fn=lambda *_a, **_kw: pytest.fail("process must not run"),
+    )
+
+    assert result.completed is False
+    assert "evaluation config violates" in result.errors[0]
+
+
+def test_runtime_config_is_bound_to_rebased_manifest_before_process(
+    tmp_path,
+):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    generation = GenerationSettings(1.0, 20260726, 128)
+    trial = TrialSpec(1, 1209934845, ("raw", "stock", "lac"))
+    entries = [
+        opencode_contract.build_config_manifest_entry(
+            trial_index=index,
+            arm=arm,
+            model=(
+                "gpt-oss:20b"
+                if arm == "stock"
+                else "gpt-oss:20b-agent"
+            ),
+            generation=generation,
+            seed=trial.seed + index - 1,
+        )
+        for index in (1, 2, 3)
+        for arm in ("stock", "lac")
+    ]
+    endpoint = "http://127.0.0.1:54321"
+    binding = opencode_contract.rebind_config_manifest(
+        entries,
+        endpoint,
+    )[(trial.index, "stock")]
+    process_calls = []
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        endpoint,
+        workspace,
+        generation=generation,
+        trial=trial,
+        expected_config_binding=binding,
+        resolve_bin_fn=lambda: Path("opencode.exe"),
+        run_fn=lambda *_a, **_kw: (
+            process_calls.append(True)
+            or SimpleNamespace(
+                returncode=0,
+                stdout=_successful_stdout(),
+                stderr="",
+            )
+        ),
+    )
+
+    measured = result.metrics["opencode_config_identity"]
+    assert process_calls == [True]
+    assert measured["before"]["canonical_sha256"] == (
+        binding["expected_canonical_sha256"]
+    )
+    assert measured["after"] == measured["before"]
+
+
+def test_runtime_config_rejects_wrong_endpoint_binding_before_process(
+    tmp_path,
+):
+    workspace = tmp_path / "stock"
+    workspace.mkdir()
+    generation = GenerationSettings(1.0, 20260726, 128)
+    trial = TrialSpec(1, 1209934845, ("raw", "stock", "lac"))
+    entries = [
+        opencode_contract.build_config_manifest_entry(
+            trial_index=index,
+            arm=arm,
+            model=(
+                "gpt-oss:20b"
+                if arm == "stock"
+                else "gpt-oss:20b-agent"
+            ),
+            generation=generation,
+            seed=trial.seed + index - 1,
+        )
+        for index in (1, 2, 3)
+        for arm in ("stock", "lac")
+    ]
+    binding = opencode_contract.rebind_config_manifest(
+        entries,
+        "http://127.0.0.1:54321",
+    )[(trial.index, "stock")]
+
+    result = run_stock(
+        _task(workspace),
+        "gpt-oss:20b",
+        "http://127.0.0.1:54322",
+        workspace,
+        generation=generation,
+        trial=trial,
+        expected_config_binding=binding,
+        resolve_bin_fn=lambda: Path("opencode.exe"),
+        run_fn=lambda *_a, **_kw: pytest.fail("process must not run"),
+    )
+
+    assert result.completed is False
+    assert "config binding" in result.errors[0]
 
 
 def test_real_generated_config_cannot_be_mutated_deleted_or_replaced_during_process(
@@ -577,10 +812,10 @@ def test_config_lock_failure_returns_fail_closed_identity_metrics(
 
     assert result.completed is False
     assert "lock denied" in result.errors[0]
-    assert result.metrics["opencode_config_identity"] == {
-        "before": None,
-        "after": None,
-    }
+    measured = result.metrics["opencode_config_identity"]
+    assert len(measured["expected_canonical_sha256"]) == 64
+    assert measured["before"] is None
+    assert measured["after"] is None
 
 
 def test_pre_measurement_failure_prevents_process_and_releases_lock(
@@ -607,10 +842,10 @@ def test_pre_measurement_failure_prevents_process_and_releases_lock(
 
     assert result.completed is False
     assert calls == ["measure", "measure"]
-    assert result.metrics["opencode_config_identity"] == {
-        "before": None,
-        "after": None,
-    }
+    measured = result.metrics["opencode_config_identity"]
+    assert len(measured["expected_canonical_sha256"]) == 64
+    assert measured["before"] is None
+    assert measured["after"] is None
     assert result.errors[0].startswith("config_pre_measurement_failed:")
     assert result.errors[1].startswith("config_post_measurement_failed:")
     config_path = workspace.parent / ".lac-eval-runtime-stock" / "opencode.json"

@@ -34,6 +34,7 @@ from backend.agent_eval.identity import capture_preflight_identities
 from backend.agent_eval.capture import CaptureLimits
 from backend.agent_eval.fixture import _ACL_TIMEOUT_SECONDS
 from backend.agent_eval.http_observer import DEFAULT_FINISH_TIMEOUT_SECONDS
+from backend.agent_eval.runtime_provenance import attest_runtime_bootstrap
 from backend.agent_eval.runner import build_plan, run_evaluation
 from backend.agent_eval.task import load_task
 from backend.agent_launch.opencode_bin import (
@@ -521,16 +522,26 @@ def _dry_report(
 ) -> dict[str, Any]:
     model_identity = _exact_model_identity(plan, identity_snapshot)
     runtime_bounds = _runtime_bounds_disclosure(plan)
+    runtime_bootstrap = (
+        attest_runtime_bootstrap(plan, identity_snapshot)
+        if mode is EvidenceMode.VERIFIED
+        else {
+            "state": "not_required",
+            "ok": None,
+            "mode": mode.value,
+            "reason": (
+                "verified attestation is not required in diagnostic mode"
+            ),
+        }
+    )
     missing_controls = _unready_controls(verdict)
     evidence_blockers = list(missing_controls)
     if model_identity is None:
         evidence_blockers.append("exact_model_identity")
     if runtime_bounds is None:
         evidence_blockers.append("runtime_bounds_unavailable")
-    else:
-        evidence_blockers.append(
-            "runtime_dependency_bootstrap_unbounded"
-        )
+    if runtime_bootstrap.get("ok") is not True:
+        evidence_blockers.append("runtime_dependency_bootstrap")
     evidence_ready = (
         mode is EvidenceMode.VERIFIED
         and not evidence_blockers
@@ -548,6 +559,7 @@ def _dry_report(
         },
         "model_identities": model_identity,
         "runtime_bounds": runtime_bounds,
+        "runtime_bootstrap_attestation": runtime_bootstrap,
         "ollama_host": plan.ollama_host,
         "opencode": {
             "binary": str(plan.opencode_binary),
@@ -580,9 +592,7 @@ def _dry_report(
             else None
         ),
         "operator_runtime_approval_required": True,
-        "runtime_dependency_bootstrap": (
-            "possible_on_cold_opencode_config; source is not yet traced"
-        ),
+        "runtime_dependency_bootstrap": runtime_bootstrap,
     }
     if (
         mode is EvidenceMode.VERIFIED
@@ -749,6 +759,10 @@ def execute_eval_command(
             mode=mode,
         )
         report = dict(comparison)
+        report.setdefault(
+            "runtime_bootstrap_attestation",
+            preflight_report["runtime_bootstrap_attestation"],
+        )
         evidence = dict(report.get("evidence", {}))
         if mode is EvidenceMode.DIAGNOSTIC:
             evidence["artifact_valid"] = False

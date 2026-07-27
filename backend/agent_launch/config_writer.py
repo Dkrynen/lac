@@ -161,23 +161,27 @@ def write_opencode_config_file(
     immutable task workspace.
     """
 
+    return write_opencode_config_payload(
+        config_path,
+        build_opencode_config(
+            model,
+            ollama_host,
+            permission=permission,
+            tools=tools,
+            evaluation=True,
+            generation=generation,
+            seed=seed,
+        ),
+    )
+
+
+def write_opencode_config_payload(
+    config_path,
+    config: dict,
+) -> Path:
     out = Path(config_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(
-            build_opencode_config(
-                model,
-                ollama_host,
-                permission=permission,
-                tools=tools,
-                evaluation=True,
-                generation=generation,
-                seed=seed,
-            ),
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    out.write_text(json.dumps(config, indent=2), encoding="utf-8")
     return out
 
 

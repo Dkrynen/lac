@@ -16,6 +16,8 @@ import pytest
 import backend.agent_eval.identity as identity_module
 import backend.agent_eval.fixture as fixture_module
 import backend.agent_eval.opencode as opencode_module
+import backend.agent_eval.runtime_provenance as runtime_provenance_module
+import backend.agent_eval.runner as runner_module
 from backend.agent_eval.evidence import (
     EvidenceControlResult,
     EvidenceMode,
@@ -42,6 +44,10 @@ from backend.agent_eval.runner import (
 )
 from backend.agent_eval.task import EvalScorer, EvalTask, task_contract_sha256
 from backend.agent_eval.windows_job import WindowsJobProcess
+
+OPENCODE_SHA256 = (
+    "59b66e1983b2665b498f234a17bf92e78e0e9e3f8c77406edf8dcf3e6239ee5c"
+)
 
 
 def _task(tmp_path: Path) -> EvalTask:
@@ -80,8 +86,17 @@ def _result(
 ) -> ArmResult:
     metrics = {"eval_count": 3}
     if arm in {"stock", "lac"}:
-        config = {"path": f"C:/test/{arm}/opencode.json", "size": 1, "sha256": "a" * 64}
-        metrics["opencode_config_identity"] = {"before": config, "after": dict(config)}
+        config = {
+            "path": f"C:/test/{arm}/opencode.json",
+            "size": 1,
+            "sha256": "a" * 64,
+            "canonical_sha256": "b" * 64,
+        }
+        metrics["opencode_config_identity"] = {
+            "expected_canonical_sha256": "b" * 64,
+            "before": config,
+            "after": dict(config),
+        }
     capture = {}
     if capture_valid and arm == "raw":
         capture = {
@@ -253,7 +268,7 @@ def recording_upstream():
         thread.join(timeout=2)
 
 
-def _runtime_snapshot(tmp_path):
+def _runtime_snapshot(tmp_path, *, attested=True):
     runtime = tmp_path / "runtime.exe"
     runtime.write_bytes(b"runtime")
     measured = file_identity(
@@ -266,7 +281,14 @@ def _runtime_snapshot(tmp_path):
         snapshot,
         lac=replace(measured, version=None),
         ollama=replace(measured, version="0.1"),
-        opencode=measured,
+        opencode=replace(
+            measured,
+            sha256=(
+                OPENCODE_SHA256
+                if attested
+                else measured.sha256
+            ),
+        ),
     )
 
 
@@ -292,6 +314,21 @@ class _NoopIdentityLease:
 
 def _noop_identity_lease(_snapshot):
     return _NoopIdentityLease()
+
+
+def _allow_fixture_runtime(monkeypatch, snapshot):
+    system, architecture = runtime_provenance_module._platform_key()
+    monkeypatch.setitem(
+        runtime_provenance_module._ALLOWED_RUNTIME_PROVIDERS,
+        (
+            system,
+            architecture,
+            runtime_provenance_module._REVIEWED_BUILD_ID,
+            snapshot.opencode.version,
+            snapshot.opencode.sha256,
+        ),
+        runtime_provenance_module.opencode.EVALUATION_PROVIDER_NPM,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -446,7 +483,9 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
     assert manifest["environment"]["git"]["commit"] == "abc"
     assert manifest["containment"]["allowed_tools"] == ["read", "glob", "grep"]
     assert manifest["containment"]["model_downloads"] == "forbidden"
-    assert "possible" in manifest["containment"]["runtime_dependency_bootstrap"]
+    assert manifest["containment"]["runtime_dependency_bootstrap"] == (
+        "verified_by_runtime_attestation_in_verified_mode"
+    )
     assert manifest["prompt_delivery"] == {
         "raw": "task prompt plus bounded source snapshot",
         "stock": "task prompt plus read-only project tools",
@@ -985,7 +1024,7 @@ def test_default_opencode_arms_execute_exact_preflight_target(
 
 
 def test_runtime_files_cannot_be_mutated_during_runner_execution(tmp_path):
-    runtime, snapshot = _runtime_snapshot(tmp_path)
+    runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
     observed = []
 
     def stock(task, model, host, workspace):
@@ -1436,20 +1475,25 @@ def test_runner_replaces_injected_egress_pass_with_diagnostic_unsupported(
     assert control["details"]["provider"] == "diagnostic"
 
 
-def test_verified_runner_uses_measured_provider_and_task5_launcher(tmp_path):
-    _runtime, snapshot = _runtime_snapshot(tmp_path)
+def test_verified_runner_uses_measured_provider_and_task5_launcher(
+    tmp_path,
+    monkeypatch,
+):
+    _runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
     api = _RunnerWfpApi()
 
+    plan = _plan_v2(tmp_path)
     comparison = run_evaluation(
-        _plan(tmp_path),
+        plan,
         run_id="verified-containment",
-        raw_fn=lambda task, model, host: _result(
+        raw_fn=lambda task, model, host, **_kwargs: _result(
             "raw", model, "ZeroDivisionError"
         ),
-        stock_fn=lambda task, model, host, workspace: _result(
+        stock_fn=lambda task, model, host, workspace, **_kwargs: _result(
             "stock", model, "ZeroDivisionError"
         ),
-        lac_fn=lambda task, model, host, workspace: _result(
+        lac_fn=lambda task, model, host, workspace, **_kwargs: _result(
             "lac", model, "ZeroDivisionError"
         ),
         mode=EvidenceMode.VERIFIED,
@@ -1467,7 +1511,8 @@ def test_verified_runner_uses_measured_provider_and_task5_launcher(tmp_path):
     assert control["state"] == "pass"
     assert control["details"]["provider"] == "windows_wfp"
     assert control["details"]["applications"] == [str(snapshot.opencode.path)]
-    assert control["details"]["endpoint"] == "http://127.0.0.1:11434"
+    assert control["details"]["endpoint"].startswith("http://127.0.0.1:")
+    assert control["details"]["endpoint"] != plan.ollama_host
     assert len([call for call in api.calls if call[0] == "filter_add"]) == 4
     assert [call[0] for call in api.calls[-6:]] == [
         "filter_delete",
@@ -1485,14 +1530,18 @@ def test_verified_runner_has_no_free_form_provider_evidence_seam():
     ).parameters
 
 
-def test_verified_runner_stops_adapters_when_provider_open_fails(tmp_path):
+def test_verified_runner_stops_adapters_when_provider_open_fails(
+    tmp_path,
+    monkeypatch,
+):
     called = []
-    _runtime, snapshot = _runtime_snapshot(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
     api = _RunnerWfpApi()
     api.fail["engine_open"] = ContainmentError("elevation required")
 
     comparison = run_evaluation(
-        _plan(tmp_path),
+        _plan_v2(tmp_path),
         run_id="containment-open-failure",
         raw_fn=lambda *_args: called.append("raw"),
         stock_fn=lambda *_args: called.append("stock"),
@@ -1514,22 +1563,26 @@ def test_verified_runner_stops_adapters_when_provider_open_fails(tmp_path):
     assert "elevation required" in control["reason"]
 
 
-def test_provider_close_uncertainty_forces_egress_failure(tmp_path):
-    _runtime, snapshot = _runtime_snapshot(tmp_path)
+def test_provider_close_uncertainty_forces_egress_failure(
+    tmp_path,
+    monkeypatch,
+):
+    _runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
     api = _RunnerWfpApi()
     api.fail["filter_delete"] = ContainmentError(
         "dynamic cleanup uncertain"
     )
     comparison = run_evaluation(
-        _plan(tmp_path),
+        _plan_v2(tmp_path),
         run_id="containment-close-failure",
-        raw_fn=lambda task, model, host: _result(
+        raw_fn=lambda task, model, host, **_kwargs: _result(
             "raw", model, "ZeroDivisionError"
         ),
-        stock_fn=lambda task, model, host, workspace: _result(
+        stock_fn=lambda task, model, host, workspace, **_kwargs: _result(
             "stock", model, "ZeroDivisionError"
         ),
-        lac_fn=lambda task, model, host, workspace: _result(
+        lac_fn=lambda task, model, host, workspace, **_kwargs: _result(
             "lac", model, "ZeroDivisionError"
         ),
         mode=EvidenceMode.VERIFIED,
@@ -1545,3 +1598,461 @@ def test_provider_close_uncertainty_forces_egress_failure(tmp_path):
     )
     assert control["state"] == "fail"
     assert "cleanup uncertain" in control["reason"]
+
+
+def test_verified_runner_attests_fresh_snapshot_before_lease_schedule_or_adapters(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path)
+    snapshot = replace(
+        snapshot,
+        opencode=replace(snapshot.opencode, sha256="0" * 64),
+    )
+    called = []
+    api = _RunnerWfpApi()
+    monkeypatch.setattr(
+        runner_module.LoopbackRecordingProxy,
+        "open",
+        lambda *_args, **_kwargs: (
+            called.append("proxy"),
+            (_ for _ in ()).throw(RuntimeError("proxy must not open")),
+        )[1],
+    )
+
+    comparison = run_evaluation(
+        plan,
+        run_id="bootstrap-attestation-failure",
+        raw_fn=lambda *_args, **_kwargs: called.append("raw"),
+        stock_fn=lambda *_args, **_kwargs: called.append("stock"),
+        lac_fn=lambda *_args, **_kwargs: called.append("lac"),
+        mode=EvidenceMode.VERIFIED,
+        containment_wfp_api=api,
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=lambda _snapshot: called.append("lease"),
+    )
+
+    assert called == []
+    assert not (
+        plan.output_root / "bootstrap-attestation-failure"
+    ).exists()
+    assert not (
+        plan.output_root
+        / "bootstrap-attestation-failure"
+        / "schedule.json"
+    ).exists()
+    assert not (
+        plan.output_root
+        / "bootstrap-attestation-failure"
+        / "http-observer.before.json"
+    ).exists()
+    assert comparison["runtime_bootstrap_attestation"]["ok"] is False
+
+
+def test_verified_runner_attestation_exception_has_zero_side_effects(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path)
+    called = []
+    monkeypatch.setattr(
+        runner_module,
+        "attest_runtime_bootstrap",
+        lambda *_args, **_kwargs: (
+            called.append("attestation"),
+            (_ for _ in ()).throw(RuntimeError("attestation crashed")),
+        )[1],
+    )
+    monkeypatch.setattr(
+        runner_module.LoopbackRecordingProxy,
+        "open",
+        lambda *_args, **_kwargs: called.append("proxy"),
+    )
+
+    comparison = run_evaluation(
+        plan,
+        run_id="attestation-exception",
+        raw_fn=lambda *_args, **_kwargs: called.append("raw"),
+        stock_fn=lambda *_args, **_kwargs: called.append("stock"),
+        lac_fn=lambda *_args, **_kwargs: called.append("lac"),
+        mode=EvidenceMode.VERIFIED,
+        containment_wfp_api=_RunnerWfpApi(),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=lambda _snapshot: called.append("lease"),
+    )
+
+    assert called == ["attestation"]
+    assert not (plan.output_root / "attestation-exception").exists()
+    assert comparison["evidence"]["artifact_valid"] is False
+
+
+def test_verified_runner_attests_before_run_root_lease_schedule_and_proxy(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _plan_v2(tmp_path)
+    runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
+    run_root = plan.output_root / "preflight-order"
+    events = []
+    real_attest = runtime_provenance_module.attest_runtime_bootstrap
+    real_proxy_open = runner_module.LoopbackRecordingProxy.open
+    real_build_schedule = runner_module.build_schedule
+
+    def capture(_plan):
+        assert not run_root.exists()
+        events.append("capture")
+        return snapshot
+
+    def attest(*args, **kwargs):
+        assert not run_root.exists()
+        events.append("attest")
+        return real_attest(*args, **kwargs)
+
+    def lease(_snapshot):
+        assert not run_root.exists()
+        events.append("lease")
+        return _NoopIdentityLease()
+
+    def schedule(*args, **kwargs):
+        assert not run_root.exists()
+        events.append("schedule")
+        return real_build_schedule(*args, **kwargs)
+
+    def proxy_open(*args, **kwargs):
+        events.append("proxy")
+        return real_proxy_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module,
+        "attest_runtime_bootstrap",
+        attest,
+    )
+    monkeypatch.setattr(
+        runner_module.LoopbackRecordingProxy,
+        "open",
+        proxy_open,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "build_schedule",
+        schedule,
+    )
+
+    run_evaluation(
+        plan,
+        run_id="preflight-order",
+        raw_fn=lambda *_args, **_kwargs: _result(
+            "raw",
+            "gpt-oss:20b",
+            "ZeroDivisionError",
+        ),
+        stock_fn=lambda *_args, **_kwargs: _result(
+            "stock",
+            "gpt-oss:20b",
+            "ZeroDivisionError",
+        ),
+        lac_fn=lambda *_args, **_kwargs: _result(
+            "lac",
+            "gpt-oss:20b-agent",
+            "ZeroDivisionError",
+        ),
+        mode=EvidenceMode.VERIFIED,
+        containment_wfp_api=_RunnerWfpApi(),
+        identity_capture_fn=capture,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=lease,
+    )
+
+    assert events[:5] == [
+        "capture",
+        "attest",
+        "lease",
+        "schedule",
+        "proxy",
+    ]
+    assert run_root.exists()
+    runtime.write_bytes(b"cleanup")
+
+
+def test_verified_runner_schedule_failure_closes_lease_before_side_effects(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
+    called = []
+
+    class Lease:
+        close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    lease = Lease()
+    monkeypatch.setattr(
+        runner_module,
+        "build_schedule",
+        lambda *_args, **_kwargs: (
+            called.append("schedule"),
+            (_ for _ in ()).throw(RuntimeError("schedule failed")),
+        )[1],
+    )
+    monkeypatch.setattr(
+        runner_module.LoopbackRecordingProxy,
+        "open",
+        lambda *_args, **_kwargs: called.append("proxy"),
+    )
+
+    comparison = run_evaluation(
+        plan,
+        run_id="schedule-failure",
+        raw_fn=lambda *_args, **_kwargs: called.append("raw"),
+        stock_fn=lambda *_args, **_kwargs: called.append("stock"),
+        lac_fn=lambda *_args, **_kwargs: called.append("lac"),
+        mode=EvidenceMode.VERIFIED,
+        containment_wfp_api=_RunnerWfpApi(),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=lambda _snapshot: lease,
+    )
+
+    assert comparison["evidence"]["artifact_valid"] is False
+    assert called == ["schedule"]
+    assert lease.close_calls == 1
+    assert not (plan.output_root / "schedule-failure").exists()
+
+
+def test_verified_runner_initial_write_failure_closes_observer_and_lease_once(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
+    called = []
+
+    class Lease:
+        close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    class Observer:
+        endpoint = "http://127.0.0.1:54321"
+        close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    lease = Lease()
+    observer = Observer()
+    monkeypatch.setattr(
+        runner_module.LoopbackRecordingProxy,
+        "open",
+        lambda *_args, **_kwargs: observer,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "atomic_write_json",
+        lambda *_args, **_kwargs: (
+            called.append("write"),
+            (_ for _ in ()).throw(OSError("initial write failed")),
+        )[1],
+    )
+
+    with pytest.raises(OSError, match="initial write failed"):
+        run_evaluation(
+            plan,
+            run_id="write-failure",
+            raw_fn=lambda *_args, **_kwargs: called.append("raw"),
+            stock_fn=lambda *_args, **_kwargs: called.append("stock"),
+            lac_fn=lambda *_args, **_kwargs: called.append("lac"),
+            mode=EvidenceMode.VERIFIED,
+            containment_wfp_api=_RunnerWfpApi(),
+            identity_capture_fn=lambda _: snapshot,
+            identity_compare_fn=_passing_identity_compare,
+            identity_lease_fn=lambda _snapshot: lease,
+        )
+
+    assert called == ["write"]
+    assert observer.close_calls == 1
+    assert lease.close_calls == 1
+
+
+def test_verified_runner_rebind_and_observer_close_failure_still_closes_lease(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
+    called = []
+
+    class Lease:
+        close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    class Observer:
+        endpoint = "http://127.0.0.1:54321"
+        close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+            raise RuntimeError("observer close failed")
+
+    lease = Lease()
+    observer = Observer()
+    monkeypatch.setattr(
+        runner_module.LoopbackRecordingProxy,
+        "open",
+        lambda *_args, **_kwargs: observer,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "rebind_config_manifest",
+        lambda *_args, **_kwargs: (
+            called.append("rebind"),
+            (_ for _ in ()).throw(ValueError("rebind failed")),
+        )[1],
+    )
+
+    with pytest.raises(RuntimeError, match="observer close failed"):
+        run_evaluation(
+            plan,
+            run_id="rebind-close-failure",
+            raw_fn=lambda *_args, **_kwargs: called.append("raw"),
+            stock_fn=lambda *_args, **_kwargs: called.append("stock"),
+            lac_fn=lambda *_args, **_kwargs: called.append("lac"),
+            mode=EvidenceMode.VERIFIED,
+            containment_wfp_api=_RunnerWfpApi(),
+            identity_capture_fn=lambda _: snapshot,
+            identity_compare_fn=_passing_identity_compare,
+            identity_lease_fn=lambda _snapshot: lease,
+        )
+
+    assert called == ["rebind"]
+    assert observer.close_calls == 1
+    assert lease.close_calls == 1
+    assert not (plan.output_root / "rebind-close-failure").exists()
+
+
+def test_verified_runner_real_attestation_then_rejects_target_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _plan_v2(tmp_path)
+    runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
+    runtime.write_bytes(b"replaced-after-attestation-snapshot")
+    called = []
+    monkeypatch.setattr(
+        runner_module.LoopbackRecordingProxy,
+        "open",
+        lambda *_args, **_kwargs: called.append("proxy"),
+    )
+
+    comparison = run_evaluation(
+        plan,
+        run_id="target-replacement",
+        raw_fn=lambda *_args, **_kwargs: called.append("raw"),
+        stock_fn=lambda *_args, **_kwargs: called.append("stock"),
+        lac_fn=lambda *_args, **_kwargs: called.append("lac"),
+        mode=EvidenceMode.VERIFIED,
+        containment_wfp_api=_RunnerWfpApi(),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=identity_module.acquire_runtime_identity_leases,
+    )
+
+    assert comparison["runtime_bootstrap_attestation"]["ok"] is True
+    assert called == []
+    assert not (
+        plan.output_root
+        / "target-replacement"
+        / "http-observer.before.json"
+    ).exists()
+    runtime_control = next(
+        item
+        for item in comparison["identity_controls"]
+        if item["name"] == "runtime_dependency_provenance"
+    )
+    assert runtime_control["state"] == "fail"
+    assert "lease does not match captured identity" in runtime_control["reason"]
+
+
+def test_verified_runner_binds_all_six_default_opencode_configs_to_proxy_endpoint(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _plan_v2(tmp_path)
+    _runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
+    _allow_fixture_runtime(monkeypatch, snapshot)
+    process_calls = []
+
+    def successful_process(*_args, **_kwargs):
+        process_calls.append(True)
+        return opencode_module._ProcessOutcome(
+            0,
+            (
+                '{"type":"text","part":{"text":"ZeroDivisionError"}}\n'
+                '{"type":"step_finish","part":{"reason":"stop",'
+                '"sessionID":"session-1"}}\n'
+            ),
+            "",
+            False,
+            (),
+            b"",
+            b"",
+            {},
+        )
+
+    monkeypatch.setattr(
+        opencode_module,
+        "_run_process_outcome",
+        successful_process,
+    )
+
+    comparison = run_evaluation(
+        plan,
+        run_id="six-config-bindings",
+        raw_fn=lambda task, model, host, **_kwargs: _result(
+            "raw",
+            model,
+            "ZeroDivisionError",
+        ),
+        stock_fn=opencode_module.run_stock,
+        lac_fn=opencode_module.run_lac,
+        mode=EvidenceMode.VERIFIED,
+        containment_wfp_api=_RunnerWfpApi(),
+        identity_capture_fn=lambda _: snapshot,
+        identity_compare_fn=_passing_identity_compare,
+        identity_lease_fn=_noop_identity_lease,
+    )
+
+    assert process_calls == [True] * 6
+    bindings = {
+        f"{item['trial_index']:03d}/{item['arm']}": item
+        for item in comparison[
+            "runtime_bootstrap_attestation"
+        ]["runtime_config_bindings"]
+    }
+    configs = comparison["opencode_config_identities"]
+    assert set(bindings) == {
+        f"{trial_index:03d}/{arm}"
+        for trial_index in (1, 2, 3)
+        for arm in ("stock", "lac")
+    }
+    assert set(configs) == set(bindings)
+    for key, measured in configs.items():
+        assert measured["before"] == measured["after"]
+        assert measured["before"]["canonical_sha256"] == (
+            bindings[key]["expected_canonical_sha256"]
+        )
