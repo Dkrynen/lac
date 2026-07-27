@@ -745,19 +745,92 @@ def _is_loopback(hostname: str | None) -> bool:
         return False
 
 
-def _validate_url(url: str) -> None:
-    parsed = urlsplit(url)
+def _valid_chat_capture_body(
+    body: object, expected_chat_options: object | None
+) -> bool:
     if (
-        parsed.scheme != "http"
+        not isinstance(body, dict)
+        or set(body) != {"model", "messages", "stream", "options"}
+        or not isinstance(body.get("model"), str)
+        or not body["model"]
+        or body.get("stream") is not False
+        or not isinstance(body.get("options"), dict)
+        or not isinstance(body.get("messages"), list)
+        or len(body["messages"]) != 1
+        or not isinstance(body["messages"][0], dict)
+        or set(body["messages"][0]) != {"role", "content"}
+        or body["messages"][0].get("role") != "user"
+        or not isinstance(body["messages"][0].get("content"), str)
+        or not body["messages"][0]["content"]
+    ):
+        return False
+    options = body["options"]
+    if expected_chat_options is None:
+        return (
+            set(options) == {"seed", "temperature"}
+            and type(options.get("seed")) is int
+            and options["seed"] == 0
+            and type(options.get("temperature")) is int
+            and options["temperature"] == 0
+        )
+    if (
+        not isinstance(expected_chat_options, dict)
+        or set(expected_chat_options) != {"seed", "temperature", "num_predict"}
+        or options != expected_chat_options
+    ):
+        return False
+    seed = options["seed"]
+    temperature = options["temperature"]
+    num_predict = options["num_predict"]
+    return (
+        type(seed) is int
+        and seed >= 0
+        and type(temperature) in (int, float)
+        and math.isfinite(float(temperature))
+        and temperature >= 0
+        and type(num_predict) is int
+        and num_predict > 0
+    )
+
+
+def _validate_url(url: str, expected_origin: str | None = None) -> None:
+    parsed = urlsplit(url)
+    if expected_origin is None:
+        if (
+            parsed.scheme != "http"
+            or parsed.username is not None
+            or parsed.password is not None
+            or not _is_loopback(parsed.hostname)
+            or parsed.port != 11434
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in _OLLAMA_ENDPOINTS
+        ):
+            raise ValueError("capture URL must be an unauthenticated loopback Ollama endpoint")
+        return
+    origin = urlsplit(expected_origin)
+    if (
+        origin.scheme != "http"
+        or origin.username is not None
+        or origin.password is not None
+        or not _is_loopback(origin.hostname)
+        or origin.port is None
+        or origin.query
+        or origin.fragment
+        or origin.path not in {"", "/"}
+    ):
+        raise ValueError("capture origin must be an unauthenticated loopback endpoint")
+    if (
+        parsed.scheme != origin.scheme
+        or parsed.hostname != origin.hostname
+        or parsed.port != origin.port
         or parsed.username is not None
         or parsed.password is not None
-        or not _is_loopback(parsed.hostname)
-        or parsed.port != 11434
         or parsed.query
         or parsed.fragment
         or parsed.path not in _OLLAMA_ENDPOINTS
     ):
-        raise ValueError("capture URL must be an unauthenticated loopback Ollama endpoint")
+        raise ValueError("capture URL must match the declared capture origin")
 
 
 def bounded_http_json(
@@ -769,9 +842,11 @@ def bounded_http_json(
     max_bytes: int,
     open_fn=urlopen,
     capture_metadata: dict[str, object] | None = None,
+    expected_origin: str | None = None,
+    expected_chat_options: object | None = None,
 ) -> dict:
     """Fetch one local JSON object without ever performing an unbounded read."""
-    _validate_url(url)
+    _validate_url(url, expected_origin)
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
@@ -802,26 +877,7 @@ def bounded_http_json(
             or body.get("verbose") is not False
         ):
             raise ValueError("show capture body must be an exact model/verbose object")
-    elif (
-        not isinstance(body, dict)
-        or set(body) != {"model", "messages", "stream", "options"}
-        or not isinstance(body.get("model"), str)
-        or not body["model"]
-        or body.get("stream") is not False
-        or not isinstance(body.get("options"), dict)
-        or set(body["options"]) != {"seed", "temperature"}
-        or type(body["options"].get("seed")) is not int
-        or body["options"]["seed"] != 0
-        or type(body["options"].get("temperature")) is not int
-        or body["options"]["temperature"] != 0
-        or not isinstance(body.get("messages"), list)
-        or len(body["messages"]) != 1
-        or not isinstance(body["messages"][0], dict)
-        or set(body["messages"][0]) != {"role", "content"}
-        or body["messages"][0].get("role") != "user"
-        or not isinstance(body["messages"][0].get("content"), str)
-        or not body["messages"][0]["content"]
-    ):
+    elif not _valid_chat_capture_body(body, expected_chat_options):
         raise ValueError("chat capture body must match the exact evaluation contract")
     payload = None
     headers = {"Accept": "application/json"}

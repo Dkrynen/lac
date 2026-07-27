@@ -99,6 +99,144 @@ def test_bounded_http_json_passes_post_body_and_timeout_to_urlopen_shape():
     ]
 
 
+def _sampling_body(options):
+    return {
+        "model": "gpt-oss:20b",
+        "messages": [{"role": "user", "content": "Name the exception."}],
+        "stream": False,
+        "options": dict(options),
+    }
+
+
+_SAMPLING_OPTIONS = {
+    "seed": 1209934845,
+    "temperature": 1.0,
+    "num_predict": 128,
+}
+
+
+def test_bounded_http_json_accepts_declared_loopback_capture_origin():
+    calls = []
+
+    def open_fn(request, *, timeout):
+        calls.append(request.full_url)
+        return Response(
+            b'{"message":{"content":"ZeroDivisionError"},"done":true}',
+            final_url="http://127.0.0.1:60213/api/chat",
+        )
+
+    result = bounded_http_json(
+        "http://127.0.0.1:60213/api/chat",
+        method="POST",
+        body=_sampling_body(_SAMPLING_OPTIONS),
+        timeout=5,
+        max_bytes=4096,
+        open_fn=open_fn,
+        expected_origin="http://127.0.0.1:60213",
+        expected_chat_options=dict(_SAMPLING_OPTIONS),
+    )
+    assert result["done"] is True
+    assert calls == ["http://127.0.0.1:60213/api/chat"]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        {**_SAMPLING_OPTIONS, "seed": 42},
+        {**_SAMPLING_OPTIONS, "temperature": 0.5},
+        {**_SAMPLING_OPTIONS, "num_predict": 64},
+        {"seed": 1, "temperature": 1.0},
+    ],
+)
+def test_bounded_http_json_rejects_chat_options_drift(declared):
+    with pytest.raises(ValueError):
+        bounded_http_json(
+            "http://127.0.0.1:60213/api/chat",
+            method="POST",
+            body=_sampling_body(_SAMPLING_OPTIONS),
+            timeout=5,
+            max_bytes=64,
+            open_fn=lambda *_args, **_kwargs: Response(b"{}"),
+            expected_origin="http://127.0.0.1:60213",
+            expected_chat_options=declared,
+        )
+
+
+def test_bounded_http_json_sampling_body_requires_declared_options():
+    with pytest.raises(ValueError):
+        bounded_http_json(
+            "http://127.0.0.1:11434/api/chat",
+            method="POST",
+            body=_sampling_body(_SAMPLING_OPTIONS),
+            timeout=5,
+            max_bytes=64,
+            open_fn=lambda *_args, **_kwargs: Response(b"{}"),
+        )
+
+
+def test_bounded_http_json_legacy_chat_body_still_validates_without_declaration():
+    def open_fn(request, *, timeout):
+        return Response(
+            b'{"message":{"content":"ZeroDivisionError"},"done":true}',
+            final_url="http://127.0.0.1:11434/api/chat",
+        )
+
+    result = bounded_http_json(
+        "http://127.0.0.1:11434/api/chat",
+        method="POST",
+        body={
+            "model": "gpt-oss:20b",
+            "messages": [{"role": "user", "content": "Name the exception."}],
+            "stream": False,
+            "options": {"seed": 0, "temperature": 0},
+        },
+        timeout=5,
+        max_bytes=4096,
+        open_fn=open_fn,
+    )
+    assert result["done"] is True
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_origin"),
+    (
+        ("http://127.0.0.1:60213/api/chat", "http://127.0.0.1:11434"),
+        ("http://127.0.0.1:11434/api/chat", "http://127.0.0.1:60213"),
+        ("http://user@127.0.0.1:60213/api/chat", "http://127.0.0.1:60213"),
+        ("http://127.0.0.1:60213/api/chat?x=1", "http://127.0.0.1:60213"),
+        ("http://127.0.0.1:60213/api/other", "http://127.0.0.1:60213"),
+        ("http://127.0.0.1:60213/api/chat", "http://10.0.0.1:60213"),
+        ("http://127.0.0.1:60213/api/chat", "http://127.0.0.1:60213/base"),
+        ("http://127.0.0.1:60213/api/chat", "http://127.0.0.1"),
+    ),
+)
+def test_bounded_http_json_rejects_wrong_or_undeclared_capture_origin(
+    url, expected_origin
+):
+    with pytest.raises(ValueError):
+        bounded_http_json(
+            url,
+            method="POST",
+            body={"model": "gpt-oss:20b", "stream": False},
+            timeout=5,
+            max_bytes=64,
+            open_fn=lambda *_args, **_kwargs: Response(b"{}"),
+            expected_origin=expected_origin,
+        )
+
+
+def test_bounded_http_json_without_expected_origin_still_requires_ollama_port():
+    with pytest.raises(ValueError):
+        bounded_http_json(
+            "http://127.0.0.1:60213/api/chat",
+            method="POST",
+            body={"model": "gpt-oss:20b", "stream": False},
+            timeout=5,
+            max_bytes=64,
+            open_fn=lambda *_args, **_kwargs: Response(b"{}"),
+        )
+
+
 @pytest.mark.parametrize(
     "payload",
     [b'{"models":[]}', b'\xff', b'{', b'[]'],

@@ -26,15 +26,19 @@ def _request_json(
     timeout: int,
     *,
     capture_metadata: dict[str, object] | None = None,
+    expected_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    host = ollama_host.rstrip("/")
     return bounded_http_json(
-        ollama_host.rstrip("/") + "/api/chat",
+        host + "/api/chat",
         method="POST",
         body=body,
         timeout=timeout,
         max_bytes=OLLAMA_RESPONSE_MAX_BYTES,
         open_fn=urllib.request.urlopen,
         capture_metadata=capture_metadata,
+        expected_origin=host,
+        expected_chat_options=expected_options,
     )
 
 
@@ -152,6 +156,7 @@ def run_raw(
                 body,
                 task.timeout_seconds,
                 capture_metadata=response_capture,
+                expected_options=dict(options) if generation is not None else None,
             )
         else:
             data = request_fn(

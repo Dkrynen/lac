@@ -82,6 +82,63 @@ def test_run_raw_sends_bounded_fixture_prompt_without_tools(tmp_path):
     assert result.capture["response"]["overflowed"] is False
 
 
+def test_run_raw_samples_through_dynamic_proxy_origin_via_real_request_path(
+    tmp_path, monkeypatch
+):
+    import io
+    import json
+
+    seen = []
+
+    class _FakeResponse:
+        def __init__(self, payload: bytes, final_url: str):
+            self._payload = io.BytesIO(payload)
+            self._final_url = final_url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self, size=-1):
+            assert size != -1
+            return self._payload.read(size)
+
+        def geturl(self):
+            return self._final_url
+
+    def fake_urlopen(request, *, timeout):
+        seen.append((request.full_url, timeout))
+        payload = json.dumps(
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "ZeroDivisionError",
+                },
+                "done": True,
+            }
+        ).encode("utf-8")
+        return _FakeResponse(payload, request.full_url)
+
+    monkeypatch.setattr(raw_module.urllib.request, "urlopen", fake_urlopen)
+
+    generation = GenerationSettings(1.0, 20260726, 128)
+    trial = TrialSpec(1, 1209934845, ("raw", "stock", "lac"))
+    result = run_raw(
+        _task(tmp_path),
+        "gpt-oss:20b",
+        "http://127.0.0.1:60213",
+        generation=generation,
+        trial=trial,
+    )
+
+    assert seen == [("http://127.0.0.1:60213/api/chat", 180)]
+    assert result.completed is True
+    assert result.response == "ZeroDivisionError"
+    assert result.errors == ()
+
+
 def test_run_raw_applies_identical_trial_generation_to_body_and_metadata(
     tmp_path,
 ):
