@@ -100,6 +100,141 @@ def test_top_level_help_still_mounts_plugin_commands(monkeypatch, capsys):
     assert "prototest" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--host", "eval", "prototest"],
+        ["prototest", "--label", "eval"],
+    ],
+)
+def test_eval_as_global_value_or_plugin_argument_does_not_bypass_plugins(
+    monkeypatch,
+    arguments,
+):
+    calls = []
+
+    def register_cli(sub):
+        calls.append("register_cli")
+        parser = sub.add_parser("prototest")
+        parser.add_argument("--label")
+        parser.set_defaults(func=lambda _args: calls.append("ran"))
+
+    plugin = SimpleNamespace(
+        name="fake",
+        version="9.9",
+        register_cli=register_cli,
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "discover",
+        lambda: calls.append("discover")
+        or [LoadedPlugin("fake", "9.9", plugin)],
+    )
+
+    import cli
+
+    assert cli.main(arguments) is None
+    assert calls == ["discover", "register_cli", "ran"]
+
+
+@pytest.mark.parametrize(
+    "global_prefix",
+    [
+        ["--host", "http://127.0.0.1:11434"],
+        ["--host=http://127.0.0.1:11434"],
+    ],
+)
+def test_global_host_plugin_command_still_discovers_and_runs(
+    monkeypatch,
+    global_prefix,
+):
+    calls = []
+
+    def register_cli(sub):
+        calls.append("register_cli")
+        parser = sub.add_parser("prototest")
+        parser.set_defaults(func=lambda _args: calls.append("ran"))
+
+    plugin = SimpleNamespace(
+        name="fake",
+        version="9.9",
+        register_cli=register_cli,
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "discover",
+        lambda: calls.append("discover")
+        or [LoadedPlugin("fake", "9.9", plugin)],
+    )
+
+    import cli
+
+    assert cli.main([*global_prefix, "prototest"]) is None
+    assert calls == ["discover", "register_cli", "ran"]
+
+
+def test_global_host_unknown_command_still_discovers_before_parser_error(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        plugins_mod,
+        "discover",
+        lambda: calls.append("discover") or [],
+    )
+
+    import cli
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(
+            [
+                "--host=http://127.0.0.1:11434",
+                "not-a-command",
+            ]
+        )
+
+    assert raised.value.code == 2
+    assert calls == ["discover"]
+
+
+def test_global_host_top_level_help_still_mounts_plugins(
+    monkeypatch,
+    capsys,
+):
+    calls = []
+
+    def register_cli(sub):
+        calls.append("register_cli")
+        sub.add_parser("prototest", help="plugin help sentinel")
+
+    plugin = SimpleNamespace(
+        name="fake",
+        version="9.9",
+        register_cli=register_cli,
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "discover",
+        lambda: calls.append("discover")
+        or [LoadedPlugin("fake", "9.9", plugin)],
+    )
+
+    import cli
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(
+            [
+                "--host",
+                "http://127.0.0.1:11434",
+                "--help",
+            ]
+        )
+
+    assert raised.value.code == 0
+    assert calls == ["discover", "register_cli"]
+    assert "prototest" in capsys.readouterr().out
+
+
 def test_broken_register_cli_does_not_crash(monkeypatch):
     def register_cli(sub):
         raise RuntimeError("plugin exploded")

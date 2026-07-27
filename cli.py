@@ -1249,13 +1249,42 @@ def print_banner():
     print()
 
 
+class _CoreCommandProbe(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
+def _add_core_host_argument(parser):
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="Ollama host (default: OLLAMA_HOST env or localhost:11434)",
+    )
+
+
+def _is_core_eval_invocation(argv):
+    probe = _CoreCommandProbe(add_help=False)
+    probe.add_argument("-h", "--help", action="store_true")
+    _add_core_host_argument(probe)
+    for index, token in enumerate(argv):
+        if token != "eval":
+            continue
+        try:
+            global_args = probe.parse_args(argv[:index])
+        except (ValueError, SystemExit):
+            continue
+        if not global_args.help:
+            return True
+    return False
+
+
 def build_parser(*, include_plugins=True):
     parser = argparse.ArgumentParser(
         prog="lac",
         description=f"LAC CLI v{__version__} — Find your perfect local LLM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--host", default=None, help="Ollama host (default: OLLAMA_HOST env or localhost:11434)")
+    _add_core_host_argument(parser)
 
     sub = parser.add_subparsers(dest="command")
 
@@ -1439,7 +1468,7 @@ def main(argv=None):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser(
-        include_plugins=not (arguments and arguments[0] == "eval")
+        include_plugins=not _is_core_eval_invocation(arguments)
     )
     args = parser.parse_args(arguments)
     if not getattr(args, "json", False):

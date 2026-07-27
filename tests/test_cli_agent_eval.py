@@ -12,6 +12,17 @@ from backend.agent_eval.command import EvalCommandResult
 from backend.plugins import LoadedPlugin
 
 
+_LOOPBACK_HOST = "http://127.0.0.1:11434"
+_GLOBAL_HOST_FORMS = (
+    ("--host", _LOOPBACK_HOST),
+    (f"--host={_LOOPBACK_HOST}",),
+    ("--hos", _LOOPBACK_HOST),
+    (f"--hos={_LOOPBACK_HOST}",),
+    ("--ho", _LOOPBACK_HOST),
+    (f"--ho={_LOOPBACK_HOST}",),
+)
+
+
 def _argv(*extra: str) -> list[str]:
     return [
         "eval",
@@ -159,3 +170,90 @@ def test_eval_help_bypasses_plugin_discovery(
     output = capsys.readouterr().out
     assert output.startswith("usage: lac eval")
     assert "--dry-run" in output
+
+
+@pytest.mark.parametrize("global_prefix", _GLOBAL_HOST_FORMS)
+@pytest.mark.parametrize("use_explicit_argv", [False, True])
+def test_eval_json_after_global_host_bypasses_plugins_and_stays_parseable(
+    monkeypatch,
+    capsys,
+    global_prefix,
+    use_explicit_argv,
+):
+    calls = []
+
+    def register_cli(_subparsers):
+        calls.append("register_cli")
+        print("PLUGIN_NOISE")
+
+    plugin = SimpleNamespace(
+        name="noisy",
+        version="1.0",
+        register_cli=register_cli,
+    )
+    monkeypatch.setattr(
+        plugins_module,
+        "discover",
+        lambda: calls.append("discover")
+        or [LoadedPlugin("noisy", "1.0", plugin)],
+    )
+    remediation = (
+        "Verified Windows network containment requires an elevated terminal.\n"
+        "Reopen PowerShell as Administrator and rerun:\n"
+        r"C:\LAC\lac.exe eval --dry-run --json"
+    )
+    monkeypatch.setattr(
+        "backend.agent_eval.command.execute_eval_command",
+        lambda _request: EvalCommandResult(
+            exit_code=2,
+            report={
+                "artifact_valid": False,
+                "evidence_ready": False,
+                "error": remediation,
+                "ok": False,
+            },
+        ),
+    )
+    monkeypatch.setenv("OLLAMA_HOST", "before-eval")
+    arguments = [*global_prefix, *_argv("--dry-run", "--json")]
+    if not use_explicit_argv:
+        monkeypatch.setattr(cli.sys, "argv", ["lac", *arguments])
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(arguments if use_explicit_argv else None)
+
+    assert raised.value.code == 2
+    assert calls == []
+    assert json.loads(capsys.readouterr().out) == {
+        "artifact_valid": False,
+        "evidence_ready": False,
+        "error": remediation,
+        "ok": False,
+    }
+    assert cli.os.environ["OLLAMA_HOST"] == _LOOPBACK_HOST
+
+
+@pytest.mark.parametrize("global_prefix", _GLOBAL_HOST_FORMS)
+@pytest.mark.parametrize("use_explicit_argv", [False, True])
+def test_eval_help_after_global_host_bypasses_plugin_discovery(
+    monkeypatch,
+    capsys,
+    global_prefix,
+    use_explicit_argv,
+):
+    calls = []
+    monkeypatch.setattr(
+        plugins_module,
+        "discover",
+        lambda: calls.append("discover"),
+    )
+    arguments = [*global_prefix, "eval", "--help"]
+    if not use_explicit_argv:
+        monkeypatch.setattr(cli.sys, "argv", ["lac", *arguments])
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(arguments if use_explicit_argv else None)
+
+    assert raised.value.code == 0
+    assert calls == []
+    assert capsys.readouterr().out.startswith("usage: lac eval")

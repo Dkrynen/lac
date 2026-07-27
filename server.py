@@ -148,9 +148,13 @@ def _should_use_window(args) -> bool:
 def _is_cli_invocation(argv: list[str]) -> bool:
     """The exe is being used as a CLI when the first token is a subcommand
     (a bare word) or top-level help, not another server flag and not empty."""
-    return bool(argv) and (
+    if bool(argv) and (
         argv[0] in {"-h", "--help"} or not argv[0].startswith("-")
-    )
+    ):
+        return True
+    from cli import _is_core_eval_invocation
+
+    return _is_core_eval_invocation(argv)
 
 
 def main():
