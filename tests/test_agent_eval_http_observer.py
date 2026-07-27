@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 import urllib.error
@@ -540,10 +541,10 @@ def test_accepted_and_claimed_handler_generations_are_condition_accounted():
                 assert proxy._active_handler_generations == set()
             release_claim.set()
             client_thread.join(timeout=3)
+            proxy.finish_capture("001-raw")
             with proxy._condition:
                 assert proxy._pending_handler_generations == set()
                 assert proxy._active_handler_generations == set()
-            proxy.finish_capture("001-raw")
         finally:
             release_claim.set()
             proxy.close()
@@ -622,3 +623,109 @@ def test_quiet_window_seals_at_global_quiescence_without_deadlock():
 
     assert capture.raw_body == b'{"model":"base"}'
     assert elapsed < 1
+
+
+def test_finish_cannot_cross_accept_before_registration_returns():
+    with _upstream() as (upstream, forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        proxy.begin_capture("001-raw", "/api/chat")
+        assert _post(
+            proxy.endpoint,
+            "/api/chat",
+            b'{"request":1}',
+        ) == b'{"ok":true}'
+
+        accepted_before_return = threading.Event()
+        release_registration = threading.Event()
+        original_register = proxy._register_accepted
+
+        def paused_register(request):
+            accepted_before_return.set()
+            assert release_registration.wait(timeout=2)
+            return original_register(request)
+
+        proxy._register_accepted = paused_register
+        second_errors = []
+        finish_results = []
+        finish_errors = []
+        finish_done = threading.Event()
+        second_thread = threading.Thread(
+            target=lambda: _capture_call(
+                lambda: _post(
+                    proxy.endpoint,
+                    "/api/chat",
+                    b'{"request":2}',
+                ),
+                second_errors,
+            ),
+            daemon=True,
+        )
+
+        def finish():
+            try:
+                finish_results.append(
+                    proxy.finish_capture("001-raw")
+                )
+            except Exception as exc:
+                finish_errors.append(exc)
+            finally:
+                finish_done.set()
+
+        finish_thread = threading.Thread(target=finish, daemon=True)
+        second_thread.start()
+        assert accepted_before_return.wait(timeout=2)
+        finish_thread.start()
+        try:
+            assert finish_done.wait(timeout=0.1) is False
+            release_registration.set()
+            second_thread.join(timeout=3)
+            finish_thread.join(timeout=3)
+        finally:
+            release_registration.set()
+            proxy.close()
+
+    assert finish_results == []
+    assert len(finish_errors) == 1
+    assert (
+        "multiple" in str(finish_errors[0])
+        or "accepted" in str(finish_errors[0])
+    )
+    assert len(second_errors) == 1
+    assert isinstance(
+        second_errors[0],
+        (urllib.error.HTTPError, ConnectionAbortedError),
+    )
+    assert len(forwarded) == 1
+
+
+def test_pre_window_idle_connection_does_not_block_window_quiescence():
+    with _upstream() as (upstream, forwarded):
+        proxy = LoopbackRecordingProxy.open(upstream)
+        idle_registered = threading.Event()
+        original_register = proxy._register_accepted
+
+        def observed_register(request):
+            result = original_register(request)
+            idle_registered.set()
+            return result
+
+        proxy._register_accepted = observed_register
+        host, port_text = proxy.endpoint.removeprefix("http://").split(":")
+        idle_socket = socket.create_connection((host, int(port_text)))
+        assert idle_registered.wait(timeout=2)
+        try:
+            proxy.begin_capture("001-raw", "/api/chat")
+            assert _post(
+                proxy.endpoint,
+                "/api/chat",
+                b'{"request":1}',
+            ) == b'{"ok":true}'
+            capture = proxy.finish_capture(
+                "001-raw",
+                timeout_seconds=0.5,
+            )
+            assert capture.raw_body == b'{"request":1}'
+            assert len(forwarded) == 1
+        finally:
+            idle_socket.close()
+            proxy.close()

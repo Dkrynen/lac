@@ -163,7 +163,7 @@ class LoopbackRecordingProxy:
                 "upstream_timeout_seconds must be positive"
             )
         self._upstream_timeout_seconds = float(upstream_timeout_seconds)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._active: _WindowState | None = None
         self._used_tokens: set[str] = set()
@@ -191,12 +191,23 @@ class LoopbackRecordingProxy:
                 return None
 
         class RecordingServer(ThreadingHTTPServer):
+            def get_request(
+                self,
+            ) -> tuple[socket.socket, tuple[str, int]]:
+                with proxy._condition:
+                    request, client_address = super().get_request()
+                    try:
+                        proxy._register_accepted(request)
+                    except BaseException:
+                        request.close()
+                        raise
+                    return request, client_address
+
             def process_request(
                 self,
                 request: socket.socket,
                 client_address: tuple[str, int],
             ) -> None:
-                proxy._register_accepted(request)
                 try:
                     super().process_request(request, client_address)
                 except BaseException:
@@ -315,8 +326,8 @@ class LoopbackRecordingProxy:
                     )
         with self._condition:
             while (
-                self._pending_handler_generations
-                or self._active_handler_generations
+                state.pending_generations
+                or state.active_generations
             ):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
