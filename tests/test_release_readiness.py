@@ -8,6 +8,12 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "release_readiness.py"
 
 
+def test_release_candidate_contract_includes_packaged_agent_eval_assets():
+    text = (ROOT / "build.spec").read_text(encoding="utf-8")
+    assert 'PROJECT_ROOT / "evals" / "agent"' in text
+    assert '"backend.agent_eval.command"' in text
+
+
 def _load_release_readiness():
     spec = importlib.util.spec_from_file_location("release_readiness", SCRIPT)
     assert spec and spec.loader

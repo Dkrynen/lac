@@ -34,6 +34,7 @@ webview_datas, webview_binaries, webview_hidden = collect_all("webview")
 
 # -- Collect backend Python files --
 backend_dir = PROJECT_ROOT / "backend"
+evals_dir = PROJECT_ROOT / "evals" / "agent"
 
 # -- Collect frontend static files --
 # The React app (web/dist) is what api.py serves when present; the legacy
@@ -49,6 +50,11 @@ datas = []
 if backend_dir.is_dir():
     for f in backend_dir.rglob("*"):
         if f.suffix in (".py", ".json", ".txt") and "__pycache__" not in f.parts:
+            datas.append((str(f), str(f.parent.relative_to(PROJECT_ROOT))))
+
+if evals_dir.is_dir():
+    for f in evals_dir.rglob("*"):
+        if f.is_file():
             datas.append((str(f), str(f.parent.relative_to(PROJECT_ROOT))))
 
 if frontend_dir.is_dir():
@@ -80,6 +86,10 @@ a = Analysis(
     datas=datas + crypto_datas + webview_datas,
     hiddenimports=[
         "cli",  # CLI subcommand dispatch (lac.exe pro activate / scan) — see server._is_cli_invocation
+        "backend.agent_eval.command",
+        "backend.agent_eval.containment",
+        "backend.agent_eval.windows_wfp",
+        "backend.agent_eval.windows_job",
         "flask",
         "json", "os", "platform", "subprocess",
         "threading", "time", "webbrowser", "urllib",

@@ -30,6 +30,37 @@ are reported as **discovered, not executed**.
 
 See [Getting Started](docs/GETTING_STARTED.md) for setup and recovery.
 
+## Internal agent-evidence command
+
+`lac eval` is a bounded internal evaluator, not a public benchmark claim. Its
+read-only preflight creates no output, consumes no model tokens, and no
+downloads occur:
+
+```powershell
+# Read-only preflight; no model tokens
+lac eval --task python-empty-mean `
+  --base-model gpt-oss:20b `
+  --lac-model gpt-oss:20b-agent `
+  --output-dir C:\lac-evidence `
+  --run-id phase0-smoke `
+  --dry-run --json
+
+# Explicit non-evidence developer run
+lac eval --task python-empty-mean `
+  --base-model gpt-oss:20b `
+  --lac-model gpt-oss:20b-agent `
+  --output-dir C:\lac-evidence `
+  --mode diagnostic
+```
+
+Verified mode needs elevated Windows PowerShell so dynamic OS-level loopback
+containment can be opened, checked, and torn down. Diagnostic artifacts are
+invalid and cannot be promoted into verified evidence. A live task performs
+nine bounded arm runs; those nine bounded arm runs require operator approval
+after a clean privileged dry-run displays the maximum runtime. One smoke is
+not a competitive capability claim. The live verified command is not
+documented as ready until that privileged clean-build gate passes.
+
 ## Features
 
 - **Hardware scan** — Windows-first GPU, VRAM, RAM, CPU detection, with source/CLI probes for Linux and macOS (NVIDIA, AMD, Apple Silicon, Intel)

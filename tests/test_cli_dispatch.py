@@ -4,6 +4,7 @@ import server
 def test_is_cli_invocation_true_for_subcommand():
     assert server._is_cli_invocation(["pro", "activate"]) is True
     assert server._is_cli_invocation(["scan"]) is True
+    assert server._is_cli_invocation(["eval", "--dry-run"]) is True
 
 
 def test_is_cli_invocation_routes_top_level_help_to_cli():

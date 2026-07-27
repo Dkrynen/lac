@@ -971,6 +971,34 @@ def cmd_agent(args):
     sys.exit(rc)
 
 
+def cmd_eval(args):
+    from backend.agent_eval.command import (
+        EvalCommandRequest,
+        execute_eval_command,
+    )
+
+    original_command = subprocess.list2cmdline(
+        [sys.argv[0], *sys.argv[1:]]
+    )
+    result = execute_eval_command(
+        EvalCommandRequest(
+            task=args.task,
+            base_model=args.base_model,
+            lac_model=args.lac_model,
+            output_dir=args.output_dir,
+            run_id=args.run_id,
+            mode=args.mode,
+            dry_run=args.dry_run,
+            ollama_host=args.ollama_host,
+            original_command=original_command,
+        )
+    )
+    print(json.dumps(result.report, indent=2, sort_keys=True))
+    if result.exit_code:
+        raise SystemExit(result.exit_code)
+    return 0
+
+
 def cmd_browse(args):
     query = args.query or ""
     sort = args.sort or "pulls"
@@ -1304,6 +1332,46 @@ def build_parser():
 
     p_agent = sub.add_parser("agent", help="Launch the LAC local-model coding agent (OpenCode + hardware brain)")
     p_agent.add_argument("dir", nargs="?", default=".", help="Project directory (default: current)")
+
+    p_eval = sub.add_parser(
+        "eval",
+        help="Run the bounded local-agent evidence evaluator",
+    )
+    p_eval.add_argument("--task", required=True, help="Packaged trusted task id")
+    p_eval.add_argument("--base-model", required=True, help="Installed base model")
+    p_eval.add_argument(
+        "--lac-model",
+        required=True,
+        help="Installed <base>-agent model variant",
+    )
+    p_eval.add_argument(
+        "--output-dir",
+        required=True,
+        help="Evidence root outside the LAC installation and source tree",
+    )
+    p_eval.add_argument(
+        "--ollama-host",
+        default="http://127.0.0.1:11434",
+        help="Literal loopback Ollama URL",
+    )
+    p_eval.add_argument("--run-id", default=None)
+    p_eval.add_argument(
+        "--mode",
+        choices=("verified", "diagnostic"),
+        default="verified",
+        help="verified fails closed; diagnostic artifacts are always invalid",
+    )
+    p_eval.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable evaluation output without a banner",
+    )
+    p_eval.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate controls without creating files or model tokens",
+    )
+    p_eval.set_defaults(func=cmd_eval)
 
     p_browse = sub.add_parser("browse", help="Browse model library")
     p_browse.add_argument("query", nargs="?", help="Search query")

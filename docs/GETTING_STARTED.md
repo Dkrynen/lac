@@ -197,3 +197,37 @@ proves that every model can complete every coding task, that the OpenCode
 permission layer is a sandbox, or that a public installer is signed and
 release-ready. Source compilation does not prove PATH mutation, upgrade, or
 uninstall behavior; those remain clean-machine installer checks.
+
+### Internal agent-evidence preflight
+
+The packaged evaluator has a read-only preflight. It creates no evaluation
+workspace, consumes no model tokens, and no downloads occur:
+
+```powershell
+# Read-only preflight; no model tokens
+lac eval --task python-empty-mean `
+  --base-model gpt-oss:20b `
+  --lac-model gpt-oss:20b-agent `
+  --output-dir C:\lac-evidence `
+  --run-id phase0-smoke `
+  --dry-run --json
+```
+
+Verified mode needs elevated Windows PowerShell for dynamic loopback-only
+network containment. Until a clean privileged build passes that dry-run, do
+not treat the live verified command as ready.
+
+For local development only:
+
+```powershell
+# Explicit non-evidence developer run
+lac eval --task python-empty-mean `
+  --base-model gpt-oss:20b `
+  --lac-model gpt-oss:20b-agent `
+  --output-dir C:\lac-evidence `
+  --mode diagnostic
+```
+
+Diagnostic artifacts are invalid. The task schedules three counterbalanced
+trials across three arms, so nine bounded arm runs require operator approval
+before token generation. One smoke is not a competitive capability claim.
