@@ -366,7 +366,7 @@ def test_native_port_condition_uses_wfp_host_byte_order():
     sys.byteorder != "little",
     reason="Windows WFP reference ABI is little-endian",
 )
-def test_native_ipv4_condition_uses_independent_wfp_host_order_value():
+def test_native_ipv4_condition_uses_exact_addr_and_mask_value():
     spec = windows_wfp_module.FilterSpec(
         "v4",
         "permit",
@@ -386,8 +386,60 @@ def test_native_ipv4_condition_uses_independent_wfp_host_order_value():
         if condition.fieldKey.to_uuid()
         == windows_wfp_module.FWPM_CONDITION_IP_REMOTE_ADDRESS
     )
-    assert address.conditionValue.uint32 == 0x0100007F
+    # FWPM_CONDITION_IP_REMOTE_ADDRESS requires FWP_V4_ADDR_AND_MASK
+    # (0x100); a bare FWP_UINT32 is added without error but never
+    # matches at classification time, so the permit filter is inert
+    # and the unconditional block wins.
+    assert (
+        address.conditionValue.type
+        == windows_wfp_module.FWP_V4_ADDR_MASK
+    )
+    assert address.conditionValue.v4AddrMask
+    value = address.conditionValue.v4AddrMask.contents
+    assert value.addr == 0x0100007F  # 127.0.0.1 in WFP byte order
+    assert value.mask == 32  # exact /32 match
     assert windows_wfp_module._parse_native_filter(native, spec) == spec
+
+
+def _v4_permit_spec():
+    return windows_wfp_module.FilterSpec(
+        "v4",
+        "permit",
+        PERMIT_WEIGHT,
+        b"app-id",
+        "127.0.0.1",
+        11434,
+        "12345678-1234-5678-9abc-123456789abc",
+    )
+
+
+def _address_condition(native):
+    return next(
+        native.filterCondition[index]
+        for index in range(native.numFilterConditions)
+        if native.filterCondition[index].fieldKey.to_uuid()
+        == windows_wfp_module.FWPM_CONDITION_IP_REMOTE_ADDRESS
+    )
+
+
+def test_native_parser_rejects_non_exact_ipv4_prefix():
+    spec = _v4_permit_spec()
+    native, references = windows_wfp_module._native_filter(spec)
+    _address_condition(native).conditionValue.v4AddrMask.contents.mask = 24
+
+    with pytest.raises(ContainmentError, match="condition shape"):
+        windows_wfp_module._parse_native_filter(native, spec)
+
+
+def test_native_parser_rejects_null_ipv4_addr_mask():
+    spec = _v4_permit_spec()
+    native, references = windows_wfp_module._native_filter(spec)
+    _address_condition(native).conditionValue.v4AddrMask = (
+        ctypes.POINTER(windows_wfp_module.FWP_V4_ADDR_AND_MASK)()
+    )
+
+    with pytest.raises(ContainmentError, match="condition shape"):
+        windows_wfp_module._parse_native_filter(native, spec)
 
 
 @pytest.mark.parametrize(

@@ -25,6 +25,10 @@ FWP_UINT32 = 3
 FWP_UINT64 = 4
 FWP_BYTE_ARRAY16_TYPE = 11
 FWP_BYTE_BLOB_TYPE = 12
+# Compound FWP data types begin at FWP_SINGLE_DATA_TYPE_MAX (0xFF) + 1.
+# IP_REMOTE_ADDRESS requires FWP_V4_ADDR_AND_MASK; a bare FWP_UINT32 is
+# accepted by FwpmFilterAdd0 but never matches at classification time.
+FWP_V4_ADDR_MASK = 0x100
 FWP_ACTION_BLOCK = 0x00001001
 FWP_ACTION_PERMIT = 0x00001002
 RPC_C_AUTHN_WINNT = 10
@@ -66,6 +70,12 @@ class FWP_BYTE_ARRAY16(ctypes.Structure):
     _fields_ = [("byteArray16", ctypes.c_ubyte * 16)]
 
 
+class FWP_V4_ADDR_AND_MASK(ctypes.Structure):
+    # addr holds the IPv4 address in WFP (network) byte order; mask is
+    # a prefix length, where 32 means an exact single-host match.
+    _fields_ = [("addr", wintypes.DWORD), ("mask", wintypes.DWORD)]
+
+
 class FWP_BYTE_BLOB(ctypes.Structure):
     _fields_ = [
         ("size", wintypes.DWORD),
@@ -82,6 +92,7 @@ class _FWP_VALUE_UNION(ctypes.Union):
         ("byteArray16", ctypes.POINTER(FWP_BYTE_ARRAY16)),
         ("byteBlob", ctypes.POINTER(FWP_BYTE_BLOB)),
         ("unicodeString", wintypes.LPWSTR),
+        ("v4AddrMask", ctypes.POINTER(FWP_V4_ADDR_AND_MASK)),
     ]
 
 
@@ -787,10 +798,17 @@ def _native_filter(spec: FilterSpec) -> tuple[FWPM_FILTER0, list[object]]:
         )
         address_condition.matchType = FWP_MATCH_EQUAL
         if spec.layer == "v4":
-            address_condition.conditionValue.type = FWP_UINT32
-            address_condition.conditionValue.uint32 = int.from_bytes(
-                ipaddress.IPv4Address(spec.remote_address).packed,
-                sys.byteorder,
+            v4_addr_mask = FWP_V4_ADDR_AND_MASK(
+                int.from_bytes(
+                    ipaddress.IPv4Address(spec.remote_address).packed,
+                    sys.byteorder,
+                ),
+                32,
+            )
+            references.append(v4_addr_mask)
+            address_condition.conditionValue.type = FWP_V4_ADDR_MASK
+            address_condition.conditionValue.v4AddrMask = ctypes.pointer(
+                v4_addr_mask
             )
         else:
             address = FWP_BYTE_ARRAY16(
@@ -858,7 +876,7 @@ def _parse_native_filter(
             (
                 (
                     FWPM_CONDITION_IP_REMOTE_ADDRESS,
-                    FWP_UINT32
+                    FWP_V4_ADDR_MASK
                     if expected.layer == "v4"
                     else FWP_BYTE_ARRAY16_TYPE,
                 ),
@@ -895,10 +913,19 @@ def _parse_native_filter(
                 value.byteBlob.contents.size,
             )
         elif field == FWPM_CONDITION_IP_REMOTE_ADDRESS:
-            if expected_type == FWP_UINT32:
+            if expected_type == FWP_V4_ADDR_MASK:
+                if not value.v4AddrMask:
+                    raise ContainmentError(
+                        f"native filter condition shape has a null value at index {index}"
+                    )
+                v4_addr_mask = value.v4AddrMask.contents
+                if int(v4_addr_mask.mask) != 32:
+                    raise ContainmentError(
+                        f"native filter condition shape has a non-exact prefix at index {index}"
+                    )
                 remote_address = str(
                     ipaddress.IPv4Address(
-                        int(value.uint32).to_bytes(4, sys.byteorder)
+                        int(v4_addr_mask.addr).to_bytes(4, sys.byteorder)
                     )
                 )
             elif value.byteArray16:
