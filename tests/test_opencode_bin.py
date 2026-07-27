@@ -4,7 +4,7 @@ import pytest
 from backend.agent_launch import opencode_bin
 from backend.agent_launch.opencode_bin import OpenCodeNotFound, resolve_opencode_binary
 
-EXPECTED_OPENCODE_VERSION = "1.18.4"
+EXPECTED_OPENCODE_VERSION = "1.18.7"
 
 
 def test_resolves_when_on_path(monkeypatch):

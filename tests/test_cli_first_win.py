@@ -171,7 +171,7 @@ def test_agent_unsupported_opencode_exits_with_clean_remediation(
         "backend.agent_launch.launcher.launch_agent",
         lambda project: (_ for _ in ()).throw(
             OpenCodeUnsupportedVersion(
-                "OpenCode 1.19.0 is installed; use 1.18.4."
+                "OpenCode 1.19.0 is installed; use 1.18.7."
             )
         ),
     )
@@ -180,4 +180,4 @@ def test_agent_unsupported_opencode_exits_with_clean_remediation(
         cli.cmd_agent(SimpleNamespace(dir=str(tmp_path)))
 
     assert exc.value.code == 1
-    assert "use 1.18.4" in capsys.readouterr().err
+    assert "use 1.18.7" in capsys.readouterr().err

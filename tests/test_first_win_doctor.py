@@ -67,7 +67,7 @@ def test_healthy_local_agent_environment_is_ready(tmp_path):
     assert report.ready is True
     assert all(check.status in {"pass", "warn"} for check in report.checks)
     assert _check(report, "ollama_model").evidence["selected"] == "qwen3:8b"
-    assert _check(report, "opencode").evidence["supported_version"] == "1.18.4"
+    assert _check(report, "opencode").evidence["supported_version"] == "1.18.7"
 
 
 def test_missing_ollama_is_structured_failure(tmp_path):
@@ -116,8 +116,8 @@ def test_unsupported_opencode_reports_exact_supported_version(tmp_path):
     check = _check(report, "opencode")
     assert report.ready is False
     assert check.status == "fail"
-    assert check.evidence["supported_version"] == "1.18.4"
-    assert "1.18.4" in check.remediation
+    assert check.evidence["supported_version"] == "1.18.7"
+    assert "1.18.7" in check.remediation
 
 
 def test_unverified_integrated_memory_is_disclosed_as_excluded(tmp_path):

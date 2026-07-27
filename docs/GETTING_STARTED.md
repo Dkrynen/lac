@@ -32,7 +32,7 @@ The current verified agent path requires:
 
 - Python 3.10 or newer for a source or pipx install;
 - a local [Ollama](https://ollama.com/download) runtime;
-- OpenCode `1.18.4`;
+- OpenCode `1.18.7`;
 - at least 5 GB free on the repository volume; and
 - an explicitly installed agent-capable model that LAC recommends for the
   detected machine.
@@ -48,7 +48,7 @@ pipx install git+https://github.com/Dkrynen/lac
 For every installation, install the pinned OpenCode runtime:
 
 ```bash
-npm install --global opencode-ai@1.18.4
+npm install --global opencode-ai@1.18.7
 ```
 
 Start Ollama through its normal platform launcher, then enter a repository.
@@ -146,7 +146,7 @@ lac agent .
 
 LAC selects an installed compatible model, prepares its local agent variant and
 fail-closed OpenCode configuration, and launches OpenCode in the repository.
-The current adapter supports exactly OpenCode `1.18.4`. OpenCode permissions
+The current adapter supports exactly OpenCode `1.18.7`. OpenCode permissions
 are defense in depth; they are not a process sandbox. Writes, shell commands,
 and network actions remain approval-sensitive, and unrestricted subagents are
 disabled in the initial configuration.
@@ -168,7 +168,7 @@ rerun the doctor. No setup command downloads for you.
 Install the exact supported runtime:
 
 ```bash
-npm install --global opencode-ai@1.18.4
+npm install --global opencode-ai@1.18.7
 opencode --version
 ```
 

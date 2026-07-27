@@ -17,7 +17,7 @@ BASE_DIGEST = "a" * 64
 LAC_DIGEST = "b" * 64
 FROM_BLOB_SHA256 = "c" * 64
 OPENCODE_SHA256 = (
-    "59b66e1983b2665b498f234a17bf92e78e0e9e3f8c77406edf8dcf3e6239ee5c"
+    "b7b469b83cc3561e5129a1803b746f7e2c1974297909f5b346398dc9c56a477e"
 )
 
 
@@ -35,7 +35,7 @@ def realistic_identity_snapshot(**changes):
     return SimpleNamespace(
         opencode=SimpleNamespace(
             path=Path(r"C:\tools\opencode.exe"),
-            version="1.18.4",
+            version="1.18.7",
             sha256=OPENCODE_SHA256,
         ),
         models=SimpleNamespace(

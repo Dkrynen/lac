@@ -7,7 +7,7 @@ from pathlib import Path
 
 from backend.cookbook import proc
 
-SUPPORTED_OPENCODE_VERSION = "1.18.4"
+SUPPORTED_OPENCODE_VERSION = "1.18.7"
 
 
 class OpenCodeNotFound(RuntimeError):
