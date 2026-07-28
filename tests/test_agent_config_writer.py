@@ -49,7 +49,7 @@ def test_evaluation_config_pins_build_agent_generation_settings(tmp_path):
                 "seed": 1209934845,
                 "max_tokens": 128,
             },
-            "steps": 1,
+            "steps": 3,
         },
         "title": {"disable": True},
     }

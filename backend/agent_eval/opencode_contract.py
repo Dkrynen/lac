@@ -154,7 +154,7 @@ def expected_evaluation_config(
                     "seed": seed,
                     "max_tokens": generation.max_output_tokens,
                 },
-                "steps": 1,
+                "steps": 3,
             },
             "title": {"disable": True},
         }
