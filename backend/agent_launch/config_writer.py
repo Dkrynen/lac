@@ -68,6 +68,40 @@ Tuning the model for this machine:
 !`lac pro tune --apply $ARGUMENTS`
 """
 
+_LAC_PLUGIN_TS = """\
+import { type Plugin, tool } from "@opencode-ai/plugin"
+import { execSync } from "child_process"
+
+export const LacPlugin: Plugin = async (ctx) => {
+  return {
+    tool: {
+      lac_rescan: tool({
+        description: "Rescan this machine's hardware and return the LAC hardware report",
+        args: {},
+        async execute(args, context) {
+          try {
+            return execSync("lac scan", { encoding: "utf-8", cwd: context.directory })
+          } catch (e) {
+            return `LAC scan failed: ${e}`
+          }
+        },
+      }),
+      lac_retune: tool({
+        description: "Re-recommend the best agent-capable local model for this machine using LAC",
+        args: {},
+        async execute(args, context) {
+          try {
+            return execSync("lac recommend --use-case agent", { encoding: "utf-8", cwd: context.directory })
+          } catch (e) {
+            return `LAC recommend failed: ${e}`
+          }
+        },
+      }),
+    },
+  }
+}
+"""
+
 
 def write_opencode_config(project_dir, model: str, ollama_host: str) -> Path:
     cfg = build_opencode_config(
@@ -214,3 +248,11 @@ def write_agent_commands(project_dir, pro_available: bool = False) -> list[Path]
         p.write_text(body, encoding="utf-8")
         written.append(p)
     return written
+
+
+def write_agent_plugin(project_dir) -> Path:
+    plugins_dir = Path(project_dir) / ".opencode" / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    out = plugins_dir / "lac.ts"
+    out.write_text(_LAC_PLUGIN_TS, encoding="utf-8")
+    return out

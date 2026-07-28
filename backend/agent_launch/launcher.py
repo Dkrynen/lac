@@ -4,7 +4,7 @@ it, and launch. The hardware brain is the moat; OpenCode is wrapped, never edite
 from pathlib import Path
 
 from .variant import ensure_agent_variant, is_installed
-from .config_writer import write_opencode_config, write_agent_commands
+from .config_writer import write_opencode_config, write_agent_commands, write_agent_plugin
 from .opencode_bin import resolve_opencode_binary
 
 # Consider the whole catalog when ranking, then filter to what is actually on disk.
@@ -114,6 +114,7 @@ def launch_agent(project_dir, *,
 
     write_config_fn(project_dir, variant, host)
     write_commands_fn(project_dir, pro_available=pro_available)
+    write_agent_plugin(project_dir)
     binary = resolve_bin_fn()
 
     # num_ctx alone overstates what the agent gets: Ollama truncates the input
