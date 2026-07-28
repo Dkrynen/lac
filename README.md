@@ -12,6 +12,35 @@ hardware, recommends models that actually fit, configures a pinned
 local evidence. Ollama remains the inference runtime; LAC supplies the hardware
 intelligence, model profile, containment policy, and receipts.
 
+## Local AI first
+
+The default assumption is that serious coding agents need cloud models. LAC
+challenges that directly.
+
+On a mid-range AMD rig (RX 6800 XT 16 GB, Ryzen 5 7600, 32 GB RAM), a local
+20B model answered a multi-step code-reasoning task correctly through the full
+OpenCode agent loop — reading a file, reasoning about it, and returning the
+exact answer — at **94.67 tok/s**, with no cloud calls and no API key.
+
+The gap was never the model. It was the tooling around it: context window too
+small for the agent loop, no hardware-aware model selection, no tuned variant.
+LAC closes that gap.
+
+```bash
+lac agent .   # scan → recommend → tune → launch. One command, local, private.
+```
+
+Your code never leaves your machine. No API bills. No rate limits. No
+third-party logging your prompts. LAC picks the best agent-capable model for
+your exact hardware, raises its context window to the agent-loop floor (32k),
+and hands it to OpenCode already configured.
+
+The free tier does all of this. **Pro** adds the tuning cockpit: GPU offload
+sweeps, RAM spill, iGPU offload — the difference between "runs" and "runs
+well on your rig."
+
+Read the full case: [Local AI First](docs/LOCAL_AI_FIRST.md).
+
 ## First private win
 
 From a repository:
