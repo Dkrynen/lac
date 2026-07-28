@@ -33,7 +33,7 @@ def _base_kwargs(events, tmp_path, recs, *, ensure=None):
         events["config"] = (Path(pd), model, host)
         return Path(pd) / ".opencode/opencode.json"
 
-    def fake_write_commands(pd):
+    def fake_write_commands(pd, pro_available=False):
         events["commands"] = Path(pd)
         return []
 

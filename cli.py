@@ -956,11 +956,14 @@ def cmd_agent(args):
             OpenCodeUnsupportedVersion,
         )
         from backend.agent_launch.variant import BaseModelNotInstalled
+        from backend.plugins import discover, get_agent_pro_variant
     except ImportError as e:
         eprint(f"{C['red']}Error: {e}{C['reset']}")
         sys.exit(1)
+    plugins = discover()
+    pro_variant_fn = lambda model, list_names: get_agent_pro_variant(plugins, model, list_names)
     try:
-        rc = launch_agent(Path(args.dir))
+        rc = launch_agent(Path(args.dir), pro_variant_fn=pro_variant_fn)
     except (
         OpenCodeNotFound,
         OpenCodeUnsupportedVersion,

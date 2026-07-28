@@ -59,6 +59,7 @@ def launch_agent(project_dir, *,
                  provider_factory=_default_provider_factory,
                  config_fn=_default_config,
                  launch_fn=_default_launch,
+                 pro_variant_fn=None,
                  out=print) -> int:
     from backend.cookbook.recommend import (
         AGENT_MIN_CONTEXT, AGENT_PROMPT_BUDGET_FRACTION,
@@ -102,12 +103,17 @@ def launch_agent(project_dir, *,
         out("Using %s (installed). A better fit for your box is %s - "
             "`ollama pull %s` to use it." % (base, recs[0].model.id, recs[0].model.id))
 
-    variant = ensure_variant_fn(base, num_ctx,
-                                list_names=lambda: installed,
-                                create=provider.create)
+    pro_available = pro_variant_fn is not None
+    variant = None
+    if pro_variant_fn is not None:
+        variant = pro_variant_fn(base, lambda: installed)
+    if variant is None:
+        variant = ensure_variant_fn(base, num_ctx,
+                                    list_names=lambda: installed,
+                                    create=provider.create)
 
     write_config_fn(project_dir, variant, host)
-    write_commands_fn(project_dir)
+    write_commands_fn(project_dir, pro_available=pro_available)
     binary = resolve_bin_fn()
 
     # num_ctx alone overstates what the agent gets: Ollama truncates the input

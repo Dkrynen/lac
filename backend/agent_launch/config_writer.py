@@ -60,6 +60,14 @@ Here are LAC's agent-capable model recommendations for this machine:
 !`lac recommend --use-case agent`
 """
 
+_TUNE_MD = """\
+---
+description: Tune a model for this machine (LAC Pro)
+---
+Tuning the model for this machine:
+!`lac pro tune --apply $ARGUMENTS`
+"""
+
 
 def write_opencode_config(project_dir, model: str, ollama_host: str) -> Path:
     cfg = build_opencode_config(
@@ -194,11 +202,14 @@ def _write_config(project_dir, cfg: dict) -> Path:
     return out
 
 
-def write_agent_commands(project_dir) -> list[Path]:
+def write_agent_commands(project_dir, pro_available: bool = False) -> list[Path]:
     cmd_dir = Path(project_dir) / ".opencode" / "commands"
     cmd_dir.mkdir(parents=True, exist_ok=True)
     written = []
-    for name, body in (("scan.md", _SCAN_MD), ("recommend.md", _RECOMMEND_MD)):
+    commands = [("scan.md", _SCAN_MD), ("recommend.md", _RECOMMEND_MD)]
+    if pro_available:
+        commands.append(("tune.md", _TUNE_MD))
+    for name, body in commands:
         p = cmd_dir / name
         p.write_text(body, encoding="utf-8")
         written.append(p)
