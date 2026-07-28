@@ -17,14 +17,14 @@ _STOCK_EVALUATION_PERMISSIONS = {"external_directory": "deny"}
 _READ_ONLY_EVALUATION_TOOLS = {
     "*": False,
     "read": True,
-    "glob": True,
-    "grep": True,
+    "glob": False,
+    "grep": False,
 }
 _REVIEWED_STOCK_PERMISSION_JSON = (
     '{"external_directory":"deny"}'
 )
 _REVIEWED_READ_ONLY_TOOLS_JSON = (
-    '{"*":false,"read":true,"glob":true,"grep":true}'
+    '{"*":false,"read":true,"glob":false,"grep":false}'
 )
 _REVIEWED_LAC_PERMISSION_JSON = """\
 {

@@ -311,8 +311,8 @@ def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     assert config["tools"] == {
         "*": False,
         "read": True,
-        "glob": True,
-        "grep": True,
+        "glob": False,
+        "grep": False,
     }
     assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
     assert env["OPENCODE_DISABLE_CLAUDE_CODE"] == "1"
@@ -416,8 +416,8 @@ def test_run_lac_uses_fail_closed_config_and_agent_variant(tmp_path):
     assert config["tools"] == {
         "*": False,
         "read": True,
-        "glob": True,
-        "grep": True,
+        "glob": False,
+        "grep": False,
     }
     assert not (workspace / ".opencode").exists()
     assert result.arm == "lac"
