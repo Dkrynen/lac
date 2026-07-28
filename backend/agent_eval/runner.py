@@ -1102,7 +1102,7 @@ def run_evaluation(
                             if arm == "raw"
                             else "/v1/chat/completions"
                         ),
-                        max_attempts=1 if arm == "raw" else 3,
+                        max_attempts=1 if arm == "raw" else 12,
                     )
                     capture_started = True
                 sampling_kwargs = (
