@@ -129,7 +129,7 @@ def test_proxy_rejects_missing_duplicate_and_wrong_capture_tokens():
             with pytest.raises(urllib.error.HTTPError) as exc:
                 _post(proxy.endpoint, "/api/chat", b'{"second":true}')
             assert exc.value.code == 409
-            with pytest.raises(HttpObservationError, match="multiple"):
+            with pytest.raises(HttpObservationError, match="at most"):
                 proxy.finish_capture("002-raw")
         finally:
             proxy.close()
@@ -496,7 +496,7 @@ def test_finish_seal_counts_second_handler_accepted_before_claim():
     assert finish_results == []
     assert len(finish_errors) == 1
     assert (
-        "multiple" in str(finish_errors[0])
+        "at most" in str(finish_errors[0])
         or "accepted" in str(finish_errors[0])
     )
     assert len(second_errors) == 1
@@ -687,7 +687,7 @@ def test_finish_cannot_cross_accept_before_registration_returns():
     assert finish_results == []
     assert len(finish_errors) == 1
     assert (
-        "multiple" in str(finish_errors[0])
+        "at most" in str(finish_errors[0])
         or "accepted" in str(finish_errors[0])
     )
     assert len(second_errors) == 1

@@ -64,6 +64,7 @@ class ObservedHttpRequest:
 class _WindowState:
     token: str
     expected_path: str
+    max_attempts: int = 1
     attempts: int = 0
     request: ObservedHttpRequest | None = None
     errors: list[str] | None = None
@@ -262,7 +263,7 @@ class LoopbackRecordingProxy:
         with self._lock:
             return self._active_requests
 
-    def begin_capture(self, token: str, expected_path: str) -> None:
+    def begin_capture(self, token: str, expected_path: str, max_attempts: int = 1) -> None:
         if (
             not isinstance(token, str)
             or not token
@@ -270,6 +271,8 @@ class LoopbackRecordingProxy:
             or expected_path not in {"/api/chat", "/v1/chat/completions"}
         ):
             raise HttpObservationError("capture token or path is invalid")
+        if type(max_attempts) is not int or max_attempts < 1:
+            raise HttpObservationError("max_attempts must be a positive integer")
         with self._lock:
             if self._closed:
                 raise HttpObservationError("recording proxy is closed")
@@ -278,7 +281,7 @@ class LoopbackRecordingProxy:
             if token in self._used_tokens:
                 raise HttpObservationError("capture token was already used")
             self._used_tokens.add(token)
-            self._active = _WindowState(token, expected_path)
+            self._active = _WindowState(token, expected_path, max_attempts=max_attempts)
 
     def finish_capture(
         self,
@@ -350,10 +353,14 @@ class LoopbackRecordingProxy:
                 )
             state.sealed = True
             self._active = None
-        if state.attempts != 1:
-            suffix = "multiple requests" if state.attempts > 1 else "missing request"
+        if state.attempts < 1:
             raise HttpObservationError(
-                f"capture requires exactly one request: {suffix}"
+                "capture requires at least one request: missing request"
+            )
+        if state.attempts > state.max_attempts:
+            raise HttpObservationError(
+                f"capture requires at most {state.max_attempts} requests: "
+                f"got {state.attempts}"
             )
         if state.errors:
             raise HttpObservationError("; ".join(state.errors))
@@ -361,7 +368,7 @@ class LoopbackRecordingProxy:
             raise HttpObservationError("capture request is missing")
         if (
             state.terminal_state != "succeeded"
-            or state.successful_handlers != 1
+            or state.successful_handlers != state.attempts
         ):
             raise HttpObservationError(
                 "capture forwarding did not complete successfully"
@@ -460,8 +467,8 @@ class LoopbackRecordingProxy:
                         state.terminal_state = (
                             "succeeded"
                             if (
-                                state.attempts == 1
-                                and state.successful_handlers == 1
+                                1 <= state.attempts <= state.max_attempts
+                                and state.successful_handlers == state.attempts
                                 and not state.errors
                             )
                             else "failed"
@@ -511,12 +518,12 @@ class LoopbackRecordingProxy:
         state: _WindowState,
         attempt: int,
     ) -> bool:
-        if attempt != 1:
+        if attempt > state.max_attempts:
             self._reject(
                 handler,
                 state,
                 409,
-                "capture received multiple requests",
+                "capture received too many requests",
             )
             return False
         if handler.path != state.expected_path:
