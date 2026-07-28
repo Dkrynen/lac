@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "id": "python-empty-mean",
-  "prompt": "Use the read tool to read stats_service.py (relative path, no leading slash). If summarize([]) is called, what exception class is raised by the current code? Answer with only the exception class name.",
+  "prompt": "Only the read tool is available. Use read with filePath 'stats_service.py' to read the file. If summarize([]) is called, what exception class is raised by the current code? Answer with only the exception class name.",
   "fixture": "python-empty-mean",
   "timeout_seconds": 180,
   "trials": 3,
