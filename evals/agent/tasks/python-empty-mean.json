@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "id": "python-empty-mean",
-  "prompt": "Inspect stats_service.py. If summarize([]) is called, what exception class is raised by the current code? Answer with only the exception class name.",
+  "prompt": "Read stats_service.py in the current working directory. If summarize([]) is called, what exception class is raised by the current code? Answer with only the exception class name.",
   "fixture": "python-empty-mean",
   "timeout_seconds": 180,
   "trials": 3,
