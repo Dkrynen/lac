@@ -15,11 +15,25 @@ if str(ROOT) not in sys.path:
 # Prevent collection errors on Linux/macOS CI by skipping these modules entirely.
 if sys.platform != "win32":
     collect_ignore = [
+        "test_agent_eval_capture.py",
         "test_agent_eval_command.py",
+        "test_agent_eval_evidence.py",
+        "test_agent_eval_fixture.py",
+        "test_agent_eval_http_observer.py",
+        "test_agent_eval_identity.py",
         "test_agent_eval_ledger.py",
+        "test_agent_eval_live_containment.py",
         "test_agent_eval_opencode.py",
         "test_agent_eval_opencode_native_probe.py",
+        "test_agent_eval_raw_ollama.py",
         "test_agent_eval_runner.py",
+        "test_agent_eval_runtime_provenance.py",
+        "test_agent_eval_schedule.py",
+        "test_agent_eval_scoring.py",
+        "test_agent_eval_script.py",
+        "test_agent_eval_task.py",
+        "test_agent_eval_windows_job.py",
+        "test_agent_eval_windows_wfp.py",
         "test_cli_agent_eval.py",
     ]
 
