@@ -11,6 +11,18 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# The agent_eval subsystem is Windows-by-design (msvcrt, WFP, Job objects).
+# Prevent collection errors on Linux/macOS CI by skipping these modules entirely.
+if sys.platform != "win32":
+    collect_ignore = [
+        "test_agent_eval_command.py",
+        "test_agent_eval_ledger.py",
+        "test_agent_eval_opencode.py",
+        "test_agent_eval_opencode_native_probe.py",
+        "test_agent_eval_runner.py",
+        "test_cli_agent_eval.py",
+    ]
+
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
