@@ -74,3 +74,30 @@ def discover() -> list[LoadedPlugin]:
             continue
         out.append(LoadedPlugin(name=name, version=version, obj=obj))
     return out
+
+
+def get_agent_pro_variant(
+    plugins: list[LoadedPlugin],
+    model: str,
+    list_names,
+) -> str | None:
+    """Ask each loaded plugin for a Pro-tuned agent variant of ``model``.
+
+    ``list_names`` is a zero-arg callable returning an iterable of installed
+    model names.  Returns the first non-None ``str`` result, or ``None`` if
+    no plugin provides one.  Never raises: a plugin that errors during the
+    call is skipped cleanly — the seam must never break core.
+    """
+    for p in plugins:
+        if not p.ok or p.obj is None:
+            continue
+        hook = getattr(p.obj, "agent_pro_variant", None)
+        if hook is None:
+            continue
+        try:
+            result = hook(model, list_names)
+        except Exception:  # noqa: BLE001 — a plugin must never break core
+            continue
+        if isinstance(result, str) and result:
+            return result
+    return None

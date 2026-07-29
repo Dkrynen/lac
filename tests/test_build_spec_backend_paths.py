@@ -1,6 +1,9 @@
 import runpy
 from pathlib import Path, PurePosixPath
 
+import pytest
+
+pytest.importorskip("PyInstaller", reason="PyInstaller not installed")
 import PyInstaller.utils.hooks
 
 

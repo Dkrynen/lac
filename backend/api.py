@@ -30,7 +30,12 @@ from .config import UnsafeProjectConfigError, resolve_config
 from .cookbook import proc
 from .cookbook.config import load_config
 from .cookbook.downloads import download_history
-from .cookbook.hardware import detect, print_system
+from .cookbook.hardware import (
+    GPUInfo,
+    _finalize_compute_tiers,
+    detect,
+    print_system,
+)
 from .cookbook.recommend import recommend, load_models
 from .plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 from .permission import PermissionEngine
@@ -892,7 +897,8 @@ def api_scan():
         "cores": info.cpu_cores,
         "ram_gb": info.ram_gb,
         "gpus": [{"name": g.name, "vram_gb": g.vram_gb, "backend": g.backend,
-                  "tier": g.tier, "device_index": g.device_index} for g in info.gpus],
+                  "tier": g.tier, "device_index": g.device_index,
+                  "split_verified": g.split_verified} for g in info.gpus],
         "total_vram_gb": info.total_vram_gb,
         "combined_vram_gb": info.combined_vram_gb,
         "compute_tiers": [
@@ -916,28 +922,25 @@ def api_recommend():
 
     info = detect()
     if vram and vram > 0:
-        info.total_vram_gb = vram
-        for gpu in info.gpus:
-            if "radeon" in gpu.name.lower() or "amd" in gpu.name.lower():
+        discrete = [gpu for gpu in info.gpus if gpu.tier == "discrete"]
+        if discrete:
+            for gpu in discrete:
                 gpu.vram_gb = vram
-        if not info.gpus:
-            from .cookbook.hardware import GPUInfo
-            info.gpus = [GPUInfo(name=f"Manual ({vram} GB)", vram_gb=vram, backend="cuda")]
-        # Manual override updates fit-scoring via total_vram_gb/gpus above,
-        # but combined_vram_gb is a separate display field detect() already
-        # computed pre-override -- keep it in sync or the UI shows a stale
-        # number next to the correctly-overridden one.
-        info.combined_vram_gb = round(sum(g.vram_gb for g in info.gpus), 1)
+        elif not info.gpus:
+            info.gpus.append(GPUInfo(
+                name=f"Manual ({vram} GB)",
+                vram_gb=vram,
+                backend="cuda",
+                tier="discrete",
+            ))
+        _finalize_compute_tiers(info)
 
     mask = {int(x) for x in gpu_mask_raw.split(",") if x.strip().isdigit()} if gpu_mask_raw else set()
     if mask:
         masked_gpus = [g for g in info.gpus if g.device_index in mask]
         if masked_gpus:  # fail-safe: a mask matching no GPU is ignored, never a zero-GPU result
             info.gpus = masked_gpus
-            info.compute_tiers = [t for t in info.compute_tiers if t.kind == "ram" or t.device_index in mask]
-            gpu_vrams = [g.vram_gb for g in info.gpus]
-            info.total_vram_gb = round(max(gpu_vrams), 1)
-            info.combined_vram_gb = round(sum(gpu_vrams), 1)
+            _finalize_compute_tiers(info)
 
     if not allow_spill:
         info.compute_tiers = [t for t in info.compute_tiers if t.kind != "ram"]

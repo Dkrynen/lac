@@ -1,0 +1,57 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: "31 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  Analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  CodeQL:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: Analyze
+    if: always()
+    steps:
+      - name: Fail if CodeQL analysis did not succeed
+        run: |
+          result="${{ needs.Analyze.result }}"
+          echo "Analyze result: $result"
+          if [ "$result" != "success" ]; then
+            echo "::error::CodeQL analysis did not succeed ($result)."
+            exit 1
+          fi
+          echo "CodeQL analysis complete."

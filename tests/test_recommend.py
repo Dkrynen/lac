@@ -219,10 +219,16 @@ from backend.cookbook.recommend import _compute_split_plan
 
 
 def _sys_handoff() -> SystemInfo:
-    """The user's actual system: dGPU 16GB + iGPU 10.5GB + 30.9GB RAM."""
+    """Measured split fixture: dGPU 16GB + verified iGPU + 30.9GB RAM."""
     gpus = [
         GPUInfo("AMD Radeon RX 6800 XT", 16.0, backend="rocm", tier="discrete"),
-        GPUInfo("AMD Radeon(TM) Graphics", 10.5, backend="rocm", tier="integrated"),
+        GPUInfo(
+            "AMD Radeon(TM) Graphics",
+            10.5,
+            backend="rocm",
+            tier="integrated",
+            split_verified=True,
+        ),
     ]
     info = SystemInfo(
         os="Windows", cpu="AMD Ryzen 5 7600", cpu_cores=6, ram_gb=30.9,
@@ -244,7 +250,12 @@ def test_classify_gpu():
 
 def test_build_compute_tiers_order():
     gpus = [
-        GPUInfo("AMD Radeon(TM) Graphics", 10.5, backend="rocm"),
+        GPUInfo(
+            "AMD Radeon(TM) Graphics",
+            10.5,
+            backend="rocm",
+            split_verified=True,
+        ),
         GPUInfo("AMD Radeon RX 6800 XT", 16.0, backend="rocm"),
     ]
     tiers = build_compute_tiers(gpus, 30.9)
@@ -266,7 +277,12 @@ def test_build_compute_tiers_assigns_gpuinfo_device_index():
     GPUInfo objects so it agrees with the corresponding ComputeTier, in the
     same discrete-first-then-integrated order."""
     gpus = [
-        GPUInfo("AMD Radeon(TM) Graphics", 10.5, backend="rocm"),  # integrated
+        GPUInfo(
+            "AMD Radeon(TM) Graphics",
+            10.5,
+            backend="rocm",
+            split_verified=True,
+        ),
         GPUInfo("AMD Radeon RX 6800 XT", 16.0, backend="rocm"),    # discrete
     ]
     # Simulate real detector output: nobody set device_index, so both default to 0.
@@ -327,6 +343,54 @@ def test_split_needs_multi_gpu():
     # Both GPU tiers present → HIP_VISIBLE_DEVICES env var.
     assert "HIP_VISIBLE_DEVICES" in split.env_vars
     assert split.env_vars["HIP_VISIBLE_DEVICES"] == "0,1"
+
+
+def test_unverified_igpu_uses_ram_offload_instead_of_multigpu():
+    gpus = [
+        GPUInfo("AMD Radeon RX 6800 XT", 16.0, backend="vulkan"),
+        GPUInfo("AMD Radeon(TM) Graphics", 10.5, backend="vulkan"),
+    ]
+    info = SystemInfo(
+        os="Windows",
+        cpu="AMD Ryzen 5 7600",
+        cpu_cores=6,
+        ram_gb=30.9,
+        gpus=gpus,
+        total_vram_gb=16.0,
+        has_amd=True,
+        combined_vram_gb=16.0,
+        compute_tiers=build_compute_tiers(gpus, 30.9),
+    )
+    model = next(m for m in load_models() if m.id == "qwen3:32b")
+
+    split = _compute_split_plan(19.0, info, model)
+
+    assert split is not None
+    assert split.run_mode == "cpu_offload"
+    assert [tier.kind for tier in split.tiers] == ["discrete", "ram"]
+
+
+def test_stale_total_vram_cannot_promote_unverified_igpu():
+    info = SystemInfo(
+        os="Windows",
+        ram_gb=0.0,
+        gpus=[
+            GPUInfo(
+                "AMD Radeon(TM) Graphics",
+                12.0,
+                backend="vulkan",
+                tier="integrated",
+            )
+        ],
+        total_vram_gb=12.0,
+        combined_vram_gb=12.0,
+        compute_tiers=[],
+    )
+    model = next(m for m in load_models() if m.id == "qwen3:8b")
+
+    split = _compute_split_plan(5.0, info, model)
+
+    assert split is None
 
 
 def test_split_needs_ram_offload():

@@ -39,7 +39,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -113,7 +113,7 @@ jobs:
           npm run typecheck
           npm run build
           npm run check:bundle
-          npm audit --audit-level=high
+          npm run audit:release
           npm sbom --sbom-format cyclonedx > dist/web-sbom.json
 
       - name: Audit and install Python dependencies

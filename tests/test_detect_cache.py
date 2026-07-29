@@ -11,6 +11,7 @@ their returned SystemInfo (e.g. /api/recommend?vram= overriding info.gpus /
 info.combined_vram_gb) can never corrupt a later detect() call.
 """
 import platform
+import subprocess
 import types
 
 import pytest
@@ -109,6 +110,97 @@ def test_windows_probe_stub_runs_once_across_multiple_detect_calls_any_platform(
         f"expected the (stubbed) Windows probe subprocess to run once across "
         f"3 detect() calls, but it ran {call_counter['n']} times"
     )
+
+
+def test_windows_probe_timeout_falls_back_to_basic_hardware_evidence(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        return _FakeCompletedProcess(
+            stdout=_FAKE_WINDOWS_PS_STDOUT,
+            returncode=0,
+        )
+
+    monkeypatch.setattr(
+        hardware,
+        "platform",
+        types.SimpleNamespace(system=lambda: "Windows"),
+    )
+    monkeypatch.setattr(hardware.proc, "run", fake_run)
+    monkeypatch.setattr(hardware, "_in_container", lambda: False)
+
+    info = hardware.detect()
+
+    assert len(calls) == 2
+    assert info.cpu == "Test CPU"
+    assert info.cpu_cores == 8
+    assert info.ram_gb == 16.0
+    assert [gpu.name for gpu in info.gpus] == ["Test GPU"]
+
+
+def test_windows_probe_retains_valid_partial_fallback_evidence(monkeypatch):
+    partial_stdout = (
+        '{"gpu": "[{\\"Name\\": \\"Fallback GPU\\", '
+        '\\"AdapterRAM\\": 4, \\"DriverVersion\\": null, '
+        '\\"Backend\\": \\"vulkan\\"}]", '
+        '"ram": 16777216, "cpu_name": null, '
+        '"cpu_cores": "unavailable"}'
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        return _FakeCompletedProcess(stdout=partial_stdout, returncode=0)
+
+    monkeypatch.setattr(
+        hardware,
+        "platform",
+        types.SimpleNamespace(system=lambda: "Windows"),
+    )
+    monkeypatch.setattr(hardware.proc, "run", fake_run)
+    monkeypatch.setattr(hardware, "_in_container", lambda: False)
+
+    info = hardware.detect()
+
+    assert info.ram_gb == 16.0
+    assert info.cpu == ""
+    assert info.cpu_cores == 0
+    assert [gpu.name for gpu in info.gpus] == ["Fallback GPU"]
+    assert info.gpus[0].driver == ""
+
+
+def test_windows_probe_empty_gpu_payload_does_not_invent_adapter(monkeypatch):
+    empty_gpu_stdout = (
+        '{"gpu": {}, "ram": 16777216, '
+        '"cpu_name": "Test CPU", "cpu_cores": 8}'
+    )
+
+    monkeypatch.setattr(
+        hardware,
+        "platform",
+        types.SimpleNamespace(system=lambda: "Windows"),
+    )
+    monkeypatch.setattr(
+        hardware.proc,
+        "run",
+        lambda *_args, **_kwargs: _FakeCompletedProcess(
+            stdout=empty_gpu_stdout,
+            returncode=0,
+        ),
+    )
+    monkeypatch.setattr(hardware, "_in_container", lambda: False)
+
+    info = hardware.detect()
+
+    assert info.gpus == []
+    assert info.ram_gb == 16.0
+    assert info.cpu == "Test CPU"
+    assert info.cpu_cores == 8
 
 
 def test_detect_returns_distinct_object_each_call(monkeypatch):

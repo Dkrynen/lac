@@ -1,4 +1,5 @@
 import os
+import json
 import platform
 import re
 import subprocess
@@ -18,6 +19,7 @@ class GPUInfo:
     backend: str = "cuda"
     tier: str = ""                # "" (auto) | "discrete" | "integrated"
     device_index: int = 0         # for HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES
+    split_verified: bool = False  # shared iGPU memory needs runtime proof
 
 
 @dataclass
@@ -189,6 +191,64 @@ def _detect_apple_silicon() -> tuple[bool, tuple[GPUInfo, ...], float]:
     return True, tuple(gpus), total_ram
 
 
+def _parse_windows_probe(
+    stdout: str,
+) -> tuple[tuple[GPUInfo, ...], float, str, int]:
+    data = json.loads(stdout.strip())
+    if not isinstance(data, dict):
+        raise ValueError("Windows hardware probe returned a non-object")
+
+    try:
+        ram_gb = round(float(data.get("ram") or 0) / 1048576, 1)
+    except (TypeError, ValueError):
+        ram_gb = 0.0
+
+    raw_cpu_name = data.get("cpu_name")
+    cpu_name = raw_cpu_name.strip() if isinstance(raw_cpu_name, str) else ""
+    try:
+        cpu_cores = int(data.get("cpu_cores") or 0)
+    except (TypeError, ValueError):
+        cpu_cores = 0
+
+    gpu_raw = data.get("gpu")
+    if isinstance(gpu_raw, str):
+        try:
+            gpu_raw = json.loads(gpu_raw)
+        except json.JSONDecodeError:
+            gpu_raw = []
+    if isinstance(gpu_raw, dict):
+        gpu_list = [gpu_raw] if gpu_raw else []
+    elif isinstance(gpu_raw, list):
+        gpu_list = gpu_raw
+    else:
+        gpu_list = []
+
+    gpus = []
+    for gpu_data in gpu_list:
+        if not isinstance(gpu_data, dict):
+            continue
+        raw_name = gpu_data.get("Name")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        try:
+            vram_gb = float(gpu_data.get("AdapterRAM") or 0)
+        except (TypeError, ValueError):
+            vram_gb = 0.0
+        if not name and vram_gb <= 0:
+            continue
+        driver = gpu_data.get("DriverVersion")
+        backend = gpu_data.get("Backend")
+        gpus.append(
+            GPUInfo(
+                name=name or "Unknown GPU",
+                vram_gb=vram_gb,
+                driver=driver if isinstance(driver, str) else "",
+                backend=backend if isinstance(backend, str) else "directx",
+            )
+        )
+
+    return tuple(gpus), ram_gb, cpu_name, cpu_cores
+
+
 @lru_cache(maxsize=1)
 def _detect_windows() -> tuple[tuple[GPUInfo, ...], float, str, int]:
     """Raw Windows hardware probe. This is THE expensive call in the whole
@@ -311,37 +371,55 @@ $result = @{
 }
 return $result | ConvertTo-Json -Compress
 """
-    try:
-        r = proc.run(
-            ["powershell", "-NoProfile", "-Command", ps_cmd],
-            capture_output=True, text=True, timeout=15
-        )
-        if r.returncode != 0:
-            return (), 0, "", 0
-        import json
-        data = json.loads(r.stdout.strip())
+    basic_ps_cmd = r"""
+$vram_gpus = @()
+$adapters = Get-CimInstance Win32_VideoController
+$ram = Get-CimInstance Win32_OperatingSystem
+$cpu = Get-CimInstance Win32_Processor
 
-        ram_gb = round(float(data.get("ram", 0)) / 1048576, 1)
-        cpu_name = data.get("cpu_name", "").strip()
-        cpu_cores = int(data.get("cpu_cores", 0))
+foreach ($gpu in $adapters) {
+    $vram_gb = 0.0
+    if ($gpu.AdapterRAM -and $gpu.AdapterRAM -gt 0) {
+        $vram_gb = [math]::Round($gpu.AdapterRAM / 1GB, 1)
+    }
+    if ($vram_gb -eq 0) { $vram_gb = 1.0 }
 
-        gpu_raw = data.get("gpu", "[]")
-        if isinstance(gpu_raw, str):
-            gpu_list = json.loads(gpu_raw) if gpu_raw.startswith("[") else [json.loads(gpu_raw)]
-        else:
-            gpu_list = gpu_raw if isinstance(gpu_raw, list) else [gpu_raw]
+    $backend = "vulkan"
+    if ($gpu.Name -match "(?i)nvidia") { $backend = "cuda" }
+    if ($gpu.Name -match "(?i)radeon|amd|rx") { $backend = "rocm" }
 
-        gpus = []
-        for g in gpu_list:
-            name = g.get("Name", "Unknown GPU")
-            vram_gb = float(g.get("AdapterRAM", 0))
-            driver = g.get("DriverVersion", "")
-            backend = g.get("Backend", "directx")
-            gpus.append(GPUInfo(name=name, vram_gb=vram_gb, driver=driver, backend=backend))
+    $vram_gpus += @{
+        Name = $gpu.Name
+        AdapterRAM = $vram_gb
+        DriverVersion = $gpu.DriverVersion
+        Backend = $backend
+    }
+}
 
-        return tuple(gpus), ram_gb, cpu_name, cpu_cores
-    except Exception:
-        return (), 0, "", 0
+$result = @{
+    gpu = $vram_gpus | ConvertTo-Json -Compress
+    ram = $ram.TotalVisibleMemorySize
+    cpu_name = $cpu.Name
+    cpu_cores = $cpu.NumberOfCores
+}
+return $result | ConvertTo-Json -Compress
+"""
+    for probe_cmd, timeout in ((ps_cmd, 15), (basic_ps_cmd, 10)):
+        try:
+            r = proc.run(
+                ["powershell", "-NoProfile", "-Command", probe_cmd],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if r.returncode != 0:
+                continue
+            result = _parse_windows_probe(r.stdout)
+            if result[0] or result[1] > 0 or result[2] or result[3] > 0:
+                return result
+        except Exception:
+            continue
+    return (), 0, "", 0
 
 
 # Names that indicate an integrated GPU (shares system RAM).
@@ -351,13 +429,21 @@ _IGPU_KEYWORDS = [
     "radeon 680m", "radeon 780m", "radeon 760m", "radeon 610m", "radeon 660m",
 ]
 
+_DISCRETE_GPU_KEYWORDS = [
+    "nvidia", "geforce", "quadro", "tesla",
+    "radeon rx", "radeon pro", "radeon vii", "instinct", "firepro",
+    "intel arc a", "intel arc b", "intel arc pro",
+]
+
 
 def _classify_gpu(name: str) -> str:
-    """Classify a GPU as 'discrete' or 'integrated' from its name."""
+    """Classify only GPU names whose memory model is known."""
     n = name.lower()
     if any(k in n for k in _IGPU_KEYWORDS):
         return "integrated"
-    return "discrete"
+    if any(k in n for k in _DISCRETE_GPU_KEYWORDS):
+        return "discrete"
+    return "unknown"
 
 
 def build_compute_tiers(gpus: list[GPUInfo], ram_gb: float,
@@ -379,9 +465,16 @@ def build_compute_tiers(gpus: list[GPUInfo], ram_gb: float,
 
     discrete = []
     integrated = []
+    unknown = []
     for gpu in gpus:
         kind = gpu.tier or _classify_gpu(gpu.name)
-        (discrete if kind == "discrete" else integrated).append(gpu)
+        gpu.tier = kind
+        if kind == "discrete":
+            discrete.append(gpu)
+        elif kind == "integrated":
+            integrated.append(gpu)
+        else:
+            unknown.append(gpu)
 
     # Fastest discrete GPU first (most VRAM = primary).
     discrete.sort(key=lambda g: g.vram_gb, reverse=True)
@@ -397,10 +490,15 @@ def build_compute_tiers(gpus: list[GPUInfo], ram_gb: float,
         idx += 1
     for gpu in integrated:
         gpu.device_index = idx
+        idx += 1
+        if not gpu.split_verified:
+            continue
         tiers.append(ComputeTier(
             name=gpu.name, memory_gb=gpu.vram_gb, backend=gpu.backend,
-            kind="integrated", device_index=idx,
+            kind="integrated", device_index=gpu.device_index,
         ))
+    for gpu in unknown:
+        gpu.device_index = idx
         idx += 1
 
     # RAM is always the slowest fallback tier.
@@ -427,6 +525,51 @@ def _clone_gpus(gpus) -> list[GPUInfo]:
     field is a plain str/float/int/bool.
     """
     return [replace(g) for g in gpus]
+
+
+def _finalize_compute_tiers(info: SystemInfo) -> SystemInfo:
+    """Classify detected GPUs and derive only runtime-verified fit capacity."""
+    if info.is_apple_silicon:
+        for gpu in info.gpus:
+            gpu.tier = "unified"
+        info.total_vram_gb = (
+            round(max(gpu.vram_gb for gpu in info.gpus), 1)
+            if info.gpus else 0.0
+        )
+        info.combined_vram_gb = info.total_vram_gb
+        info.compute_tiers = build_compute_tiers(
+            info.gpus, info.ram_gb, is_apple_silicon=True
+        )
+        return info
+
+    for gpu in info.gpus:
+        if gpu.tier not in ("discrete", "integrated"):
+            gpu.tier = _classify_gpu(gpu.name)
+
+    discrete = [gpu for gpu in info.gpus if gpu.tier == "discrete"]
+    verified_integrated = [
+        gpu for gpu in info.gpus
+        if gpu.tier == "integrated" and gpu.split_verified
+    ]
+    verified_gpus = discrete + verified_integrated
+
+    if discrete:
+        info.total_vram_gb = round(max(gpu.vram_gb for gpu in discrete), 1)
+    elif verified_integrated:
+        info.total_vram_gb = round(
+            max(gpu.vram_gb for gpu in verified_integrated), 1
+        )
+    else:
+        info.total_vram_gb = 0.0
+
+    info.combined_vram_gb = (
+        round(sum(gpu.vram_gb for gpu in verified_gpus), 1)
+        if verified_gpus else info.total_vram_gb
+    )
+    info.compute_tiers = build_compute_tiers(
+        info.gpus, info.ram_gb, info.is_apple_silicon
+    )
+    return info
 
 
 def detect() -> SystemInfo:
@@ -483,26 +626,7 @@ def detect() -> SystemInfo:
             pass
         info.cpu_cores = os.cpu_count() or 0
 
-    # Classify each GPU as discrete/integrated (stored on GPUInfo for the API).
-    for g in info.gpus:
-        g.tier = _classify_gpu(g.name)
-
-    # total_vram_gb = best single discrete GPU (backward-compat; what fits in one
-    # GPU without the hand-off). combined_vram_gb = all GPUs summed.
-    discrete = [g for g in info.gpus if g.tier == "discrete"]
-    if discrete:
-        info.total_vram_gb = round(max(g.vram_gb for g in discrete), 1)
-    elif info.gpus:
-        info.total_vram_gb = round(max(g.vram_gb for g in info.gpus), 1)
-    else:
-        info.total_vram_gb = 0.0
-
-    gpu_vram = [g for g in info.gpus if g.tier in ("discrete", "integrated")]
-    info.combined_vram_gb = round(sum(g.vram_gb for g in gpu_vram), 1) if gpu_vram else info.total_vram_gb
-
-    # Build the full compute-tier hierarchy (dGPU → iGPU → RAM).
-    info.compute_tiers = build_compute_tiers(info.gpus, info.ram_gb, info.is_apple_silicon)
-    return info
+    return _finalize_compute_tiers(info)
 
 
 def print_system(info: SystemInfo) -> None:
@@ -518,7 +642,17 @@ def print_system(info: SystemInfo) -> None:
         for i, gpu in enumerate(info.gpus):
             kind = gpu.tier
             marker = " (primary)" if i == 0 and len(info.gpus) > 1 else ""
-            print(f"GPU {i}:        {gpu.name} ({gpu.vram_gb} GB VRAM, {gpu.backend}, {kind}){marker}")
+            if kind == "integrated" and not gpu.split_verified:
+                memory = (
+                    f"{gpu.vram_gb} GB reported shared memory, "
+                    "excluded from model splitting"
+                )
+            else:
+                memory = f"{gpu.vram_gb} GB VRAM"
+            print(
+                f"GPU {i}:        {gpu.name} "
+                f"({memory}, {gpu.backend}, {kind}){marker}"
+            )
         print(f"Effective:   {info.total_vram_gb} GB VRAM (best discrete GPU)")
         if info.combined_vram_gb > info.total_vram_gb:
             extra = info.combined_vram_gb - info.total_vram_gb

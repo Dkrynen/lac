@@ -2,9 +2,93 @@
 
 # LAC — local AI, sorted.
 
-**Scans your hardware. Recommends models that actually fit. LAC Pro adds local benchmark/tuning automation after activation.**
+**Give LAC a repository. It maps the project privately, proves what your
+machine can run, and prepares a local coding agent with explicit safety
+boundaries.**
 
-LAC is a local-LLM manager built around one question: *what's the best model this machine can actually run?* It scans your GPU/VRAM/RAM/CPU, ranks models against your real hardware (including multi-GPU and RAM-spill split plans), installs them via [Ollama](https://ollama.com), and tags every recommendation `measured`, `calibrated`, or `estimated` so you always know how much to trust it. **LAC Pro closes the loop** for supported installs after activation, turning recommendations into measured data points on your exact rig.
+LAC is a local-model control plane and coding-agent launcher. It scans your
+hardware, recommends models that actually fit, configures a pinned
+[OpenCode](https://github.com/anomalyco/opencode) runtime, and records truthful
+local evidence. Ollama remains the inference runtime; LAC supplies the hardware
+intelligence, model profile, containment policy, and receipts.
+
+## Local AI first
+
+The default assumption is that serious coding agents need cloud models. LAC
+challenges that directly.
+
+On a mid-range AMD rig (RX 6800 XT 16 GB, Ryzen 5 7600, 32 GB RAM), a local
+20B model answered a multi-step code-reasoning task correctly through the full
+OpenCode agent loop — reading a file, reasoning about it, and returning the
+exact answer — at **94.67 tok/s**, with no cloud calls and no API key.
+
+The gap was never the model. It was the tooling around it: context window too
+small for the agent loop, no hardware-aware model selection, no tuned variant.
+LAC closes that gap.
+
+```bash
+lac agent .   # scan → recommend → tune → launch. One command, local, private.
+```
+
+Your code never leaves your machine. No API bills. No rate limits. No
+third-party logging your prompts. LAC picks the best agent-capable model for
+your exact hardware, raises its context window to the agent-loop floor (32k),
+and hands it to OpenCode already configured.
+
+The free tier does all of this. **Pro** adds the tuning cockpit: GPU offload
+sweeps, RAM spill, iGPU offload — the difference between "runs" and "runs
+well on your rig."
+
+Read the full case: [Local AI First](docs/LOCAL_AI_FIRST.md).
+
+## First private win
+
+From a repository:
+
+```bash
+lac doctor .       # readiness evidence; never installs or downloads
+lac inspect .      # local-only repository map + durable JSON receipt
+lac agent .        # launch the supported local-model agent when ready
+```
+
+`lac inspect .` does not execute project code, package scripts, tests, or
+network requests. It discovers supported stacks, entry points, repository
+instructions, and candidate checks while excluding secret-shaped files,
+dependency trees, VCS internals, build outputs, and symlinks. Candidate checks
+are reported as **discovered, not executed**.
+
+See [Getting Started](docs/GETTING_STARTED.md) for setup and recovery.
+
+## Internal agent-evidence command
+
+`lac eval` is a bounded internal evaluator, not a public benchmark claim. Its
+read-only preflight creates no output, consumes no model tokens, and no
+downloads occur:
+
+```powershell
+# Read-only preflight; no model tokens
+lac eval --task python-empty-mean `
+  --base-model gpt-oss:20b `
+  --lac-model gpt-oss:20b-agent `
+  --output-dir C:\lac-evidence `
+  --run-id phase0-smoke `
+  --dry-run --json
+
+# Explicit non-evidence developer run
+lac eval --task python-empty-mean `
+  --base-model gpt-oss:20b `
+  --lac-model gpt-oss:20b-agent `
+  --output-dir C:\lac-evidence `
+  --mode diagnostic
+```
+
+Verified mode needs elevated Windows PowerShell so dynamic OS-level loopback
+containment can be opened, checked, and torn down. Diagnostic artifacts are
+invalid and cannot be promoted into verified evidence. A live task performs
+nine bounded arm runs; those nine bounded arm runs require operator approval
+after a clean privileged dry-run displays the maximum runtime. One smoke is
+not a competitive capability claim. The live verified command is not
+documented as ready until that privileged clean-build gate passes.
 
 ## Features
 
@@ -13,22 +97,43 @@ LAC is a local-LLM manager built around one question: *what's the best model thi
 - **Real-speed calibration** — recs are tagged `measured` / `calibrated` / `estimated` with confidence bands; LAC Pro can feed the `measured` tier for supported installs after activation
 - **What-if controls** — toggle GPUs on/off, allow/deny RAM spill, and watch the recommendations recompute live in the web UI
 - **Model management + chat** — install, run, delete; streaming chat with session persistence; full TUI
+- **Local-agent doctor** — structured hardware, disk, Ollama, installed-model,
+  OpenCode, PATH, and receipt-store evidence with exact remediation
+- **Private repository receipt** — bounded read-only mapping with no project
+  execution or network access
+- **Terminal agent** — LAC selects an installed model that fits the machine,
+  prepares its local agent profile, and launches the pinned OpenCode runtime
 
 ## Install
 
 ### Windows (recommended)
 
-Download the latest published `LAC-Setup-x.x.x.exe` from [Releases](https://github.com/Dkrynen/lac/releases) and run it. Local development builds may be ahead of the public Releases page.
+Download the latest published `LAC-Setup-x.x.x.exe` from
+[Releases](https://github.com/Dkrynen/lac/releases). Installer builds that
+offer **Add LAC to PATH** should be run with that task selected. Open a new
+terminal, enter your repository, and run:
+
+```powershell
+lac doctor .
+lac inspect .
+```
+
+The v2.7.0 source installer is designed to add only its own directory to PATH
+and remove that exact installer-owned entry after a successful uninstall. That
+lifecycle remains a clean-machine release gate; do not assume an older
+published installer contains it. Local development builds may be ahead of the
+public Releases page.
 
 ### Any platform (CLI via pipx)
 
 ```bash
 # Requires Python 3.10+ and Ollama (https://ollama.com/download)
 pipx install git+https://github.com/Dkrynen/lac
-lac scan          # what am I working with?
-lac recommend     # what should I run on it?
-lac pull llama3.2:3b        # installs it -- LAC Pro can tune supported installs when licensed
-lac chat          # TUI chat
+lac doctor .      # what is missing before useful local-agent work?
+lac inspect .     # map this repository privately
+lac recommend --use-case agent
+lac pull <the-model-you-explicitly-chose>
+lac agent .
 ```
 
 ### macOS & Linux apps
@@ -82,11 +187,16 @@ cd web && npm ci && npm run dev       # Vite dev server (proxies /api)
 
 Plugins mount via the `lac.plugins` entry-point group — see [docs/PLUGINS.md](docs/PLUGINS.md). Contributions welcome: [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Upstream runtime and research provenance is tracked in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the machine-readable
+[`upstream-components.json`](docs/third-party/upstream-components.json).
+
 ## System requirements
 
 - **OS**: Windows 10+, macOS 13+, Linux (x86_64)
 - **Python**: 3.10+ (CLI/source installs)
-- **Ollama**: required for model install, chat, and benchmarking
+- **Ollama**: required for model install, chat, benchmarking, and the coding agent
+- **OpenCode**: exactly `1.18.9` for the current verified agent adapter
 - **GPU**: optional — CPU-only and Apple Silicon fully supported
 
 ## License
