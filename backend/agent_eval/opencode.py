@@ -3,23 +3,16 @@ from __future__ import annotations
 
 import json
 import hashlib
+import msvcrt
+import ctypes
 import os
 import stat
 import subprocess
-import sys
 import time
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-
-if sys.platform == "win32":
-    import msvcrt
-    import ctypes
-    from ctypes import wintypes
-else:
-    msvcrt = None  # type: ignore[assignment]
-    ctypes = None  # type: ignore[assignment]
-    wintypes = None  # type: ignore[assignment]
 
 from backend.agent_launch.config_writer import (
     write_opencode_config_payload,

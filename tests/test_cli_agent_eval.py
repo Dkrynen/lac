@@ -1,4 +1,9 @@
 from __future__ import annotations
+import sys
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only eval infrastructure")
+
 
 import json
 from types import SimpleNamespace

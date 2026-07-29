@@ -1,4 +1,9 @@
 import ctypes
+import sys
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only eval infrastructure")
+
 import json
 import msvcrt
 import threading
