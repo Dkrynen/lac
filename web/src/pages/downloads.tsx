@@ -1,10 +1,13 @@
-import { Download as DownloadIcon, Clock } from "lucide-react";
+import { Download as DownloadIcon, Clock, XCircle, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 import { PageHeader, EmptyState, ErrorState } from "@/components/page";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAsync, useInterval } from "@/lib/hooks";
 import { api } from "@/lib/api";
+import { pullWithToast } from "@/lib/installer";
 import type { DownloadEntry } from "@/lib/types";
 
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
@@ -25,6 +28,26 @@ export function Downloads() {
       timestamp: r.updated_at,
     }));
   const rows: DownloadEntry[] = [...activeRows, ...(dl.data ?? []).slice().reverse()];
+
+  function handleCancel(model: string) {
+    api.cancelPull(model).then((r) => {
+      if (r.state === "cancel_requested") {
+        toast.info(`Cancel requested for ${model}`);
+      } else {
+        toast.info(`No active pull found for ${model}`);
+      }
+      pulls.reload();
+    }).catch((e) => {
+      toast.error("Could not cancel pull", { description: e instanceof Error ? e.message : String(e) });
+    });
+  }
+
+  function handleRetry(model: string) {
+    pullWithToast(model, () => {
+      dl.reload();
+      pulls.reload();
+    });
+  }
 
   return (
     <>
@@ -52,6 +75,7 @@ export function Downloads() {
                 <th className="px-4 py-2 text-left font-semibold">Model</th>
                 <th className="px-4 py-2 text-left font-semibold">Status</th>
                 <th className="px-4 py-2 text-right font-semibold">When</th>
+                <th className="px-4 py-2 text-right font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -59,9 +83,12 @@ export function Downloads() {
                 const rawStatus = String(r.status || r.state || "").toLowerCase();
                 const ok = rawStatus.includes("ok") || rawStatus === "success" || rawStatus === "completed";
                 const bad = rawStatus.includes("error") || rawStatus === "failed";
+                const isActive = !TERMINAL_STATES.has(rawStatus);
+                const isFailed = rawStatus === "failed";
+                const model = r.model || "-";
                 return (
                   <tr key={i} className="transition-colors hover:bg-panel-3/40">
-                    <td className="px-4 py-2.5 font-mono text-[13px]">{r.model || "-"}</td>
+                    <td className="px-4 py-2.5 font-mono text-[13px]">{model}</td>
                     <td className="px-4 py-2.5">
                       <Badge variant={ok ? "success" : bad ? "danger" : "neutral"} dot>
                         {r.status || r.state || "-"}
@@ -72,6 +99,30 @@ export function Downloads() {
                         <Clock className="h-3 w-3" />
                         {formatTimestamp(r.timestamp)}
                       </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      {isActive && model !== "-" && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 gap-1 px-2 text-[12px] text-fg-muted hover:text-fg"
+                          onClick={() => handleCancel(model)}
+                        >
+                          <XCircle className="h-3 w-3" />
+                          Cancel
+                        </Button>
+                      )}
+                      {isFailed && model !== "-" && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 gap-1 px-2 text-[12px] text-fg-muted hover:text-fg"
+                          onClick={() => handleRetry(model)}
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          Retry
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -97,5 +148,5 @@ function formatTimestamp(value: DownloadEntry["timestamp"]) {
     const ms = numeric < 10_000_000_000 ? numeric * 1000 : numeric;
     return new Date(ms).toLocaleString();
   }
-  return new Date(value).toLocaleString();
+  return new Date(value as string).toLocaleString();
 }

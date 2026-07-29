@@ -154,6 +154,10 @@ def _configure_trusted_server_host(host: str) -> None:
 PULL_PROGRESS = {}
 PULL_PROGRESS_LOCK = threading.Lock()
 _PULL_TERMINAL_STATES = {"completed", "failed", "cancelled"}
+# One cancel event per in-flight pull so POST /api/ollama/pull-cancel can
+# signal the streaming generator to stop without relying on the browser
+# aborting the SSE connection.
+PULL_CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 INTERACTIVE_CONTEXT_FALLBACK = 4096
@@ -1055,10 +1059,20 @@ def ollama_pull():
         req.add_header("Content-Type", "application/json")
         last_total = 0
         last_completed = 0
+        cancel_event = threading.Event()
+        PULL_CANCEL_EVENTS[model_name] = cancel_event
         _set_pull_progress(model_name, state="starting", status="starting")
         try:
             resp = urllib.request.urlopen(req, timeout=3600)
             for line in resp:
+                if cancel_event.is_set():
+                    resp.close()
+                    size_gb = round(last_total / (1024**3), 2) if last_total else 0
+                    _set_pull_progress(model_name, state="cancelled", status="cancelled",
+                                       completed=last_completed, total=last_total)
+                    log_download(model_name, "cancelled", size_gb)
+                    yield f"data: {json.dumps({'status': 'cancelled'})}\n\n"
+                    break
                 decoded = line.decode().strip()
                 if decoded:
                     try:
@@ -1105,6 +1119,8 @@ def ollama_pull():
                                completed=last_completed, total=last_total)
             log_download(model_name, "failed", 0)
             yield f"data: {json.dumps({'error': message})}\n\n"
+        finally:
+            PULL_CANCEL_EVENTS.pop(model_name, None)
         yield "data: [DONE]\n\n"
 
     return Response(
@@ -1121,6 +1137,21 @@ def ollama_pull():
 def ollama_pull_status():
     model_name = request.args.get("model", "").strip()
     return jsonify(_pull_progress_snapshot(model_name or None))
+
+
+@app.route("/api/ollama/pull-cancel", methods=["POST"])
+def ollama_pull_cancel():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    model_name = data.get("model", "")
+    if not model_name:
+        return jsonify({"error": "No model specified"}), 400
+    event = PULL_CANCEL_EVENTS.get(model_name)
+    if event is None:
+        return jsonify({"state": "not_pulling", "model": model_name})
+    event.set()
+    return jsonify({"state": "cancel_requested", "model": model_name})
 
 
 @app.route("/api/ollama/delete", methods=["POST"])
