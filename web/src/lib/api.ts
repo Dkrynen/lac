@@ -319,6 +319,8 @@ export const api = {
 
   downloads: () => getJSON<import("./types").DownloadEntry[]>("/api/config/downloads"),
   pullStatus: () => getJSON<import("./types").PullStatusResponse>("/api/ollama/pull-status"),
+  cancelPull: (model: string) =>
+    postJSON<{ state: string; model?: string }>("/api/ollama/pull-cancel", { model }),
 
   config: () => getJSON<import("./types").AptConfig>("/api/config"),
   saveConfig: (patch: Partial<import("./types").AptConfig>) => putJSON("/api/config", patch),

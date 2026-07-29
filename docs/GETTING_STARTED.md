@@ -198,6 +198,16 @@ permission layer is a sandbox, or that a public installer is signed and
 release-ready. Source compilation does not prove PATH mutation, upgrade, or
 uninstall behavior; those remain clean-machine installer checks.
 
+### Local trust boundary
+
+The LAC desktop server binds to `127.0.0.1` only and is not reachable from the
+network. It does not authenticate local callers: any process running under the
+same OS user can reach the API. This is the standard trust model for a local
+desktop tool. Agent-launch routes add a per-run capability token checked with a
+timing-safe comparison. If another process on your machine is untrusted, treat
+the LAC API surface the same way you would any local service (Ollama, Docker
+Engine, etc.): the OS user boundary is the protection layer.
+
 ### Internal agent-evidence preflight
 
 The packaged evaluator has a read-only preflight. It creates no evaluation
