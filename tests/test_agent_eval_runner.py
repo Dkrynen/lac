@@ -64,6 +64,23 @@ OPENCODE_SHA256 = (
     "b7b469b83cc3561e5129a1803b746f7e2c1974297909f5b346398dc9c56a477e"
 )
 
+from backend.agent_launch.opencode_bin import (
+    OpenCodeNotFound,
+    OpenCodeUnsupportedVersion,
+    resolve_opencode_binary,
+)
+
+try:
+    resolve_opencode_binary()
+    _HAS_OPENCODE = True
+except (OpenCodeNotFound, OpenCodeUnsupportedVersion, RuntimeError, OSError):
+    _HAS_OPENCODE = False
+
+requires_opencode = pytest.mark.skipif(
+    not _HAS_OPENCODE,
+    reason="requires the pinned local OpenCode 1.18.9 binary",
+)
+
 def _task(tmp_path: Path) -> EvalTask:
     fixture = tmp_path / "suite" / "fixtures" / "python-empty-mean"
     fixture.mkdir(parents=True)
@@ -414,6 +431,7 @@ def test_build_plan_refuses_output_inside_source_repo(tmp_path):
             source_root=source,
         )
 
+@requires_opencode
 def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
     seen = {}
 
@@ -510,6 +528,7 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
         assert after["observed"]["aggregate_sha256"] == before["aggregate_sha256"]
         assert after["observed"]["directories"] == []
 
+@requires_opencode
 def test_v2_runner_persists_schedule_before_first_arm_and_nine_records(
     tmp_path,
     recording_upstream,
@@ -626,6 +645,7 @@ def test_v2_runner_persists_schedule_before_first_arm_and_nine_records(
     assert sampling["state"] == "pass"
     assert sampling["details"]["record_count"] == 9
 
+@requires_opencode
 def test_v2_runner_continues_in_schedule_order_after_arm_failure(tmp_path):
     plan = _plan_v2(tmp_path)
     _runtime, snapshot = _runtime_snapshot(tmp_path)
@@ -854,6 +874,7 @@ def test_runner_rejects_unverified_acl_seal_before_adapter(
         if "acl_hardened" in arm
     )
 
+@requires_opencode
 def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
     snapshot = EvaluationIdentitySnapshot.for_test()
     def capture(_plan):
@@ -957,6 +978,7 @@ def test_missing_before_or_post_config_identity_fails_closed(tmp_path, measureme
     )
     assert control["state"] == "fail"
 
+@requires_opencode
 def test_default_opencode_arms_execute_exact_preflight_target(
     tmp_path, monkeypatch
 ):
@@ -1010,6 +1032,7 @@ def test_default_opencode_arms_execute_exact_preflight_target(
     )
     assert containment["state"] == "pass"
 
+@requires_opencode
 def test_runtime_files_cannot_be_mutated_during_runner_execution(tmp_path):
     runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
     observed = []
@@ -1100,6 +1123,7 @@ def test_runtime_lease_closes_once_across_failure_paths(
     if failure_mode == "postflight_failure":
         assert comparison["identity_valid"] is False
 
+@requires_opencode
 def test_runtime_lease_release_failure_fails_provenance_closed(tmp_path):
     _, snapshot = _runtime_snapshot(tmp_path)
 
@@ -1133,6 +1157,7 @@ def test_runtime_lease_release_failure_fails_provenance_closed(tmp_path):
     assert runtime_control["state"] == "fail"
     assert "release" in runtime_control["reason"]
 
+@requires_opencode
 def test_run_evaluation_persists_partial_arm_failure(tmp_path):
     def crash(*_args):
         raise RuntimeError("adapter bug")
@@ -1952,6 +1977,7 @@ def test_verified_runner_real_attestation_then_rejects_target_replacement(
     assert runtime_control["state"] == "fail"
     assert "lease does not match captured identity" in runtime_control["reason"]
 
+@requires_opencode
 def test_verified_runner_binds_all_six_default_opencode_configs_to_proxy_endpoint(
     tmp_path,
     monkeypatch,

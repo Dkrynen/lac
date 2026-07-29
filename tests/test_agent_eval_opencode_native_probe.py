@@ -53,7 +53,7 @@ def test_provenance_proven_opencode_1184_reaches_real_http_observer(
 
     wrapper_name = shutil.which("opencode.cmd")
     if wrapper_name is None:
-        pytest.fail("required local OpenCode 1.18.9 wrapper is unavailable")
+        pytest.skip("required local OpenCode 1.18.9 wrapper is unavailable")
     wrapper = file_identity(wrapper_name, version=None)
     native_path = _wrapper_target(wrapper.path)
     native = file_identity(

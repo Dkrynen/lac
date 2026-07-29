@@ -10,6 +10,7 @@ build/
 *.msi
 *.iss
 !installer.iss
+!installer/path_helpers.iss
 *.log
 .venv/
 venv/

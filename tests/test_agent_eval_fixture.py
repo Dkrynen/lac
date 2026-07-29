@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -309,7 +310,10 @@ def test_windows_handle_link_count_rejects_true_hardlink_after_acl(task):
         fixture_module._restore_fixture_access(task.fixture_root)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
+@pytest.mark.skipif(
+    os.name != "nt" or bool(ctypes.windll.shell32.IsUserAnAdmin()),
+    reason="Windows ACL deny contract requires a non-elevated account",
+)
 def test_windows_acl_seal_empirically_denies_write_and_creation(task):
     manifest = build_fixture_manifest(task)
     destination = task.fixture_root.parent / "materialized"

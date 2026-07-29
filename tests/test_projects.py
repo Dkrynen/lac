@@ -132,7 +132,10 @@ def test_project_registration_rejects_symlink_or_reparse_root(
             persistence.create_project("default", "Linked", str(link))
         assert persistence.list_projects("default") == []
     finally:
-        link.rmdir()
+        if os.name == "nt":
+            link.rmdir()
+        else:
+            link.unlink()
 
 
 def test_duplicate_project_root_is_a_conflict_even_across_workspaces(
@@ -276,6 +279,7 @@ def test_project_root_rejects_unc_and_mapped_network_paths(monkeypatch, tmp_path
         )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows file-identity revalidation")
 def test_revalidate_project_root_fails_closed_on_missing_or_replaced_identity(
     isolated_home, tmp_path
 ):
