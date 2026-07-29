@@ -1126,9 +1126,12 @@ def test_deferred_cleanup_recovers_from_unexpected_owner_exception(
         status = result.deferred_cleanup_status
         assert status is not None
         recovery_deadline = time.monotonic() + 1
-        while real_exists(capture_root) and time.monotonic() < recovery_deadline:
-            time.sleep(0.01)
         snapshot = status.snapshot()
+        while (
+            real_exists(capture_root) or snapshot["active"]
+        ) and time.monotonic() < recovery_deadline:
+            time.sleep(0.01)
+            snapshot = status.snapshot()
         assert not real_exists(capture_root)
         assert snapshot["active"] is False
         assert snapshot["state"] == "complete"
