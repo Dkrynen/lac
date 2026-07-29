@@ -1,9 +1,4 @@
 from __future__ import annotations
-import sys
-import pytest
-
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only eval infrastructure")
-
 
 import json
 import subprocess
@@ -13,21 +8,27 @@ from types import SimpleNamespace
 
 import pytest
 
+pytest.importorskip("msvcrt", reason="Windows-only eval infrastructure")
+
 import backend.agent_eval.opencode as opencode_module
+
 from backend.agent_eval import opencode_contract
+
 from backend.agent_eval.opencode import (
     _lock_config,
     parse_opencode_jsonl,
     run_lac,
     run_stock,
 )
+
 from backend.agent_eval.capture import (
     DEFAULT_CAPTURE_LIMITS,
     CapturedProcess,
 )
-from backend.agent_eval.task import EvalScorer, EvalTask
-from backend.agent_eval.schedule import GenerationSettings, TrialSpec
 
+from backend.agent_eval.task import EvalScorer, EvalTask
+
+from backend.agent_eval.schedule import GenerationSettings, TrialSpec
 
 def _task(workspace: Path) -> EvalTask:
     (workspace / "stats_service.py").write_text(
@@ -44,10 +45,8 @@ def _task(workspace: Path) -> EvalTask:
         scorer=EvalScorer(type="exact_text", expected="ZeroDivisionError"),
     )
 
-
 def _jsonl(*events) -> str:
     return "\n".join(json.dumps(event) for event in events)
-
 
 def _successful_stdout() -> str:
     return _jsonl(
@@ -87,7 +86,6 @@ def _successful_stdout() -> str:
         },
     )
 
-
 def _assert_config_identity_complete_and_released(result):
     measured = result.metrics["opencode_config_identity"]
     assert isinstance(measured["before"], dict)
@@ -98,7 +96,6 @@ def _assert_config_identity_complete_and_released(result):
         config_path.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-
 
 def test_parse_opencode_jsonl_extracts_text_usage_tools_and_unknown_events():
     stdout = _successful_stdout() + "\n" + json.dumps(
@@ -123,7 +120,6 @@ def test_parse_opencode_jsonl_extracts_text_usage_tools_and_unknown_events():
     assert parsed.unknown_event_types == ("future_event",)
     assert parsed.errors == ()
     assert len(parsed.events) == 5
-
 
 def test_parse_opencode_jsonl_aggregates_multiple_steps():
     first = json.loads(_successful_stdout().splitlines()[-1])
@@ -157,7 +153,6 @@ def test_parse_opencode_jsonl_aggregates_multiple_steps():
     assert parsed.metrics["output_tokens"] == 7
     assert parsed.metrics["cost_usd"] == 0.25
 
-
 def test_parse_opencode_jsonl_scores_only_terminal_step_text():
     parsed = parse_opencode_jsonl(
         _jsonl(
@@ -189,7 +184,6 @@ def test_parse_opencode_jsonl_scores_only_terminal_step_text():
     assert parsed.completed is True
     assert parsed.response == "ZeroDivisionError"
 
-
 def test_parse_opencode_jsonl_counts_invalid_tool_as_tool_error():
     parsed = parse_opencode_jsonl(
         _jsonl(
@@ -211,7 +205,6 @@ def test_parse_opencode_jsonl_counts_invalid_tool_as_tool_error():
     assert parsed.metrics["tool_calls"] == 1
     assert parsed.metrics["tool_errors"] == 1
 
-
 def test_parse_opencode_jsonl_marks_malformed_stream_failed():
     parsed = parse_opencode_jsonl(
         '{"type":"text","part":{"text":"answer"}}\nnot-json\n'
@@ -222,7 +215,6 @@ def test_parse_opencode_jsonl_marks_malformed_stream_failed():
     assert parsed.completed is False
     assert parsed.errors == ("malformed_json_line:2",)
 
-
 def test_parse_opencode_jsonl_records_error_event():
     parsed = parse_opencode_jsonl(
         _jsonl(
@@ -232,7 +224,6 @@ def test_parse_opencode_jsonl_records_error_event():
 
     assert parsed.completed is False
     assert parsed.errors == ("opencode_error: ProviderError: boom",)
-
 
 def test_parse_opencode_jsonl_fails_on_line_byte_ceiling():
     parsed = parse_opencode_jsonl(
@@ -245,7 +236,6 @@ def test_parse_opencode_jsonl_fails_on_line_byte_ceiling():
     assert parsed.errors == ("jsonl_line_limit_exceeded:1",)
     assert parsed.events == ()
 
-
 def test_parse_opencode_jsonl_counts_whitespace_in_physical_line_ceiling():
     parsed = parse_opencode_jsonl(
         b" " * 64 + b'{"type":"reasoning","part":{}}' + b" " * 64 + b"\n",
@@ -257,7 +247,6 @@ def test_parse_opencode_jsonl_counts_whitespace_in_physical_line_ceiling():
     assert parsed.errors == ("jsonl_line_limit_exceeded:1",)
     assert parsed.events == ()
 
-
 def test_parse_opencode_jsonl_fails_on_event_ceiling():
     parsed = parse_opencode_jsonl(
         b'{"type":"reasoning","part":{}}\n' * 4,
@@ -268,7 +257,6 @@ def test_parse_opencode_jsonl_fails_on_event_ceiling():
     assert parsed.completed is False
     assert parsed.errors == ("jsonl_event_limit_exceeded:4",)
     assert len(parsed.events) == 3
-
 
 def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     workspace = tmp_path / "stock"
@@ -335,7 +323,6 @@ def test_run_stock_writes_minimal_config_and_exact_bounded_argv(tmp_path):
     assert result.raw_stderr == ""
     assert result.request_metadata == {}
 
-
 def test_process_return_attribute_cannot_synthesize_http_observation(
     tmp_path,
 ):
@@ -394,7 +381,6 @@ def test_process_return_attribute_cannot_synthesize_http_observation(
     }
     assert result.request_metadata == {}
 
-
 def test_run_lac_uses_fail_closed_config_and_agent_variant(tmp_path):
     workspace = tmp_path / "lac"
     workspace.mkdir()
@@ -428,7 +414,6 @@ def test_run_lac_uses_fail_closed_config_and_agent_variant(tmp_path):
     assert result.arm == "lac"
     assert result.model == "gpt-oss:20b-agent"
 
-
 @pytest.mark.parametrize("arm,model", [("stock", "gpt-oss:20b"), ("lac", "gpt-oss:20b-agent")])
 def test_real_generated_config_is_measured_before_and_after_process(tmp_path, arm, model):
     workspace = tmp_path / arm
@@ -447,7 +432,6 @@ def test_real_generated_config_is_measured_before_and_after_process(tmp_path, ar
     assert Path(measured["before"]["path"]).is_file()
     assert measured["before"]["size"] > 0
     assert len(measured["before"]["sha256"]) == 64
-
 
 def test_stable_wrong_locked_config_fails_before_process(tmp_path, monkeypatch):
     workspace = tmp_path / "stock"
@@ -482,7 +466,6 @@ def test_stable_wrong_locked_config_fails_before_process(tmp_path, monkeypatch):
         "canonical_sha256"
     ]
     assert "config_pre_measurement_failed" in result.errors[0]
-
 
 @pytest.mark.parametrize(
     "mutation",
@@ -549,7 +532,6 @@ def test_semantically_wrong_shared_builder_output_fails_before_process(
     assert result.completed is False
     assert "evaluation config violates" in result.errors[0]
 
-
 def test_mutated_builder_owned_lac_permissions_fail_before_process(
     tmp_path,
     monkeypatch,
@@ -577,7 +559,6 @@ def test_mutated_builder_owned_lac_permissions_fail_before_process(
 
     assert result.completed is False
     assert "evaluation config violates" in result.errors[0]
-
 
 def test_runtime_config_is_bound_to_rebased_manifest_before_process(
     tmp_path,
@@ -634,7 +615,6 @@ def test_runtime_config_is_bound_to_rebased_manifest_before_process(
     )
     assert measured["after"] == measured["before"]
 
-
 def test_runtime_config_rejects_wrong_endpoint_binding_before_process(
     tmp_path,
 ):
@@ -677,7 +657,6 @@ def test_runtime_config_rejects_wrong_endpoint_binding_before_process(
     assert result.completed is False
     assert "config binding" in result.errors[0]
 
-
 def test_real_generated_config_cannot_be_mutated_deleted_or_replaced_during_process(
     tmp_path,
 ):
@@ -718,7 +697,6 @@ def test_real_generated_config_cannot_be_mutated_deleted_or_replaced_during_proc
     assert measured["before"] == measured["after"]
     assert result.completed is True
 
-
 def test_binary_resolution_finishes_before_config_lock_is_acquired(tmp_path):
     workspace = tmp_path / "stock"
     workspace.mkdir()
@@ -744,7 +722,6 @@ def test_binary_resolution_finishes_before_config_lock_is_acquired(tmp_path):
 
     assert result.completed is True
     _assert_config_identity_complete_and_released(result)
-
 
 def test_lock_config_reports_closehandle_failure_during_fd_transfer(
     tmp_path, monkeypatch
@@ -794,7 +771,6 @@ def test_lock_config_reports_closehandle_failure_during_fd_transfer(
     assert create_args[5] == 0x00200080
     assert len(kernel32.CloseHandle.calls) == 1
 
-
 def test_config_lock_failure_returns_fail_closed_identity_metrics(
     tmp_path, monkeypatch
 ):
@@ -821,7 +797,6 @@ def test_config_lock_failure_returns_fail_closed_identity_metrics(
     assert len(measured["expected_canonical_sha256"]) == 64
     assert measured["before"] is None
     assert measured["after"] is None
-
 
 def test_pre_measurement_failure_prevents_process_and_releases_lock(
     tmp_path, monkeypatch
@@ -858,7 +833,6 @@ def test_pre_measurement_failure_prevents_process_and_releases_lock(
         config_path.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-
 
 def test_post_measurement_failure_invalidates_success_and_releases_lock(
     tmp_path, monkeypatch
@@ -905,7 +879,6 @@ def test_post_measurement_failure_invalidates_success_and_releases_lock(
         encoding="utf-8",
     )
 
-
 def test_run_opencode_records_nonzero_exit_and_stderr(tmp_path):
     workspace = tmp_path / "stock"
     workspace.mkdir()
@@ -926,7 +899,6 @@ def test_run_opencode_records_nonzero_exit_and_stderr(tmp_path):
     assert result.raw_stderr == "provider failed"
     assert result.errors == ("exit_code:7",)
     _assert_config_identity_complete_and_released(result)
-
 
 def test_run_opencode_persists_exact_capture_overflow_reason(tmp_path):
     workspace = tmp_path / "stock"
@@ -967,7 +939,6 @@ def test_run_opencode_persists_exact_capture_overflow_reason(tmp_path):
         "overflowed": True,
     }
     _assert_config_identity_complete_and_released(result)
-
 
 def test_run_opencode_preserves_measured_windows_job_evidence(tmp_path):
     workspace = tmp_path / "stock"
@@ -1014,7 +985,6 @@ def test_run_opencode_preserves_measured_windows_job_evidence(tmp_path):
     assert result.capture["windows_job"] == containment
     _assert_config_identity_complete_and_released(result)
 
-
 def test_run_opencode_records_timeout(tmp_path):
     workspace = tmp_path / "lac"
     workspace.mkdir()
@@ -1038,7 +1008,6 @@ def test_run_opencode_records_timeout(tmp_path):
     assert result.raw_stderr == "slow"
     assert result.errors == ("timeout:180s",)
     _assert_config_identity_complete_and_released(result)
-
 
 def test_run_opencode_records_process_exception_with_post_identity_and_releases_lock(
     tmp_path,

@@ -1,9 +1,4 @@
 from __future__ import annotations
-import sys
-import pytest
-
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only eval infrastructure")
-
 
 import json
 import hashlib
@@ -18,42 +13,56 @@ from types import SimpleNamespace
 
 import pytest
 
+pytest.importorskip("msvcrt", reason="Windows-only eval infrastructure")
+
 import backend.agent_eval.identity as identity_module
+
 import backend.agent_eval.fixture as fixture_module
+
 import backend.agent_eval.opencode as opencode_module
+
 import backend.agent_eval.runtime_provenance as runtime_provenance_module
+
 import backend.agent_eval.runner as runner_module
+
 from backend.agent_eval.evidence import (
     EvidenceControlResult,
     EvidenceMode,
     EvidenceState,
 )
+
 from backend.agent_eval.containment import ContainmentError
+
 from backend.agent_eval.identity import (
     EvaluationIdentitySnapshot,
     IdentityError,
     file_identity,
 )
+
 from backend.agent_eval.result import ArmResult
+
 from backend.agent_eval.schedule import (
     GenerationSettings,
     TrialSpec,
     build_schedule,
 )
+
 from backend.agent_eval.fixture import FixtureSealResult
+
 from backend.agent_eval.runner import (
     EvalPlanError,
     _windows_containment_result,
     build_plan,
     run_evaluation,
 )
+
 from backend.agent_eval.task import EvalScorer, EvalTask, task_contract_sha256
+
 from backend.agent_eval.windows_job import WindowsJobProcess
 
 OPENCODE_SHA256 = (
     "b7b469b83cc3561e5129a1803b746f7e2c1974297909f5b346398dc9c56a477e"
 )
-
 
 def _task(tmp_path: Path) -> EvalTask:
     fixture = tmp_path / "suite" / "fixtures" / "python-empty-mean"
@@ -72,7 +81,6 @@ def _task(tmp_path: Path) -> EvalTask:
         scorer=EvalScorer(type="exact_text", expected="ZeroDivisionError"),
     )
 
-
 def _task_v2(tmp_path: Path) -> EvalTask:
     return replace(
         _task(tmp_path),
@@ -80,7 +88,6 @@ def _task_v2(tmp_path: Path) -> EvalTask:
         trials=3,
         generation=GenerationSettings(1.0, 20260726, 128),
     )
-
 
 def _result(
     arm: str,
@@ -151,7 +158,6 @@ def _result(
         capture=capture,
     )
 
-
 def _plan(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()
@@ -166,7 +172,6 @@ def _plan(tmp_path: Path):
         opencode_version="1.18.9",
         source_root=source,
     )
-
 
 def _plan_v2(
     tmp_path: Path,
@@ -185,7 +190,6 @@ def _plan_v2(
         opencode_version="1.18.9",
         source_root=source,
     )
-
 
 def _sampling_metadata(arm: str, trial: TrialSpec) -> dict:
     if arm == "raw":
@@ -208,7 +212,6 @@ def _sampling_metadata(arm: str, trial: TrialSpec) -> dict:
         "max_output_tokens": 128,
         "trial_index": trial.index,
     }
-
 
 def _send_sampling_request(
     endpoint: str,
@@ -245,7 +248,6 @@ def _send_sampling_request(
     with urllib.request.urlopen(request, timeout=2) as response:
         assert response.status == 200
 
-
 @pytest.fixture
 def recording_upstream():
     class Handler(BaseHTTPRequestHandler):
@@ -272,7 +274,6 @@ def recording_upstream():
         server.server_close()
         thread.join(timeout=2)
 
-
 def _runtime_snapshot(tmp_path, *, attested=True):
     runtime = tmp_path / "runtime.exe"
     runtime.write_bytes(b"runtime")
@@ -296,7 +297,6 @@ def _runtime_snapshot(tmp_path, *, attested=True):
         ),
     )
 
-
 def _passing_identity_compare(*_args):
     return (
         EvidenceControlResult(
@@ -311,15 +311,12 @@ def _passing_identity_compare(*_args):
         ),
     )
 
-
 class _NoopIdentityLease:
     def close(self):
         return None
 
-
 def _noop_identity_lease(_snapshot):
     return _NoopIdentityLease()
-
 
 def _allow_fixture_runtime(monkeypatch, snapshot):
     system, architecture = runtime_provenance_module._platform_key()
@@ -335,7 +332,6 @@ def _allow_fixture_runtime(monkeypatch, snapshot):
         runtime_provenance_module.opencode.EVALUATION_PROVIDER_NPM,
     )
 
-
 @pytest.fixture(autouse=True)
 def _restore_workspace_acls_after_test(tmp_path):
     yield
@@ -349,7 +345,6 @@ def _restore_workspace_acls_after_test(tmp_path):
         if workspace.is_dir():
             fixture_module._restore_fixture_access(workspace)
 
-
 def test_build_plan_is_dry_and_records_exact_identities(tmp_path):
     plan = _plan(tmp_path)
 
@@ -362,7 +357,6 @@ def test_build_plan_is_dry_and_records_exact_identities(tmp_path):
     assert plan.opencode_version == "1.18.9"
     assert len(plan.fixture_sha256) == 64
     assert plan.auto_approval_scope == "disposable_workspace_only"
-
 
 @pytest.mark.parametrize(
     ("base", "lac", "installed", "message"),
@@ -403,7 +397,6 @@ def test_build_plan_refuses_wrong_or_missing_model_identities(
             source_root=tmp_path / "source",
         )
 
-
 def test_build_plan_refuses_output_inside_source_repo(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
@@ -420,7 +413,6 @@ def test_build_plan_refuses_output_inside_source_repo(tmp_path):
             opencode_version="1.18.9",
             source_root=source,
         )
-
 
 def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
     seen = {}
@@ -517,7 +509,6 @@ def test_run_evaluation_isolates_arms_scores_and_persists_artifacts(tmp_path):
         assert after["observed"]["entries"] == before["entries"]
         assert after["observed"]["aggregate_sha256"] == before["aggregate_sha256"]
         assert after["observed"]["directories"] == []
-
 
 def test_v2_runner_persists_schedule_before_first_arm_and_nine_records(
     tmp_path,
@@ -635,7 +626,6 @@ def test_v2_runner_persists_schedule_before_first_arm_and_nine_records(
     assert sampling["state"] == "pass"
     assert sampling["details"]["record_count"] == 9
 
-
 def test_v2_runner_continues_in_schedule_order_after_arm_failure(tmp_path):
     plan = _plan_v2(tmp_path)
     _runtime, snapshot = _runtime_snapshot(tmp_path)
@@ -671,7 +661,6 @@ def test_v2_runner_continues_in_schedule_order_after_arm_failure(tmp_path):
     ]
     assert comparison["aggregate"]["record_count"] == 9
     assert comparison["aggregate"]["pass_counts"]["stock"] == 2
-
 
 @pytest.mark.parametrize(
     "tamper",
@@ -757,7 +746,6 @@ def test_v2_runner_derives_sampling_and_rejects_disk_tampering(
     assert sampling["state"] == "fail"
     assert sampling["details"].get("injected") is not True
 
-
 @pytest.mark.parametrize("change", ["mutation", "addition", "deletion"])
 def test_run_evaluation_after_artifact_records_observed_drift(
     tmp_path, monkeypatch, change
@@ -827,7 +815,6 @@ def test_run_evaluation_after_artifact_records_observed_drift(
     )
     assert control["state"] == "fail"
 
-
 def test_runner_rejects_unverified_acl_seal_before_adapter(
     tmp_path, monkeypatch
 ):
@@ -867,7 +854,6 @@ def test_runner_rejects_unverified_acl_seal_before_adapter(
         if "acl_hardened" in arm
     )
 
-
 def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
     snapshot = EvaluationIdentitySnapshot.for_test()
     def capture(_plan):
@@ -897,7 +883,6 @@ def test_run_evaluation_persists_pre_and_post_identity_controls(tmp_path):
     assert configs["stock"]["before"] == configs["stock"]["after"]
     assert configs["lac"]["before"] == configs["lac"]["after"]
 
-
 def test_missing_or_drifted_arm_config_fails_runtime_provenance(tmp_path):
     snapshot = EvaluationIdentitySnapshot.for_test()
     def bad(arm, model):
@@ -921,7 +906,6 @@ def test_missing_or_drifted_arm_config_fails_runtime_provenance(tmp_path):
     )
     control = next(item for item in comparison["evidence"]["controls"]["results"] if item["name"] == "runtime_dependency_provenance")
     assert control["state"] == "fail"
-
 
 @pytest.mark.parametrize(
     "measurement",
@@ -972,7 +956,6 @@ def test_missing_before_or_post_config_identity_fails_closed(tmp_path, measureme
         if item["name"] == "runtime_dependency_provenance"
     )
     assert control["state"] == "fail"
-
 
 def test_default_opencode_arms_execute_exact_preflight_target(
     tmp_path, monkeypatch
@@ -1027,7 +1010,6 @@ def test_default_opencode_arms_execute_exact_preflight_target(
     )
     assert containment["state"] == "pass"
 
-
 def test_runtime_files_cannot_be_mutated_during_runner_execution(tmp_path):
     runtime, snapshot = _runtime_snapshot(tmp_path, attested=False)
     observed = []
@@ -1059,7 +1041,6 @@ def test_runtime_files_cannot_be_mutated_during_runner_execution(tmp_path):
     assert observed == ["denied"]
     assert comparison["identity_valid"] is True
     runtime.write_bytes(b"changed")
-
 
 @pytest.mark.parametrize(
     "failure_mode",
@@ -1119,7 +1100,6 @@ def test_runtime_lease_closes_once_across_failure_paths(
     if failure_mode == "postflight_failure":
         assert comparison["identity_valid"] is False
 
-
 def test_runtime_lease_release_failure_fails_provenance_closed(tmp_path):
     _, snapshot = _runtime_snapshot(tmp_path)
 
@@ -1153,7 +1133,6 @@ def test_runtime_lease_release_failure_fails_provenance_closed(tmp_path):
     assert runtime_control["state"] == "fail"
     assert "release" in runtime_control["reason"]
 
-
 def test_run_evaluation_persists_partial_arm_failure(tmp_path):
     def crash(*_args):
         raise RuntimeError("adapter bug")
@@ -1183,7 +1162,6 @@ def test_run_evaluation_persists_partial_arm_failure(tmp_path):
     assert stock["result"]["completed"] is False
     assert stock["result"]["errors"] == ["RuntimeError: adapter bug"]
 
-
 def test_run_evaluation_refuses_to_overwrite_existing_run(tmp_path):
     plan = _plan(tmp_path)
     existing = plan.output_root / "same-run"
@@ -1191,7 +1169,6 @@ def test_run_evaluation_refuses_to_overwrite_existing_run(tmp_path):
 
     with pytest.raises(EvalPlanError, match="already exists"):
         run_evaluation(plan, run_id="same-run")
-
 
 def test_runner_replaces_injected_capture_pass_when_arm_evidence_is_missing(tmp_path):
     control = EvidenceControlResult(
@@ -1221,7 +1198,6 @@ def test_runner_replaces_injected_capture_pass_when_arm_evidence_is_missing(tmp_
     )
     assert carried["state"] == "fail"
     assert "raw" in carried["reason"]
-
 
 @pytest.mark.parametrize(
     ("arm", "capture"),
@@ -1275,7 +1251,6 @@ def test_runner_fails_closed_on_malformed_or_overflowed_capture_evidence(
     assert carried["state"] == "fail"
     assert arm in carried["reason"]
 
-
 def test_runner_rejects_fabricated_containment_from_injected_adapters(tmp_path):
     injected = EvidenceControlResult(
         "windows_process_tree_containment",
@@ -1304,7 +1279,6 @@ def test_runner_rejects_fabricated_containment_from_injected_adapters(tmp_path):
     )
     assert control["state"] == "fail"
     assert "not produced by the measured default adapter" in control["reason"]
-
 
 @pytest.mark.parametrize(
     "field",
@@ -1335,7 +1309,6 @@ def test_measured_containment_requires_exact_boolean_fields(field, invalid):
 
     assert control.state is EvidenceState.FAIL
     assert f"stock: {field} is not an exact boolean" in control.reason
-
 
 @pytest.mark.parametrize(
     ("arm", "change"),
@@ -1387,7 +1360,6 @@ def test_runner_replaces_injected_windows_pass_with_measured_failure(
     )
     assert control["state"] == "fail"
     assert arm in control["reason"]
-
 
 class _RunnerWfpApi:
     def __init__(self):
@@ -1448,7 +1420,6 @@ class _RunnerWfpApi:
         self._raise("filter_delete")
         self.filters.pop(filter_id)
 
-
 def test_runner_replaces_injected_egress_pass_with_diagnostic_unsupported(
     tmp_path,
 ):
@@ -1478,7 +1449,6 @@ def test_runner_replaces_injected_egress_pass_with_diagnostic_unsupported(
     )
     assert control["state"] == "unsupported"
     assert control["details"]["provider"] == "diagnostic"
-
 
 def test_verified_runner_uses_measured_provider_and_task5_launcher(
     tmp_path,
@@ -1528,12 +1498,10 @@ def test_verified_runner_uses_measured_provider_and_task5_launcher(
         "engine_close",
     ]
 
-
 def test_verified_runner_has_no_free_form_provider_evidence_seam():
     assert "containment_provider_fn" not in inspect.signature(
         run_evaluation
     ).parameters
-
 
 def test_verified_runner_stops_adapters_when_provider_open_fails(
     tmp_path,
@@ -1566,7 +1534,6 @@ def test_verified_runner_stops_adapters_when_provider_open_fails(
     )
     assert control["state"] == "fail"
     assert "elevation required" in control["reason"]
-
 
 def test_provider_close_uncertainty_forces_egress_failure(
     tmp_path,
@@ -1603,7 +1570,6 @@ def test_provider_close_uncertainty_forces_egress_failure(
     )
     assert control["state"] == "fail"
     assert "cleanup uncertain" in control["reason"]
-
 
 def test_verified_runner_attests_fresh_snapshot_before_lease_schedule_or_adapters(
     tmp_path,
@@ -1655,7 +1621,6 @@ def test_verified_runner_attests_fresh_snapshot_before_lease_schedule_or_adapter
     ).exists()
     assert comparison["runtime_bootstrap_attestation"]["ok"] is False
 
-
 def test_verified_runner_attestation_exception_has_zero_side_effects(
     tmp_path,
     monkeypatch,
@@ -1693,7 +1658,6 @@ def test_verified_runner_attestation_exception_has_zero_side_effects(
     assert called == ["attestation"]
     assert not (plan.output_root / "attestation-exception").exists()
     assert comparison["evidence"]["artifact_valid"] is False
-
 
 def test_verified_runner_attests_before_run_root_lease_schedule_and_proxy(
     tmp_path,
@@ -1783,7 +1747,6 @@ def test_verified_runner_attests_before_run_root_lease_schedule_and_proxy(
     assert run_root.exists()
     runtime.write_bytes(b"cleanup")
 
-
 def test_verified_runner_schedule_failure_closes_lease_before_side_effects(
     tmp_path,
     monkeypatch,
@@ -1831,7 +1794,6 @@ def test_verified_runner_schedule_failure_closes_lease_before_side_effects(
     assert called == ["schedule"]
     assert lease.close_calls == 1
     assert not (plan.output_root / "schedule-failure").exists()
-
 
 def test_verified_runner_initial_write_failure_closes_observer_and_lease_once(
     tmp_path,
@@ -1888,7 +1850,6 @@ def test_verified_runner_initial_write_failure_closes_observer_and_lease_once(
     assert called == ["write"]
     assert observer.close_calls == 1
     assert lease.close_calls == 1
-
 
 def test_verified_runner_rebind_and_observer_close_failure_still_closes_lease(
     tmp_path,
@@ -1948,7 +1909,6 @@ def test_verified_runner_rebind_and_observer_close_failure_still_closes_lease(
     assert lease.close_calls == 1
     assert not (plan.output_root / "rebind-close-failure").exists()
 
-
 def test_verified_runner_real_attestation_then_rejects_target_replacement(
     tmp_path,
     monkeypatch,
@@ -1991,7 +1951,6 @@ def test_verified_runner_real_attestation_then_rejects_target_replacement(
     )
     assert runtime_control["state"] == "fail"
     assert "lease does not match captured identity" in runtime_control["reason"]
-
 
 def test_verified_runner_binds_all_six_default_opencode_configs_to_proxy_endpoint(
     tmp_path,

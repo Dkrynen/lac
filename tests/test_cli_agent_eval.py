@@ -1,21 +1,19 @@
 from __future__ import annotations
-import sys
-import pytest
-
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only eval infrastructure")
-
 
 import json
 from types import SimpleNamespace
 
 import pytest
 
+pytest.importorskip("msvcrt", reason="Windows-only eval infrastructure")
+
 import backend.plugins as plugins_module
 import cli
 import server
-from backend.agent_eval.command import EvalCommandResult
-from backend.plugins import LoadedPlugin
 
+from backend.agent_eval.command import EvalCommandResult
+
+from backend.plugins import LoadedPlugin
 
 _LOOPBACK_HOST = "http://127.0.0.1:11434"
 _GLOBAL_HOST_FORMS = (
@@ -26,7 +24,6 @@ _GLOBAL_HOST_FORMS = (
     ("--ho", _LOOPBACK_HOST),
     (f"--ho={_LOOPBACK_HOST}",),
 )
-
 
 def _argv(*extra: str) -> list[str]:
     return [
@@ -42,7 +39,6 @@ def _argv(*extra: str) -> list[str]:
         *extra,
     ]
 
-
 def test_parser_exposes_eval_verified_default_and_diagnostic_opt_in():
     parser = cli.build_parser()
     verified = parser.parse_args([*_argv(), "--dry-run"])
@@ -52,10 +48,8 @@ def test_parser_exposes_eval_verified_default_and_diagnostic_opt_in():
     diagnostic = parser.parse_args([*_argv(), "--mode", "diagnostic"])
     assert diagnostic.mode == "diagnostic"
 
-
 def test_server_routes_eval_to_cli():
     assert server._is_cli_invocation(["eval", "--dry-run"]) is True
-
 
 def test_json_mode_emits_no_banner(monkeypatch, capsys):
     monkeypatch.setattr(
@@ -72,7 +66,6 @@ def test_json_mode_emits_no_banner(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert json.loads(output)["evidence_ready"] is True
     assert "Local AI, sorted" not in output
-
 
 def test_nonzero_eval_service_result_becomes_process_exit_code(
     monkeypatch,
@@ -92,7 +85,6 @@ def test_nonzero_eval_service_result_becomes_process_exit_code(
 
     assert raised.value.code == 2
     assert json.loads(capsys.readouterr().out)["error"] == "preflight stopped"
-
 
 @pytest.mark.parametrize("use_explicit_argv", [False, True])
 def test_eval_json_bypasses_plugin_discovery_before_elevation_failure(
@@ -150,7 +142,6 @@ def test_eval_json_bypasses_plugin_discovery_before_elevation_failure(
         "ok": False,
     }
 
-
 @pytest.mark.parametrize("use_explicit_argv", [False, True])
 def test_eval_help_bypasses_plugin_discovery(
     monkeypatch,
@@ -175,7 +166,6 @@ def test_eval_help_bypasses_plugin_discovery(
     output = capsys.readouterr().out
     assert output.startswith("usage: lac eval")
     assert "--dry-run" in output
-
 
 @pytest.mark.parametrize("global_prefix", _GLOBAL_HOST_FORMS)
 @pytest.mark.parametrize("use_explicit_argv", [False, True])
@@ -236,7 +226,6 @@ def test_eval_json_after_global_host_bypasses_plugins_and_stays_parseable(
         "ok": False,
     }
     assert cli.os.environ["OLLAMA_HOST"] == _LOOPBACK_HOST
-
 
 @pytest.mark.parametrize("global_prefix", _GLOBAL_HOST_FORMS)
 @pytest.mark.parametrize("use_explicit_argv", [False, True])

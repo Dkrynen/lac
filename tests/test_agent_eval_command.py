@@ -1,15 +1,15 @@
 from __future__ import annotations
-import sys
-import pytest
-
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only eval infrastructure")
-
 
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+pytest.importorskip("msvcrt", reason="Windows-only eval infrastructure")
+
 import backend.agent_eval.command as command
+
 from backend.agent_eval.command import EvalCommandRequest, execute_eval_command
+
 from backend.agent_eval.evidence import (
     REQUIRED_CONTROLS,
     EvidenceControlResult,
@@ -24,7 +24,6 @@ FROM_BLOB_SHA256 = "c" * 64
 OPENCODE_SHA256 = (
     "b7b469b83cc3561e5129a1803b746f7e2c1974297909f5b346398dc9c56a477e"
 )
-
 
 def realistic_identity_snapshot(**changes):
     values = {
@@ -58,7 +57,6 @@ def realistic_identity_snapshot(**changes):
         )
     )
 
-
 class ReadyContainment:
     def __init__(self, result: EvidenceControlResult, identity_snapshot):
         self.preflight_result = result
@@ -70,7 +68,6 @@ class ReadyContainment:
             [r"C:\tools\opencode.exe"],
             self.identity_snapshot,
         )
-
 
 class ReadyDependencies:
     def __init__(self):
@@ -121,10 +118,8 @@ class ReadyDependencies:
             "all_arms_passed": True,
         }
 
-
 def ready_dependencies() -> ReadyDependencies:
     return ReadyDependencies()
-
 
 def verified_request(tmp_path, **changes) -> EvalCommandRequest:
     values = {
@@ -139,7 +134,6 @@ def verified_request(tmp_path, **changes) -> EvalCommandRequest:
     values.update(changes)
     return EvalCommandRequest(**values)
 
-
 def failed_result(name: str) -> EvidenceControlResult:
     return EvidenceControlResult(
         name,
@@ -147,7 +141,6 @@ def failed_result(name: str) -> EvidenceControlResult:
         f"{name} unavailable",
         {},
     )
-
 
 def test_verified_dry_run_exposes_digests_and_truthful_runtime_bounds(
     tmp_path,
@@ -211,7 +204,6 @@ def test_verified_dry_run_exposes_digests_and_truthful_runtime_bounds(
         result.report["runtime_bootstrap_attestation"]["config_manifest"]
     ) == 6
 
-
 def test_verified_dry_run_fails_closed_without_exact_model_identity(tmp_path):
     for snapshot in (
         None,
@@ -230,7 +222,6 @@ def test_verified_dry_run_fails_closed_without_exact_model_identity(tmp_path):
         assert result.exit_code == 2
         assert result.report["evidence_ready"] is False
         assert "exact_model_identity" in result.report["evidence_blockers"]
-
 
 def test_verified_dry_run_rejects_plan_identity_binding_mismatches(tmp_path):
     mismatches = (
@@ -255,7 +246,6 @@ def test_verified_dry_run_rejects_plan_identity_binding_mismatches(tmp_path):
         assert result.report["model_identities"] is None
         assert "exact_model_identity" in result.report["evidence_blockers"]
 
-
 def test_dry_report_reuses_containment_preflight_identity_snapshot(tmp_path):
     deps = ready_dependencies()
     deps.capture_identity = lambda _plan: (_ for _ in ()).throw(
@@ -269,7 +259,6 @@ def test_dry_report_reuses_containment_preflight_identity_snapshot(tmp_path):
 
     assert result.report["model_identities"]["base"]["digest"] == BASE_DIGEST
     assert result.report["model_identities"]["lac"]["digest"] == LAC_DIGEST
-
 
 def test_runtime_bounds_preserve_fractional_authoritative_values(
     tmp_path,
@@ -294,7 +283,6 @@ def test_runtime_bounds_preserve_fractional_authoritative_values(
     assert bounded["process_cleanup_grace_seconds"] == 5.75
     assert bounded["value"] == 1953.75
 
-
 def test_runtime_bounds_reject_invalid_numeric_sources(tmp_path, monkeypatch):
     for invalid in (True, 0, float("inf")):
         monkeypatch.setattr(
@@ -310,7 +298,6 @@ def test_runtime_bounds_reject_invalid_numeric_sources(tmp_path, monkeypatch):
         assert "runtime_bounds_unavailable" in result.report[
             "evidence_blockers"
         ]
-
 
 def test_verified_dry_run_fails_closed_without_runtime_bounds(
     tmp_path,
@@ -331,7 +318,6 @@ def test_verified_dry_run_fails_closed_without_runtime_bounds(
     assert result.report["evidence_ready"] is False
     assert "runtime_bounds_unavailable" in result.report["evidence_blockers"]
 
-
 def test_verified_command_stops_before_generation_when_control_missing(tmp_path):
     deps = ready_dependencies()
     deps.containment.preflight_result = failed_result("os_loopback_only_egress")
@@ -340,7 +326,6 @@ def test_verified_command_stops_before_generation_when_control_missing(tmp_path)
     assert deps.runner_calls == 0
     assert result.report["evidence_ready"] is False
     assert result.report["missing_controls"] == ["os_loopback_only_egress"]
-
 
 def test_non_elevated_verified_request_stops_before_model_or_network_checks(
     tmp_path,
@@ -373,13 +358,11 @@ def test_non_elevated_verified_request_stops_before_model_or_network_checks(
         + exact_command
     )
 
-
 def test_verified_command_runs_after_runtime_bootstrap_attestation(tmp_path):
     deps = ready_dependencies()
     result = execute_eval_command(verified_request(tmp_path), dependencies=deps)
     assert result.exit_code == 0
     assert deps.runner_calls == 1
-
 
 def test_verified_command_stops_before_runner_on_bootstrap_hash_mismatch(
     tmp_path,
@@ -399,7 +382,6 @@ def test_verified_command_stops_before_runner_on_bootstrap_hash_mismatch(
     ]
     assert deps.runner_calls == 0
 
-
 def test_diagnostic_command_runs_but_can_never_report_valid_evidence(tmp_path):
     deps = ready_dependencies()
     result = execute_eval_command(
@@ -414,7 +396,6 @@ def test_diagnostic_command_runs_but_can_never_report_valid_evidence(tmp_path):
     )
     assert result.report["runtime_bootstrap_attestation"]["ok"] is not True
     assert deps.runner_calls == 1
-
 
 def test_output_directory_must_be_external_to_packaged_installation_tree(
     tmp_path,

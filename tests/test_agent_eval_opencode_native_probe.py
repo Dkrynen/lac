@@ -1,9 +1,4 @@
 from __future__ import annotations
-import sys
-import pytest
-
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only eval infrastructure")
-
 
 import json
 import os
@@ -13,16 +8,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+pytest.importorskip("msvcrt", reason="Windows-only eval infrastructure")
+
 from backend.agent_eval.http_observer import (
     LoopbackRecordingProxy,
     attach_observed_request,
 )
-from backend.agent_eval.identity import _probe_version, _wrapper_target, file_identity
-from backend.agent_eval.opencode import run_stock
-from backend.agent_eval.schedule import GenerationSettings, TrialSpec
-from backend.agent_eval.task import EvalScorer, EvalTask
-from backend.agent_launch.opencode_bin import SUPPORTED_OPENCODE_VERSION
 
+from backend.agent_eval.identity import _probe_version, _wrapper_target, file_identity
+
+from backend.agent_eval.opencode import run_stock
+
+from backend.agent_eval.schedule import GenerationSettings, TrialSpec
+
+from backend.agent_eval.task import EvalScorer, EvalTask
+
+from backend.agent_launch.opencode_bin import SUPPORTED_OPENCODE_VERSION
 
 def _task(workspace):
     return EvalTask(
@@ -33,7 +34,6 @@ def _task(workspace):
         timeout_seconds=30,
         scorer=EvalScorer("exact_text", "ZeroDivisionError"),
     )
-
 
 @pytest.mark.skipif(os.name != "nt", reason="pinned native target is Windows")
 def test_provenance_proven_opencode_1184_reaches_real_http_observer(

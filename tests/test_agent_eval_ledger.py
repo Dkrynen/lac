@@ -1,9 +1,4 @@
 import ctypes
-import sys
-import pytest
-
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only eval infrastructure")
-
 import json
 import msvcrt
 import threading
@@ -12,12 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
+pytest.importorskip("msvcrt", reason="Windows-only eval infrastructure")
+
 from backend.agent_eval import ledger
+
 from backend.agent_eval.evidence import (
     EvidenceControlResult,
     EvidenceMode,
     EvidenceState,
 )
+
 from backend.agent_eval.ledger import (
     ArtifactLedgerError,
     atomic_write_bytes,
@@ -26,14 +25,12 @@ from backend.agent_eval.ledger import (
     verify_evidence,
 )
 
-
 def test_atomic_write_refuses_existing_destination(tmp_path):
     target = tmp_path / "result.json"
     atomic_write_json(target, {"first": True})
 
     with pytest.raises(FileExistsError):
         atomic_write_json(target, {"second": True})
-
 
 def test_atomic_write_preserves_unowned_existing_temporary_sibling(
     tmp_path, monkeypatch
@@ -49,7 +46,6 @@ def test_atomic_write_preserves_unowned_existing_temporary_sibling(
     assert not target.exists()
     assert temporary.exists()
     assert temporary.read_bytes() == b"attacker-sentinel"
-
 
 def test_open_owned_temporary_cleans_raw_handle_when_descriptor_transfer_fails(
     tmp_path, monkeypatch
@@ -81,7 +77,6 @@ def test_open_owned_temporary_cleans_raw_handle_when_descriptor_transfer_fails(
         if temporary.exists():
             temporary.unlink()
 
-
 def test_atomic_write_rejects_source_path_replacement_before_promotion(
     tmp_path, monkeypatch
 ):
@@ -104,7 +99,6 @@ def test_atomic_write_rejects_source_path_replacement_before_promotion(
     assert target.read_bytes() == b"attacker-replacement"
     assert temporary.exists()
     assert temporary.read_bytes() == b"attacker-replacement"
-
 
 def test_atomic_write_is_create_only_when_two_writers_reach_promotion_together(
     tmp_path, monkeypatch
@@ -149,7 +143,6 @@ def test_atomic_write_is_create_only_when_two_writers_reach_promotion_together(
     winner = next(payload for state, payload in outcomes if state == "created")
     assert target.read_bytes() == winner
 
-
 def test_seal_hashes_every_non_workspace_artifact_and_detects_tampering(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -173,7 +166,6 @@ def test_seal_hashes_every_non_workspace_artifact_and_detects_tampering(tmp_path
     (run / "manifest.json").write_text('{"tampered": true}')
     assert verify_evidence(run).ok is False
 
-
 def test_verify_rejects_tampered_diagnostic_validity_metadata(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -190,7 +182,6 @@ def test_verify_rejects_tampered_diagnostic_validity_metadata(tmp_path):
     assert verification.ok is False
     assert "artifact_valid" in (verification.reason or "")
 
-
 def test_verify_rejects_failed_computed_ledger_control(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -205,7 +196,6 @@ def test_verify_rejects_failed_computed_ledger_control(tmp_path):
     verification = verify_evidence(run)
     assert verification.ok is False
     assert "artifact_ledger_integrity" in (verification.reason or "")
-
 
 @pytest.mark.parametrize("bad_count", [999, True])
 def test_verify_rejects_tampered_or_boolean_ledger_artifact_count(
@@ -225,7 +215,6 @@ def test_verify_rejects_tampered_or_boolean_ledger_artifact_count(
     assert verification.ok is False
     assert "artifact_count" in (verification.reason or "")
 
-
 def test_verify_rejects_duplicate_artifact_ledger_control(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -241,7 +230,6 @@ def test_verify_rejects_duplicate_artifact_ledger_control(tmp_path):
     verification = verify_evidence(run)
     assert verification.ok is False
     assert "artifact_ledger_integrity" in (verification.reason or "")
-
 
 def test_verify_rejects_duplicate_top_level_json_key(tmp_path):
     run = tmp_path / "run"
@@ -264,7 +252,6 @@ def test_verify_rejects_duplicate_top_level_json_key(tmp_path):
     assert verification.ok is False
     assert "duplicate JSON key" in (verification.reason or "")
 
-
 def test_seal_refuses_unknown_temporary_or_partial_files(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -277,7 +264,6 @@ def test_seal_refuses_unknown_temporary_or_partial_files(tmp_path):
             preliminary_results=[],
         )
 
-
 def test_seal_rejects_regular_file_at_excluded_root(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -285,7 +271,6 @@ def test_seal_rejects_regular_file_at_excluded_root(tmp_path):
 
     with pytest.raises(ArtifactLedgerError, match="excluded root must be a directory"):
         seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
-
 
 def test_seal_rejects_symlink_at_excluded_root_when_supported(tmp_path):
     run = tmp_path / "run"
@@ -301,7 +286,6 @@ def test_seal_rejects_symlink_at_excluded_root_when_supported(tmp_path):
     with pytest.raises(ArtifactLedgerError, match="link artifact"):
         seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
 
-
 def test_seal_rejects_reparse_excluded_root(tmp_path, monkeypatch):
     run = tmp_path / "run"
     run.mkdir()
@@ -315,7 +299,6 @@ def test_seal_rejects_reparse_excluded_root(tmp_path, monkeypatch):
     with pytest.raises(ArtifactLedgerError, match="reparse-point artifact"):
         seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
 
-
 def test_seal_rejects_temporary_excluded_root_name(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -328,7 +311,6 @@ def test_seal_rejects_temporary_excluded_root_name(tmp_path):
             preliminary_results=[],
             excluded_roots=("workspaces.tmp",),
         )
-
 
 def test_seal_rejects_reserved_absent_evidence_output_exclusion(tmp_path):
     run = tmp_path / "run"
@@ -347,7 +329,6 @@ def test_seal_rejects_reserved_absent_evidence_output_exclusion(tmp_path):
 
     assert not evidence_path.exists()
 
-
 def test_seal_rejects_case_insensitive_reserved_evidence_output_alias(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -359,7 +340,6 @@ def test_seal_rejects_case_insensitive_reserved_evidence_output_alias(tmp_path):
             preliminary_results=[],
             excluded_roots=("EVIDENCE.JSON",),
         )
-
 
 @pytest.mark.parametrize("alias", ["evidence.json.", "evidence.json "])
 def test_seal_rejects_win32_trailing_reserved_output_alias(tmp_path, alias):
@@ -376,7 +356,6 @@ def test_seal_rejects_win32_trailing_reserved_output_alias(tmp_path, alias):
 
     assert not (run / "evidence.json").exists()
 
-
 @pytest.mark.parametrize("name", ["partial.TMP", "partial.Tmp"])
 def test_seal_rejects_case_insensitive_temporary_artifact_suffix(tmp_path, name):
     run = tmp_path / "run"
@@ -386,7 +365,6 @@ def test_seal_rejects_case_insensitive_temporary_artifact_suffix(tmp_path, name)
     with pytest.raises(ArtifactLedgerError, match="temporary artifact"):
         seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
 
-
 def test_seal_rejects_win32_trailing_temporary_artifact_alias(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -394,7 +372,6 @@ def test_seal_rejects_win32_trailing_temporary_artifact_alias(tmp_path):
 
     with pytest.raises(ArtifactLedgerError, match="temporary artifact"):
         seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
-
 
 def test_seal_normalizes_case_insensitive_excluded_root_alias(tmp_path):
     run = tmp_path / "run"
@@ -412,7 +389,6 @@ def test_seal_normalizes_case_insensitive_excluded_root_alias(tmp_path):
 
     assert "workspaces/fixture.txt" not in evidence["artifacts"]
 
-
 def test_seal_rejects_case_insensitive_duplicate_excluded_root_alias(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
@@ -424,7 +400,6 @@ def test_seal_rejects_case_insensitive_duplicate_excluded_root_alias(tmp_path):
             preliminary_results=[],
             excluded_roots=("workspaces", "WORKSPACES"),
         )
-
 
 def test_seal_normalizes_win32_trailing_excluded_root_alias(tmp_path):
     run = tmp_path / "run"
@@ -441,7 +416,6 @@ def test_seal_normalizes_win32_trailing_excluded_root_alias(tmp_path):
     )
 
     assert "workspaces/fixture.txt" not in evidence["artifacts"]
-
 
 def test_seal_rejects_excluded_root_swapped_after_initial_validation(
     tmp_path, monkeypatch
@@ -462,7 +436,6 @@ def test_seal_rejects_excluded_root_swapped_after_initial_validation(
 
     with pytest.raises(ArtifactLedgerError, match="excluded root"):
         seal_evidence(run, EvidenceMode.DIAGNOSTIC, preliminary_results=[])
-
 
 def test_evidence_root_hash_is_independent_of_artifact_creation_order(tmp_path):
     first = tmp_path / "first"
@@ -486,7 +459,6 @@ def test_evidence_root_hash_is_independent_of_artifact_creation_order(tmp_path):
     assert first_evidence["evidence_root_sha256"] == second_evidence[
         "evidence_root_sha256"
     ]
-
 
 def test_caller_cannot_preclaim_ledger_integrity(tmp_path):
     run = tmp_path / "run"
