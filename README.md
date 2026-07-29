@@ -118,6 +118,10 @@ lac doctor .
 lac inspect .
 ```
 
+> **Note:** The terminal agent (`lac agent .`) ships in v2.7.0, which is not
+> yet published on the Releases page. The current published release (v2.6.4)
+> includes `lac doctor` and `lac inspect`.
+
 The v2.7.0 source installer is designed to add only its own directory to PATH
 and remove that exact installer-owned entry after a successful uninstall. That
 lifecycle remains a clean-machine release gate; do not assume an older
