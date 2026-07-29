@@ -1,0 +1,24 @@
+name: release-lock
+
+on:
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  release-lock:
+    name: release-lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if a release freeze is active
+        env:
+          RELEASE_LOCK: ${{ vars.RELEASE_LOCK }}
+        run: |
+          if [ "$RELEASE_LOCK" = "true" ]; then
+            echo "::error::Release freeze active (RELEASE_LOCK=true). Merges to master are locked during a release cut."
+            exit 1
+          fi
+          echo "No release freeze active; merges are allowed."
