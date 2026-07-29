@@ -14,13 +14,13 @@ from .task import task_contract_sha256
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_REVIEWED_BUILD_ID = "opencode-1.18.7-windows-amd64-native"
+_REVIEWED_BUILD_ID = "opencode-1.18.9-windows-amd64-native"
 _ALLOWED_RUNTIME_PROVIDERS = {
     (
         "windows",
         "amd64",
-        "opencode-1.18.7-windows-amd64-native",
-        "1.18.7",
+        "opencode-1.18.9-windows-amd64-native",
+        "1.18.9",
         "b7b469b83cc3561e5129a1803b746f7e2c1974297909f5b346398dc9c56a477e",
     ): opencode.EVALUATION_PROVIDER_NPM,
 }
@@ -211,7 +211,7 @@ def attest_runtime_bootstrap(plan, identity_snapshot) -> dict[str, Any]:
         ),
         "provider_npm": observed_provider_npm,
         "upstream_audit_rationale": (
-            "OpenCode 1.18.7 source lists "
+            "OpenCode 1.18.9 source lists "
             "@ai-sdk/openai-compatible in BUNDLED_PROVIDERS; "
             "Npm.add is fallback only. This text is not runtime proof."
         ),

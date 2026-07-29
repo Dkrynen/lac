@@ -196,7 +196,7 @@ Upstream runtime and research provenance is tracked in
 - **OS**: Windows 10+, macOS 13+, Linux (x86_64)
 - **Python**: 3.10+ (CLI/source installs)
 - **Ollama**: required for model install, chat, benchmarking, and the coding agent
-- **OpenCode**: exactly `1.18.7` for the current verified agent adapter
+- **OpenCode**: exactly `1.18.9` for the current verified agent adapter
 - **GPU**: optional — CPU-only and Apple Silicon fully supported
 
 ## License

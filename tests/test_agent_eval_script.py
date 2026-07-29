@@ -77,7 +77,7 @@ def test_dry_run_validates_real_boundaries_without_creating_output(tmp_path):
         "stock": "gpt-oss:20b",
         "lac": "gpt-oss:20b-agent",
     }
-    assert report["opencode"]["version"] == "1.18.7"
+    assert report["opencode"]["version"] == "1.18.9"
     assert report["opencode"]["binary"] == r"C:\tools\opencode.cmd"
     assert report["auto_approval"]["scope"] == "disposable_workspace_only"
     assert report["network"] == "loopback_ollama_only"
@@ -159,7 +159,7 @@ def _snapshot(tmp_path):
     executable.write_bytes(b"native-opencode")
     measured = file_identity(
         executable,
-        version="1.18.7",
+        version="1.18.9",
         authenticode_fn=lambda _path: "unsigned",
     )
     return replace(

@@ -35,7 +35,7 @@ def realistic_identity_snapshot(**changes):
     return SimpleNamespace(
         opencode=SimpleNamespace(
             path=Path(r"C:\tools\opencode.exe"),
-            version="1.18.7",
+            version="1.18.9",
             sha256=OPENCODE_SHA256,
         ),
         models=SimpleNamespace(

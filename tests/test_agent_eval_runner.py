@@ -158,7 +158,7 @@ def _plan(tmp_path: Path):
         output_root=tmp_path / "evidence",
         installed_models=["gpt-oss:20b", "gpt-oss:20b-agent"],
         opencode_binary=Path(r"C:\tools\opencode.cmd"),
-        opencode_version="1.18.7",
+        opencode_version="1.18.9",
         source_root=source,
     )
 
@@ -177,7 +177,7 @@ def _plan_v2(
         output_root=tmp_path / "evidence",
         installed_models=["gpt-oss:20b", "gpt-oss:20b-agent"],
         opencode_binary=Path(r"C:\tools\opencode.cmd"),
-        opencode_version="1.18.7",
+        opencode_version="1.18.9",
         source_root=source,
     )
 
@@ -195,7 +195,7 @@ def _sampling_metadata(arm: str, trial: TrialSpec) -> dict:
             "trial_index": trial.index,
         }
     return {
-        "source": "opencode_1.18.7_ollama_http_capture",
+        "source": "opencode_1.18.9_ollama_http_capture",
         "observed": True,
         "path": "/v1/chat/completions",
         "temperature": 1.0,
@@ -273,7 +273,7 @@ def _runtime_snapshot(tmp_path, *, attested=True):
     runtime.write_bytes(b"runtime")
     measured = file_identity(
         runtime,
-        version="1.18.7",
+        version="1.18.9",
         authenticode_fn=lambda _path: "unsigned",
     )
     snapshot = EvaluationIdentitySnapshot.for_test()
@@ -354,7 +354,7 @@ def test_build_plan_is_dry_and_records_exact_identities(tmp_path):
     assert plan.lac_model == "gpt-oss:20b-agent"
     assert plan.ollama_host == "http://127.0.0.1:11434"
     assert plan.opencode_binary == Path(r"C:\tools\opencode.cmd")
-    assert plan.opencode_version == "1.18.7"
+    assert plan.opencode_version == "1.18.9"
     assert len(plan.fixture_sha256) == 64
     assert plan.auto_approval_scope == "disposable_workspace_only"
 
@@ -394,7 +394,7 @@ def test_build_plan_refuses_wrong_or_missing_model_identities(
             output_root=tmp_path / "evidence",
             installed_models=installed,
             opencode_binary=Path("opencode"),
-            opencode_version="1.18.7",
+            opencode_version="1.18.9",
             source_root=tmp_path / "source",
         )
 
@@ -412,7 +412,7 @@ def test_build_plan_refuses_output_inside_source_repo(tmp_path):
             output_root=source / "evidence",
             installed_models=["gpt-oss:20b", "gpt-oss:20b-agent"],
             opencode_binary=Path("opencode"),
-            opencode_version="1.18.7",
+            opencode_version="1.18.9",
             source_root=source,
         )
 

@@ -38,7 +38,7 @@ def plan():
     )
 
 
-def snapshot(*, version="1.18.7", sha256=OPENCODE_SHA256):
+def snapshot(*, version="1.18.9", sha256=OPENCODE_SHA256):
     return SimpleNamespace(
         opencode=SimpleNamespace(
             path=Path(r"C:\tools\opencode.exe"),
@@ -63,8 +63,8 @@ def test_attestation_accepts_exact_allowlisted_runtime_contract():
     assert result["executable"] == {
         "platform": "windows",
         "architecture": "amd64",
-        "reviewed_build_id": "opencode-1.18.7-windows-amd64-native",
-        "version": "1.18.7",
+        "reviewed_build_id": "opencode-1.18.9-windows-amd64-native",
+        "version": "1.18.9",
         "sha256": OPENCODE_SHA256,
     }
     assert result["provider_npm"] == "@ai-sdk/openai-compatible"
@@ -160,8 +160,8 @@ def test_attestation_invokes_leased_exe_not_cmd_plan_wrapper():
 @pytest.mark.parametrize(
     ("platform_key", "reviewed_build_id"),
     (
-        (("linux", "amd64"), "opencode-1.18.7-windows-amd64-native"),
-        (("windows", "arm64"), "opencode-1.18.7-windows-amd64-native"),
+        (("linux", "amd64"), "opencode-1.18.9-windows-amd64-native"),
+        (("windows", "arm64"), "opencode-1.18.9-windows-amd64-native"),
         (("windows", "amd64"), "unreviewed-build"),
     ),
 )
@@ -202,7 +202,7 @@ def test_runtime_modules_import_without_cycle():
     ("version", "sha256"),
     (
         ("1.19.0", OPENCODE_SHA256),
-        ("1.18.7", "0" * 64),
+        ("1.18.9", "0" * 64),
     ),
 )
 def test_attestation_rejects_unknown_version_or_executable_hash(
