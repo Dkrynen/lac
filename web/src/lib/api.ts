@@ -321,14 +321,6 @@ export const api = {
     postJSON<{ state: string; configured?: boolean; error?: string }>("/api/pro/hf-token", { token }),
   clearHfToken: () =>
     fetch("/api/pro/hf-token", { method: "DELETE", headers: { Accept: "application/json" } }).then((r) => r.json()),
-  /** Activate LAC Pro: send a license key → the core route bootstrap-installs the
-   *  plugin. Returns the installer's honest result (200 for both outcomes; the
-   *  frontend branches on `state`). */
-  unlockPro: (key: string) =>
-    postJSON<
-      | { state: "installed"; path: string }
-      | { state: "failed"; error_type: string; message: string }
-    >("/api/pro/unlock", { key }),
 
   proStatus: async (): Promise<import("./types").ProStatus> => {
     const r = await fetch("/api/pro/status");
