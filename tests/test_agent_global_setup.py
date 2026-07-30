@@ -148,3 +148,14 @@ def test_undo_restores_backup(tmp_path):
 def test_undo_without_backup_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         undo_global_opencode_setup(opencode_dir=tmp_path)
+
+
+def test_write_global_setup_writes_agent_profiles(tmp_path):
+    write_global_opencode_config(
+        "m-agent", "http://localhost:11434", opencode_dir=tmp_path
+    )
+    local = (tmp_path / "agents" / "lac-local.md").read_text(encoding="utf-8")
+    review = (tmp_path / "agents" / "lac-review.md").read_text(encoding="utf-8")
+    assert "model: ollama/m-agent" in local
+    assert "mode: primary" in local
+    assert "mode: subagent" in review

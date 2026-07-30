@@ -10,6 +10,7 @@ from pathlib import Path
 from backend.agent_launch.config_writer import (
     _FAIL_CLOSED_PERMISSIONS,
     build_opencode_config,
+    write_agent_profiles_into,
     write_commands_into,
     write_plugin_into,
 )
@@ -98,12 +99,14 @@ def write_global_opencode_config(
 
     commands = write_commands_into(oc_dir / "commands", pro_available, cli_prefix)
     plugin = write_plugin_into(oc_dir / "plugins", cli_prefix)
+    agents = write_agent_profiles_into(oc_dir / "agents", model)
 
     return {
         "config": config_path,
         "backup": backup_path,
         "commands": commands,
         "plugin": plugin,
+        "agents": agents,
         "model": model,
         "model_preserved": notes["model_preserved"],
     }

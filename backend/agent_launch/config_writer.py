@@ -290,3 +290,70 @@ def write_agent_commands(project_dir, pro_available: bool = False, cli_prefix=No
 
 def write_agent_plugin(project_dir, cli_prefix=None) -> Path:
     return write_plugin_into(Path(project_dir) / ".opencode" / "plugins", cli_prefix)
+
+
+_LAC_LOCAL_AGENT_MD = """\
+---
+description: Local-model coding agent prepared by LAC for this machine
+mode: primary
+model: ollama/{model}
+temperature: 0.2
+steps: 20
+permission:
+  edit: ask
+  bash: ask
+  webfetch: ask
+  websearch: ask
+  external_directory: deny
+  task: deny
+color: success
+---
+You are a coding agent running entirely on this machine, on a local model
+prepared by LAC (hardware-scanned, context-raised, optionally tuned).
+
+Local models do targeted work well and long open-ended loops badly:
+- Keep changes small and targeted; one concern per edit.
+- Verify with tools (read the file, run the check) instead of guessing.
+- If a task grows past a few steps, stop and summarize progress and the
+  next steps.
+- Never claim work is done without a tool result that proves it.
+"""
+
+_LAC_REVIEW_AGENT_MD = """\
+---
+description: Read-only code and plan review on the local model (LAC)
+mode: subagent
+temperature: 0.1
+permission:
+  edit: deny
+  bash: deny
+  webfetch: deny
+  websearch: deny
+  external_directory: deny
+  task: deny
+---
+You review code and plans on this machine's local model. You cannot change
+files or run commands. Read what you need, then report: what is correct,
+what is risky, and the smallest concrete fix for each issue.
+"""
+
+
+def write_agent_profiles_into(agents_dir, model) -> list[Path]:
+    agents_dir = Path(agents_dir)
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    profiles = [
+        ("lac-local.md", _LAC_LOCAL_AGENT_MD.format(model=model)),
+        ("lac-review.md", _LAC_REVIEW_AGENT_MD.format(model=model)),
+    ]
+    written = []
+    for name, body in profiles:
+        p = agents_dir / name
+        p.write_text(body, encoding="utf-8")
+        written.append(p)
+    return written
+
+
+def write_agent_profiles(project_dir, model) -> list[Path]:
+    return write_agent_profiles_into(
+        Path(project_dir) / ".opencode" / "agents", model
+    )
