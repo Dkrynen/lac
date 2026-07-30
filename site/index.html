@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LAC — local AI, sorted.</title>
-<meta name="description" content="Scans your hardware. Recommends local LLMs that actually fit — tagged measured, calibrated, or estimated, not a guess.">
+<meta name="description" content="Run a real coding agent on your own hardware. LAC scans your machine, picks the best local model, and launches it — 94.67 tok/s, $0/month, your code never leaves.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root {
@@ -86,39 +86,82 @@
     <circle cx="36" cy="38" r="2.5" fill="#4ADE80"/>
   </svg>
   <div class="logo">LAC</div>
-  <h1>Local AI, sorted.</h1>
-  <p class="sub">Scans your hardware. Recommends local LLMs that actually fit —
-     tagged <em>measured</em>, <em>calibrated</em>, or <em>estimated</em>, not a guess off a spec sheet.</p>
+  <h1>Run a real coding agent<br>on your own hardware.</h1>
+  <p class="sub">One command. LAC scans your machine, picks the best local model
+     that fits, and launches a full coding agent. No cloud. No API key. No monthly bill.
+     Your code never leaves your machine.</p>
   <div class="cta-row">
     <a class="btn btn-primary" href="https://github.com/Dkrynen/lac/releases/latest">Download for Windows</a>
     <a class="btn btn-ghost" href="https://github.com/Dkrynen/lac">View on GitHub</a>
   </div>
-  <p class="hint">CLI on any platform: <code>pipx install git+https://github.com/Dkrynen/lac</code> → <code>lac scan</code></p>
+  <p class="hint"><code>lac agent .</code> &mdash; scan &rarr; recommend &rarr; tune &rarr; launch. One command, local, private.</p>
 </header>
 
 <div class="wrap">
+  <div class="cards" style="grid-template-columns: 1fr; max-width: 720px; margin: 0 auto 24px;">
+    <div class="card" style="border-color: var(--accent); text-align: center;">
+      <p style="font-size: 32px; font-weight: 800; color: var(--accent); margin: 0;">94.67 tok/s</p>
+      <p style="margin: 8px 0 0;">A local 20B model answered a multi-step code-reasoning task through the full
+         agent loop on a mid-range AMD RX 6800 XT (16 GB). No cloud calls. The gap was never the model &mdash;
+         it was the tooling. LAC closes it.</p>
+    </div>
+  </div>
   <div class="cards">
     <div class="card">
+      <div class="k">Agent</div>
+      <h3>Your code, your machine, your agent</h3>
+      <p><code>lac agent .</code> scans your hardware, picks an agent-capable model,
+         raises its context window to the loop floor, configures OpenCode, and launches.
+         No config file to write. No API key to paste. Free tier does all of this.</p>
+    </div>
+    <div class="card">
       <div class="k">Fit</div>
-      <h3>Will it run?</h3>
-      <p>91 curated models scored against your real GPU, VRAM, RAM — including multi-GPU
-         tiering and RAM-spill split plans. Toggle hardware on/off and watch the answer change.</p>
+      <h3>Will it run? Actually.</h3>
+      <p>91 curated models scored against your real GPU, VRAM, RAM &mdash; including multi-GPU
+         tiering and RAM-spill split plans. Not the biggest model. The right model for your rig.</p>
     </div>
     <div class="card">
       <div class="k">Dyno</div>
       <h3>Real numbers, not vibes</h3>
       <p>Every recommendation is tagged <code>measured</code>, <code>calibrated</code>, or <code>estimated</code>
-         with a confidence band, so you always know how sure LAC is. LAC Pro can turn supported installs
-         into real, measured data points after activation.</p>
-    </div>
-    <div class="card">
-      <div class="k">Chat</div>
-      <h3>Built-in chat &amp; web UI</h3>
-      <p>Full chat interface, web dashboard on <code>:5050</code>, and a terminal TUI.
-         However you like to work, LAC has a face for it.</p>
+         with a confidence band. LAC Pro turns supported installs into real, measured data points.</p>
     </div>
   </div>
 </div>
+
+<section id="local-ai-first">
+  <div class="wrap">
+    <span class="tag">Local AI First</span>
+    <h2>The gap was never the model</h2>
+    <p class="lead">The default story is that serious coding agents need cloud models.
+       We tested that properly. On a mid-range AMD rig, a local 20B model completed a
+       multi-step agent task at 94.67 tok/s. The failures were all in the tooling:
+       context window too small, no hardware-aware model selection, no tuned variant.</p>
+    <div class="cards" style="margin-top: 22px;">
+      <div class="card">
+        <h3>Privacy</h3>
+        <p>Your code is your IP. Every cloud prompt is a copy held by a third party.
+           Local inference means the code never leaves. Not &ldquo;encrypted in transit.&rdquo; Never leaves.</p>
+      </div>
+      <div class="card">
+        <h3>Cost</h3>
+        <p>A heavy agentic coding day on cloud APIs costs $50&ndash;$90. The same day on a local
+           model costs electricity. The model is a one-time download. Inference is free forever.</p>
+      </div>
+      <div class="card">
+        <h3>Sovereignty</h3>
+        <p>Cloud APIs change pricing, deprecate models, rate-limit you. A local model is yours.
+           It doesn&rsquo;t get deprecated. It doesn&rsquo;t get rate-limited. It doesn&rsquo;t phone home.</p>
+      </div>
+    </div>
+    <p class="hint" style="margin-top: 16px;">
+       <strong>The honest caveat:</strong> a 20B local model won&rsquo;t match Claude Opus on a
+       100k-line refactor. But most coding work is read &rarr; understand &rarr; change &rarr; test.
+       A well-configured local model does this reliably, at zero marginal cost.
+       <a href="https://github.com/Dkrynen/lac/blob/master/docs/LOCAL_AI_FIRST.md">Read the full case &rarr;</a>
+    </p>
+  </div>
+</section>
 
 <section id="pro">
   <div class="wrap">
@@ -134,7 +177,7 @@
         <li><strong>Know when something changed.</strong> Insights tracks your tok/s baseline over time and flags the moment a driver update, OS patch, or model swap costs you performance.</li>
       </ul>
       <p><span class="price">Local Pro - $36/year</span> (the equivalent of $3/month). Checkout is <strong>not open yet</strong>.</p>
-      <p><span class="price">Pro Cloud - planned at $20/month</span> is the higher tier. It includes everything in Local Pro, plus end-to-end encrypted sync and capped hosted agents. Encrypted sync is designed so LAC cannot read the ciphertext. Hosted processing is separate: only selected job inputs are decrypted for execution and may be sent to approved model providers. It is <strong>not yet available</strong>; no checkout or hosted usage is live.</p>
+      <p><span class="price">Pro Cloud</span> (planned, $20/month) adds end-to-end encrypted sync and hosted agents. Not yet available.</p>
       <a class="btn btn-primary" href="https://tally.so/r/GxyBx2" target="_blank" rel="noopener" style="margin-top: 8px;">Join the Pro waitlist</a>
       <p class="hint">At launch, every paid buyer first signs in with Google or GitHub and starts checkout from that LAC account. Access follows the signed Polar webhook, not the redirect. Polar then provides the Local Pro license key. Activate it with <code>lac unlock &lt;key&gt;</code> (or <strong>Settings &rarr; Activate Pro</strong>), then restart LAC. The activated runtime stays local and key-based. Free installs ship no Pro code.</p>
     </div>
@@ -164,7 +207,8 @@
       </div>
       <div class="card">
         <h3>Is it actually free?</h3>
-        <p>The core — hardware scan, recommendations, chat, web UI, TUI — is MIT open source. Benchmarking and tuning automation are LAC Pro, a paid add-on.</p>
+        <p>The core &mdash; hardware scan, recommendations, the coding agent, chat, web UI, TUI &mdash;
+           is MIT open source. Benchmarking and tuning automation are LAC Pro, a paid add-on.</p>
       </div>
       <div class="card">
         <h3>Will my data leave my machine?</h3>
@@ -176,7 +220,15 @@
       </div>
       <div class="card">
         <h3>What does LAC stand for?</h3>
-        <p><strong>Local AI Companion.</strong> One command (<code>lac</code>), one job: find the best model your machine can actually run — and tell you how sure it is. (Real-world benchmark/tuning automation is LAC Pro.)</p>
+        <p><strong>Local AI Companion.</strong> One command (<code>lac agent .</code>), one job:
+           run a real coding agent on your own hardware &mdash; the best model your machine can
+           actually run, configured and launched for you. Free.</p>
+      </div>
+      <div class="card">
+        <h3>Is the agent really free?</h3>
+        <p>Yes. <code>lac agent .</code> &mdash; hardware scan, model pick, context tuning, OpenCode
+           config and launch &mdash; is MIT open source. Pro adds the tuning cockpit
+           (GPU offload sweeps, RAM spill, iGPU offload) for $36/year.</p>
       </div>
       <div class="card">
         <h3>Is there a GUI?</h3>

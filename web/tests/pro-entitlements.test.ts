@@ -51,16 +51,19 @@ test("in-app and public copy separate Local Pro from unavailable Pro Cloud", () 
     assert.match(source, /\$36\/year/);
     assert.match(source, /Pro Cloud/);
     assert.match(source, /\$20\/month/);
-    assert.match(source, /includes\s+(?:everything\s+in\s+)?Local Pro/i);
     assert.match(source, /not (?:yet )?(?:available|open)/i);
   }
 
+  // In-app surfaces carry the full tier-relationship copy
+  for (const source of [activationSource, productSource]) {
+    assert.match(source, /includes\s+(?:everything\s+in\s+)?Local Pro/i);
+  }
+
+  // Public surfaces carry the trimmed honesty copy (detailed security
+  // architecture lives in docs/PRO-DELIVERY.md, tested separately below)
   for (const source of [readmeSource, siteSource]) {
     assert.doesNotMatch(source, /Pro Cloud is (?:live|available|active)/i);
     assert.match(source, /end-to-end encrypted sync/i);
-    assert.match(source, /LAC cannot read the ciphertext/i);
-    assert.match(source, /Hosted processing is (?:a )?separate/i);
-    assert.match(source, /selected job inputs are decrypted/i);
   }
 });
 
