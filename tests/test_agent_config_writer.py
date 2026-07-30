@@ -1,4 +1,5 @@
 import json
+import sys
 from fnmatch import fnmatchcase
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from backend.agent_launch.config_writer import (
     build_opencode_config,
     write_agent_commands,
+    write_agent_plugin,
     write_opencode_config,
     write_opencode_config_file,
     write_stock_opencode_config,
@@ -175,11 +177,43 @@ def test_fail_closed_policy_is_not_shared_between_config_builds():
     assert second["permission"]["read"]["*.env"] == "deny"
 
 
-def test_write_agent_commands_emit_lac_shellouts(tmp_path):
-    paths = write_agent_commands(tmp_path)
+def test_write_agent_commands_emit_quoted_lac_shellouts(tmp_path):
+    prefix = [r"C:\Tools\LAC\lac.exe"]
+    paths = write_agent_commands(tmp_path, cli_prefix=prefix)
     names = {p.name for p in paths}
     assert names == {"scan.md", "recommend.md"}
     scan = (tmp_path / ".opencode" / "commands" / "scan.md").read_text(encoding="utf-8")
     rec = (tmp_path / ".opencode" / "commands" / "recommend.md").read_text(encoding="utf-8")
-    assert "!`lac scan`" in scan
-    assert "!`lac recommend --use-case agent`" in rec
+    assert '!`"C:\\Tools\\LAC\\lac.exe" scan`' in scan
+    assert '!`"C:\\Tools\\LAC\\lac.exe" recommend --use-case agent`' in rec
+
+
+def test_write_agent_commands_quote_paths_with_spaces(tmp_path):
+    prefix = [r"C:\Program Files\LAC\lac.exe"]
+    write_agent_commands(tmp_path, cli_prefix=prefix)
+    scan = (tmp_path / ".opencode" / "commands" / "scan.md").read_text(encoding="utf-8")
+    assert '"C:\\Program Files\\LAC\\lac.exe" scan' in scan
+
+
+def test_write_agent_commands_default_prefix_resolves_this_lac(tmp_path):
+    write_agent_commands(tmp_path)
+    scan = (tmp_path / ".opencode" / "commands" / "scan.md").read_text(encoding="utf-8")
+    assert f'"{sys.executable}"' in scan
+    assert "cli.py" in scan
+
+
+def test_write_agent_plugin_embeds_resolved_cli_prefix(tmp_path):
+    prefix = [r"C:\Program Files\LAC\lac.exe"]
+    out = write_agent_plugin(tmp_path, cli_prefix=prefix)
+    ts = out.read_text(encoding="utf-8")
+    assert f"const LAC_CLI: string[] = {json.dumps(prefix)}" in ts
+    assert 'lacCommand("scan")' in ts
+    assert 'lacCommand("recommend --use-case agent")' in ts
+    assert "execSync" in ts
+
+
+def test_write_agent_plugin_default_prefix_resolves_this_lac(tmp_path):
+    out = write_agent_plugin(tmp_path)
+    ts = out.read_text(encoding="utf-8")
+    assert "const LAC_CLI: string[] = " in ts
+    assert json.dumps(sys.executable) in ts

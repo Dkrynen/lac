@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from backend import self_invoke
 from backend.agent_eval.schedule import GenerationSettings
 
 
@@ -49,7 +50,7 @@ _SCAN_MD = """\
 description: Scan this machine's hardware (LAC)
 ---
 Here is the current hardware scan:
-!`lac scan`
+!`{lac} scan`
 """
 
 _RECOMMEND_MD = """\
@@ -57,7 +58,7 @@ _RECOMMEND_MD = """\
 description: Recommend the best agent-capable local model for this machine (LAC)
 ---
 Here are LAC's agent-capable model recommendations for this machine:
-!`lac recommend --use-case agent`
+!`{lac} recommend --use-case agent`
 """
 
 _TUNE_MD = """\
@@ -65,12 +66,18 @@ _TUNE_MD = """\
 description: Tune a model for this machine (LAC Pro)
 ---
 Tuning the model for this machine:
-!`lac pro tune --apply $ARGUMENTS`
+!`{lac} pro tune --apply $ARGUMENTS`
 """
 
 _LAC_PLUGIN_TS = """\
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { execSync } from "child_process"
+
+const LAC_CLI: string[] = {lac_cli_json}
+
+function lacCommand(args: string): string {
+  return LAC_CLI.map((part) => '"' + part + '"').join(" ") + " " + args
+}
 
 export const LacPlugin: Plugin = async (ctx) => {
   return {
@@ -80,7 +87,7 @@ export const LacPlugin: Plugin = async (ctx) => {
         args: {},
         async execute(args, context) {
           try {
-            return execSync("lac scan", { encoding: "utf-8", cwd: context.directory })
+            return execSync(lacCommand("scan"), { encoding: "utf-8", cwd: context.directory })
           } catch (e) {
             return `LAC scan failed: ${e}`
           }
@@ -91,7 +98,7 @@ export const LacPlugin: Plugin = async (ctx) => {
         args: {},
         async execute(args, context) {
           try {
-            return execSync("lac recommend --use-case agent", { encoding: "utf-8", cwd: context.directory })
+            return execSync(lacCommand("recommend --use-case agent"), { encoding: "utf-8", cwd: context.directory })
           } catch (e) {
             return `LAC recommend failed: ${e}`
           }
@@ -101,6 +108,16 @@ export const LacPlugin: Plugin = async (ctx) => {
   }
 }
 """
+
+
+def _resolve_cli_prefix(cli_prefix) -> list[str]:
+    if cli_prefix is None:
+        return list(self_invoke.cli_prefix())
+    return list(cli_prefix)
+
+
+def _quoted_cli(cli_prefix) -> str:
+    return " ".join('"' + part + '"' for part in _resolve_cli_prefix(cli_prefix))
 
 
 def write_opencode_config(project_dir, model: str, ollama_host: str) -> Path:
@@ -236,13 +253,17 @@ def _write_config(project_dir, cfg: dict) -> Path:
     return out
 
 
-def write_agent_commands(project_dir, pro_available: bool = False) -> list[Path]:
+def write_agent_commands(project_dir, pro_available: bool = False, cli_prefix=None) -> list[Path]:
     cmd_dir = Path(project_dir) / ".opencode" / "commands"
     cmd_dir.mkdir(parents=True, exist_ok=True)
-    written = []
-    commands = [("scan.md", _SCAN_MD), ("recommend.md", _RECOMMEND_MD)]
+    lac = _quoted_cli(cli_prefix)
+    commands = [
+        ("scan.md", _SCAN_MD.format(lac=lac)),
+        ("recommend.md", _RECOMMEND_MD.format(lac=lac)),
+    ]
     if pro_available:
-        commands.append(("tune.md", _TUNE_MD))
+        commands.append(("tune.md", _TUNE_MD.format(lac=lac)))
+    written = []
     for name, body in commands:
         p = cmd_dir / name
         p.write_text(body, encoding="utf-8")
@@ -250,9 +271,12 @@ def write_agent_commands(project_dir, pro_available: bool = False) -> list[Path]
     return written
 
 
-def write_agent_plugin(project_dir) -> Path:
+def write_agent_plugin(project_dir, cli_prefix=None) -> Path:
     plugins_dir = Path(project_dir) / ".opencode" / "plugins"
     plugins_dir.mkdir(parents=True, exist_ok=True)
     out = plugins_dir / "lac.ts"
-    out.write_text(_LAC_PLUGIN_TS, encoding="utf-8")
+    body = _LAC_PLUGIN_TS.replace(
+        "{lac_cli_json}", json.dumps(_resolve_cli_prefix(cli_prefix))
+    )
+    out.write_text(body, encoding="utf-8")
     return out

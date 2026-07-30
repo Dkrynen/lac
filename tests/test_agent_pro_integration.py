@@ -79,11 +79,12 @@ def test_pro_variant_fn_falls_back_to_agent_variant_when_none(tmp_path):
 
 
 def test_write_agent_commands_includes_tune_when_pro_available(tmp_path):
-    paths = write_agent_commands(tmp_path, pro_available=True)
+    prefix = [r"C:\Tools\LAC\lac.exe"]
+    paths = write_agent_commands(tmp_path, pro_available=True, cli_prefix=prefix)
     names = {p.name for p in paths}
     assert "tune.md" in names
     tune = (tmp_path / ".opencode" / "commands" / "tune.md").read_text(encoding="utf-8")
-    assert "lac pro tune --apply" in tune
+    assert '!`"C:\\Tools\\LAC\\lac.exe" pro tune --apply $ARGUMENTS`' in tune
 
 
 def test_write_agent_commands_excludes_tune_when_pro_unavailable(tmp_path):
