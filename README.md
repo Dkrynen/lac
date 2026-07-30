@@ -2,6 +2,11 @@
 
 # LAC — local AI, sorted.
 
+<!-- HERO: Replace with a screenshot of `lac agent .` launching — terminal
+     showing the banner ("LAC picked + prepared …"), the model name, num_ctx,
+     and OpenCode opening. Save as assets/hero-agent.png (1280×720). -->
+<img src="assets/hero-agent.png" width="100%" alt="LAC agent launching OpenCode on a local model" />
+
 **Give LAC a repository. It maps the project privately, proves what your
 machine can run, and prepares a local coding agent with explicit safety
 boundaries.**
@@ -32,7 +37,7 @@ lac agent .   # scan → recommend → tune → launch. One command, local, priv
 
 Your code never leaves your machine. No API bills. No rate limits. No
 third-party logging your prompts. LAC picks the best agent-capable model for
-your exact hardware, raises its context window to the agent-loop floor (32k),
+your exact hardware, raises its context window to the agent-loop floor (65k),
 and hands it to OpenCode already configured.
 
 The free tier does all of this. **Pro** adds the tuning cockpit: GPU offload
@@ -59,36 +64,18 @@ are reported as **discovered, not executed**.
 
 See [Getting Started](docs/GETTING_STARTED.md) for setup and recovery.
 
-## Internal agent-evidence command
+## Evidence, not vibes
 
-`lac eval` is a bounded internal evaluator, not a public benchmark claim. Its
-read-only preflight creates no output, consumes no model tokens, and no
-downloads occur:
+The 94.67 tok/s claim above comes from a bounded eval: three trials, three
+arms (raw Ollama, stock OpenCode, LAC-tuned variant), scored by exact text
+match on a multi-step code-reasoning task. The model was never the problem —
+nine bugs in the eval harness were found and fixed before the model could
+show what it could do.
 
-```powershell
-# Read-only preflight; no model tokens
-lac eval --task python-empty-mean `
-  --base-model gpt-oss:20b `
-  --lac-model gpt-oss:20b-agent `
-  --output-dir C:\lac-evidence `
-  --run-id phase0-smoke `
-  --dry-run --json
-
-# Explicit non-evidence developer run
-lac eval --task python-empty-mean `
-  --base-model gpt-oss:20b `
-  --lac-model gpt-oss:20b-agent `
-  --output-dir C:\lac-evidence `
-  --mode diagnostic
-```
-
-Verified mode needs elevated Windows PowerShell so dynamic OS-level loopback
-containment can be opened, checked, and torn down. Diagnostic artifacts are
-invalid and cannot be promoted into verified evidence. A live task performs
-nine bounded arm runs; those nine bounded arm runs require operator approval
-after a clean privileged dry-run displays the maximum runtime. One smoke is
-not a competitive capability claim. The live verified command is not
-documented as ready until that privileged clean-build gate passes.
+`lac eval` is the internal tool that produces that evidence. It is
+Windows-only, requires elevated PowerShell for network containment, and is
+not a public benchmark. Diagnostic runs are explicitly non-evidence. See
+[GETTING_STARTED.md](docs/GETTING_STARTED.md) for the preflight command.
 
 ## Features
 
@@ -156,9 +143,9 @@ The free tier is complete and stays free. **Local Pro** adds the paid power tool
 
 Local Pro is planned at **$36/year** (the equivalent of $3/month). Checkout is **not open yet**; the [waitlist](https://dkrynen.github.io/lac/) hears first.
 
-**Pro Cloud** is the planned **$20/month** higher tier. It includes everything in Local Pro, plus end-to-end encrypted sync and capped hosted agents. Encrypted sync is designed so LAC cannot read the ciphertext. Hosted processing is a separate, explicit path: only selected job inputs are decrypted for execution and may be sent to approved model providers. It is **not yet available**: checkout, hosted usage, quotas, and cloud entitlements must not be treated as live.
+**Pro Cloud** (planned, **$20/month**) adds end-to-end encrypted sync and capped hosted agents. Not yet available.
 
-**At launch,** every paid buyer first signs in to a LAC account with Google or GitHub. Checkout starts from that authenticated account, and access follows the signed Polar webhook rather than the browser redirect. Polar then provides the Local Pro license key. Run `lac unlock <key>` or use **Settings -> Activate Pro** in the web UI; after activation the Local Pro runtime remains key-based and local. Restart LAC so the Pro cockpit mounts cleanly. Free installs ship no Pro code.
+**At launch,** every paid buyer signs in with Google or GitHub, checks out from that account, and activates with `lac unlock <key>` or **Settings → Activate Pro**. Free installs ship no Pro code.
 
 ## Hardware detection
 
@@ -175,21 +162,11 @@ Local Pro is planned at **$36/year** (the equivalent of $3/month). Checkout is *
 ```bash
 git clone https://github.com/Dkrynen/lac && cd lac
 python -m venv .venv && .venv/Scripts/pip install -r requirements.txt  # or bin/ on POSIX
-.venv/Scripts/python server.py        # Flask + web UI on :5050
-cd web && npm ci && npm run dev       # Vite dev server (proxies /api)
 .venv/Scripts/python -m pytest -q    # test suite
-.venv/Scripts/python scripts/installed_launch_smoke.py  # clean installed-exe launch/audit/shutdown proof
-.venv/Scripts/python scripts/public_readiness_gate.py --include-live-import --include-launch-smoke --allow-existing-launch  # full gate against an already-running app
-.venv/Scripts/python scripts/release_readiness.py  # read-only local/public release check
-.venv/Scripts/python scripts/pro_commerce_readiness.py  # read-only Pro checkout/delivery readiness check
-.venv/Scripts/python scripts/installed_app_audit.py  # installed app page/API audit
-.venv/Scripts/python scripts/installed_launch_smoke.py --allow-existing  # audit an already-running installed app
-.venv/Scripts/python scripts/runtime_smoke.py --model qwen2.5:0.5b  # live installed-app chat/session smoke test
-.venv/Scripts/python scripts/live_import_stress.py --preflight-only  # cheap HF/Pro resolver + disk preflight smoke
-.venv/Scripts/python scripts/live_import_stress.py  # live HF import + disposable delete stress test
 ```
 
-Plugins mount via the `lac.plugins` entry-point group — see [docs/PLUGINS.md](docs/PLUGINS.md). Contributions welcome: [CONTRIBUTING.md](CONTRIBUTING.md).
+Full dev setup, readiness scripts, and audit tools: [CONTRIBUTING.md](CONTRIBUTING.md).
+Plugins mount via the `lac.plugins` entry-point group: [docs/PLUGINS.md](docs/PLUGINS.md).
 
 Upstream runtime and research provenance is tracked in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the machine-readable

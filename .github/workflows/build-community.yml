@@ -1,0 +1,214 @@
+name: Community Windows Build (Unsigned)
+
+# Produces an unsigned Windows installer for the free/open-core tier.
+# No Authenticode signing, no Pro commerce gates, no Polar smoke.
+# The full signed pipeline (build.yml) activates automatically once the
+# production-release environment secrets are configured.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact release tag (for example v2.7.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: community-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.version }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Resolve and verify the release version
+        id: release_version
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.version }}"
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Version must be an exact vX.Y.Z tag; got '$tag'"
+          }
+          $tagCommit = git rev-parse --verify "refs/tags/$tag^{commit}" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tag $tag does not exist in this repository."
+          }
+          git checkout --detach $tagCommit
+          python scripts/verify_release_version.py --expected $tag
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
+
+      - name: Build web app
+        working-directory: web
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build
+          npm run check:bundle
+          npm sbom --sbom-format cyclonedx > dist/web-sbom.json
+
+      - name: Audit and install Python dependencies
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          python -m pip install --disable-pip-version-check "uv==0.11.28"
+          uv pip install --system --require-hashes -r requirements-release.lock
+          python -m pip_audit -r requirements-release.lock
+          python -m cyclonedx_py environment --output-file dist/python-sbom.json
+
+      - name: Run the complete source and secret gates
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python -m pytest -m "not live" -p no:cacheprovider -q
+          $tracked = @(git ls-files)
+          & detect-secrets-hook --baseline .secrets.baseline @tracked
+          if ($LASTEXITCODE -ne 0) { throw "Tracked secret scan failed" }
+
+      - name: Build application
+        run: pyinstaller -y build.spec
+
+      - name: Build installer with Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --version=6.7.3 -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
+
+      - name: Generate checksums and provenance
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release_version.outputs.version }}"
+          $installer = "dist\LAC-Setup-$version.exe"
+          $installerItem = Get-Item $installer
+          $applicationItem = Get-Item "dist\lac\lac.exe"
+          $pythonSbomItem = Get-Item "dist\python-sbom.json"
+          $webSbomItem = Get-Item "web\dist\web-sbom.json"
+          $installerHash = (Get-FileHash -Algorithm SHA256 $installerItem.FullName).Hash.ToLowerInvariant()
+          $applicationHash = (Get-FileHash -Algorithm SHA256 $applicationItem.FullName).Hash.ToLowerInvariant()
+          $pythonSbomHash = (Get-FileHash -Algorithm SHA256 $pythonSbomItem.FullName).Hash.ToLowerInvariant()
+          $webSbomHash = (Get-FileHash -Algorithm SHA256 $webSbomItem.FullName).Hash.ToLowerInvariant()
+          $dependencyLockHash = (Get-FileHash -Algorithm SHA256 requirements-release.lock).Hash.ToLowerInvariant()
+          "$installerHash  $($installerItem.Name)" | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+          Copy-Item -LiteralPath "web\dist\web-sbom.json" -Destination "dist\web-sbom.json"
+          $provenance = [ordered]@{
+            schema_version = 2
+            version = $version
+            tag = "${{ steps.release_version.outputs.tag }}"
+            source_commit = (git rev-parse HEAD)
+            built_at_utc = [DateTime]::UtcNow.ToString("o")
+            signed = $false
+            note = "Community build — unsigned. Authenticode signing activates when production-release secrets are configured."
+            dependency_lock_sha256 = $dependencyLockHash
+            python_version = (python --version 2>&1 | Out-String).Trim()
+            pyinstaller_version = (pyinstaller --version 2>&1 | Out-String).Trim()
+            installer = [ordered]@{
+              filename = $installerItem.Name
+              bytes = $installerItem.Length
+              sha256 = $installerHash
+            }
+            application = [ordered]@{
+              filename = $applicationItem.Name
+              bytes = $applicationItem.Length
+              sha256 = $applicationHash
+            }
+            python_sbom = [ordered]@{
+              filename = $pythonSbomItem.Name
+              bytes = $pythonSbomItem.Length
+              sha256 = $pythonSbomHash
+            }
+            web_sbom = [ordered]@{
+              filename = $webSbomItem.Name
+              bytes = $webSbomItem.Length
+              sha256 = $webSbomHash
+            }
+          }
+          $provenance | ConvertTo-Json -Depth 4 | Set-Content dist\release-provenance.json -Encoding utf8
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.release_version.outputs.version }}"
+          $tag = "${{ steps.release_version.outputs.tag }}"
+          $installer = "dist\LAC-Setup-$version.exe"
+          $notes = @"
+          ## LAC $tag — Local AI First
+
+          **Headline:** ``lac agent .`` — scan your hardware, pick the best agent-capable
+          local model, raise its context window to the agent-loop floor (65k), configure
+          OpenCode, and launch. One command. No cloud. No API key. No monthly bill.
+
+          ### What's new in $tag
+
+          - **Terminal agent** — ``lac agent .`` wraps stock OpenCode with LAC's hardware brain
+          - **Agent-capable recommender** — ``use_case=agent`` scores for tool-calling capability, not just size
+          - **65k context floor** — Ollama truncates at num_ctx/2; 65k buys ~32k usable prompt
+          - **Idempotent variant** — bakes a ``<model>-agent`` Ollama variant once, reuses it
+          - **Pro plugin seam** — ``lac pro tune --apply`` integrates via ``lac.plugins`` (Pro add-on)
+          - **OpenCode plugin** — ``lac.ts`` with ``lac_rescan`` + ``lac_retune`` model-callable tools
+          - **Eval infrastructure** — bounded Windows-only evaluator with WFP loopback containment
+          - **Pull cancel/retry** — resilient model downloads
+          - **First private win** — ``lac doctor .`` + ``lac inspect .`` readiness evidence
+
+          ### Install
+
+          ```powershell
+          # Download and run the installer (unsigned — Windows SmartScreen may warn)
+          # Then open a new terminal in your repo:
+          lac doctor .
+          lac agent .
+          ```
+
+          Or on any platform:
+          ```bash
+          pipx install git+https://github.com/Dkrynen/lac
+          ```
+
+          ### Verification
+
+          ```powershell
+          Get-FileHash -Algorithm SHA256 LAC-Setup-$version.exe
+          # Compare against SHA256SUMS.txt attached to this release
+          ```
+
+          ### Provenance
+
+          This is a community (unsigned) build. Authenticode code signing activates
+          automatically once the signing infrastructure is configured. The build is
+          reproducible from the exact tagged commit via ``workflow_dispatch``.
+
+          **Full Changelog**: https://github.com/Dkrynen/lac/compare/v2.6.4...$tag
+          "@
+          gh release create $tag `
+            --title "LAC $tag — Local AI First" `
+            --notes $notes `
+            --verify-tag `
+            $installer `
+            dist\SHA256SUMS.txt `
+            dist\release-provenance.json `
+            dist\python-sbom.json `
+            dist\web-sbom.json

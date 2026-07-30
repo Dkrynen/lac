@@ -20,6 +20,20 @@ cd web && npm ci && npm run dev         # Vite dev server (proxies /api)
 
 CI runs the suite on Windows, Ubuntu, and macOS plus the web gates — a PR that's green locally should be green there.
 
+## Readiness & audit scripts
+
+```bash
+.venv/Scripts/python scripts/installed_launch_smoke.py  # clean installed-exe launch/audit/shutdown proof
+.venv/Scripts/python scripts/public_readiness_gate.py --include-live-import --include-launch-smoke --allow-existing-launch  # full gate
+.venv/Scripts/python scripts/release_readiness.py  # read-only local/public release check
+.venv/Scripts/python scripts/pro_commerce_readiness.py  # read-only Pro checkout/delivery readiness check
+.venv/Scripts/python scripts/installed_app_audit.py  # installed app page/API audit
+.venv/Scripts/python scripts/installed_launch_smoke.py --allow-existing  # audit an already-running installed app
+.venv/Scripts/python scripts/runtime_smoke.py --model qwen2.5:0.5b  # live installed-app chat/session smoke test
+.venv/Scripts/python scripts/live_import_stress.py --preflight-only  # cheap HF/Pro resolver + disk preflight smoke
+.venv/Scripts/python scripts/live_import_stress.py  # live HF import + disposable delete stress test
+```
+
 ## Plugins
 
 LAC is open-core: plugins mount through the `lac.plugins` entry-point group

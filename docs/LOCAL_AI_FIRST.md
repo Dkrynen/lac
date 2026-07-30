@@ -40,11 +40,13 @@ them?"
 
 It was never the model. It was everything around it.
 
-**Context window.** The agent loop needs at least 32k tokens of context to
-hold the system prompt, tool definitions, and conversation history. Point a
-stock local model at OpenCode with its default 4k context and the tool calls
-collapse. The model literally cannot hold the conversation. LAC raises the
-context window to the agent-loop floor before the agent ever starts.
+**Context window.** The agent loop needs a large context window to hold the
+system prompt, tool definitions, and conversation history. Point a stock local
+model at OpenCode with its default 4k context and the tool calls collapse. The
+model literally cannot hold the conversation. Ollama truncates the input prompt
+at roughly half of `num_ctx`, so a 32k window only buys ~16k of usable prompt
+— not enough for a single real file read. LAC raises the context window to
+65k (yielding ~32k of usable prompt) before the agent ever starts.
 
 **Model selection.** "Use the biggest model that fits" is not a strategy.
 Agent work requires tool-calling capability — a specific architectural
@@ -78,7 +80,7 @@ by hand.
 The free tier is complete and stays free:
 
 - Hardware scan (Windows, macOS, Linux)
-- Agent-capable model recommendation with 32k context floor
+- Agent-capable model recommendation with 65k context floor
 - Context-raised model variant (baked once, reused)
 - OpenCode configuration and launch
 - `/scan` and `/recommend` inside the agent session
