@@ -120,6 +120,43 @@ def test_unsupported_opencode_reports_exact_supported_version(tmp_path):
     assert "1.18.9" in check.remediation
 
 
+def test_unsupported_opencode_remediation_mentions_the_compat_range(tmp_path):
+    report = _run(
+        tmp_path,
+        opencode_probe_fn=lambda: (_ for _ in ()).throw(
+            RuntimeError("OpenCode 1.19.0 is installed")
+        ),
+    )
+
+    check = _check(report, "opencode")
+    assert "1.18.x" in check.remediation
+
+
+def test_opencode_check_reports_installed_newer_version(tmp_path, monkeypatch):
+    import backend.first_win.doctor as doctor_mod
+
+    monkeypatch.setattr(doctor_mod, "_probe_version", lambda binary: "1.18.10")
+
+    report = _run(tmp_path)
+
+    check = _check(report, "opencode")
+    assert check.status == "pass"
+    assert "1.18.10" in check.summary
+    assert "verified: 1.18.9" in check.summary
+    assert check.evidence["installed_version"] == "1.18.10"
+
+
+def test_opencode_check_exact_verified_message(tmp_path, monkeypatch):
+    import backend.first_win.doctor as doctor_mod
+
+    monkeypatch.setattr(doctor_mod, "_probe_version", lambda binary: "1.18.9")
+
+    report = _run(tmp_path)
+
+    check = _check(report, "opencode")
+    assert check.summary == "Supported OpenCode 1.18.9 is available."
+
+
 def test_unverified_integrated_memory_is_disclosed_as_excluded(tmp_path):
     report = _run(
         tmp_path,
