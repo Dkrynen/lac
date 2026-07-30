@@ -253,8 +253,8 @@ def _write_config(project_dir, cfg: dict) -> Path:
     return out
 
 
-def write_agent_commands(project_dir, pro_available: bool = False, cli_prefix=None) -> list[Path]:
-    cmd_dir = Path(project_dir) / ".opencode" / "commands"
+def write_commands_into(cmd_dir, pro_available: bool = False, cli_prefix=None) -> list[Path]:
+    cmd_dir = Path(cmd_dir)
     cmd_dir.mkdir(parents=True, exist_ok=True)
     lac = _quoted_cli(cli_prefix)
     commands = [
@@ -271,8 +271,8 @@ def write_agent_commands(project_dir, pro_available: bool = False, cli_prefix=No
     return written
 
 
-def write_agent_plugin(project_dir, cli_prefix=None) -> Path:
-    plugins_dir = Path(project_dir) / ".opencode" / "plugins"
+def write_plugin_into(plugins_dir, cli_prefix=None) -> Path:
+    plugins_dir = Path(plugins_dir)
     plugins_dir.mkdir(parents=True, exist_ok=True)
     out = plugins_dir / "lac.ts"
     body = _LAC_PLUGIN_TS.replace(
@@ -280,3 +280,13 @@ def write_agent_plugin(project_dir, cli_prefix=None) -> Path:
     )
     out.write_text(body, encoding="utf-8")
     return out
+
+
+def write_agent_commands(project_dir, pro_available: bool = False, cli_prefix=None) -> list[Path]:
+    return write_commands_into(
+        Path(project_dir) / ".opencode" / "commands", pro_available, cli_prefix
+    )
+
+
+def write_agent_plugin(project_dir, cli_prefix=None) -> Path:
+    return write_plugin_into(Path(project_dir) / ".opencode" / "plugins", cli_prefix)
