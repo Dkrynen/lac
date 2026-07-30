@@ -1356,6 +1356,7 @@ def build_parser(*, include_plugins=True):
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_core_host_argument(parser)
+    parser.add_argument("--version", action="version", version=f"lac {__version__}")
 
     sub = parser.add_subparsers(dest="command")
 
