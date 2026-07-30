@@ -81,7 +81,8 @@ def probe_artifacts() -> bool:
                 surface_contract.validate_command_file(path.read_text(encoding="utf-8"))
             plugin = write_agent_plugin(td, cli_prefix=PROBE_PREFIX)
             surface_contract.validate_plugin_source(plugin.read_text(encoding="utf-8"))
-            for path in write_agent_profiles(td, PROBE_MODEL):
+            profiles = write_agent_profiles(td, PROBE_MODEL)
+            for path in profiles["written"]:
                 surface_contract.validate_agent_profile(path.read_text(encoding="utf-8"))
     except surface_contract.SurfaceViolation as exc:
         return record("artifacts", False, str(exc))

@@ -2,6 +2,7 @@
 pointed at the LAC-chosen model, plus LAC hardware slash-commands. Written into the
 project's `.opencode/` dir. We never edit OpenCode itself -- only its config."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -338,22 +339,58 @@ what is risky, and the smallest concrete fix for each issue.
 """
 
 
-def write_agent_profiles_into(agents_dir, model) -> list[Path]:
+_PROFILES_MANIFEST = ".lac-profiles.json"
+
+
+def _profile_digest(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _read_profiles_manifest(agents_dir: Path) -> dict:
+    try:
+        data = json.loads(
+            (agents_dir / _PROFILES_MANIFEST).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_agent_profiles_into(agents_dir, model) -> dict:
+    """Write LAC's agent profiles, never clobbering user edits.
+
+    A sidecar manifest records the hash of every profile LAC wrote. A
+    profile whose on-disk content still matches the manifest is
+    LAC-managed and gets refreshed (model updates propagate); anything
+    else is treated as user-edited and preserved untouched.
+    """
     agents_dir = Path(agents_dir)
     agents_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _read_profiles_manifest(agents_dir)
     profiles = [
         ("lac-local.md", _LAC_LOCAL_AGENT_MD.format(model=model)),
         ("lac-review.md", _LAC_REVIEW_AGENT_MD.format(model=model)),
     ]
-    written = []
+    written: list[Path] = []
+    preserved: list[Path] = []
     for name, body in profiles:
-        p = agents_dir / name
-        p.write_text(body, encoding="utf-8")
-        written.append(p)
-    return written
+        path = agents_dir / name
+        if path.exists():
+            current = path.read_text(encoding="utf-8")
+            lac_managed = manifest.get(name) == _profile_digest(current)
+            if current != body and not lac_managed:
+                preserved.append(path)
+                continue
+        path.write_text(body, encoding="utf-8")
+        manifest[name] = _profile_digest(body)
+        written.append(path)
+    (agents_dir / _PROFILES_MANIFEST).write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+    return {"written": written, "preserved": preserved}
 
 
-def write_agent_profiles(project_dir, model) -> list[Path]:
+def write_agent_profiles(project_dir, model) -> dict:
     return write_agent_profiles_into(
         Path(project_dir) / ".opencode" / "agents", model
     )
