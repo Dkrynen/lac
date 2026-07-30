@@ -61,6 +61,7 @@ def launch_agent(project_dir, *,
                  config_fn=_default_config,
                  launch_fn=_default_launch,
                  pro_variant_fn=None,
+                 context_override=None,
                  out=print) -> int:
     from backend.cookbook.recommend import (
         AGENT_MIN_CONTEXT, AGENT_PROMPT_BUDGET_FRACTION,
@@ -96,7 +97,13 @@ def launch_agent(project_dir, *,
         return 1
 
     base = rec.model.id
-    num_ctx = max(int(rec.context_used), AGENT_MIN_CONTEXT)
+    if context_override is not None:
+        num_ctx = max(int(context_override), AGENT_MIN_CONTEXT)
+        if int(context_override) < AGENT_MIN_CONTEXT:
+            out("  [!] --context %s is below the agent-loop floor; using %s."
+                % (context_override, AGENT_MIN_CONTEXT))
+    else:
+        num_ctx = max(int(rec.context_used), AGENT_MIN_CONTEXT)
 
     # Rank-0 is the best fit for the box; if it isn't installed, say so rather than
     # quietly running something worse.

@@ -963,7 +963,7 @@ def cmd_agent(args):
     plugins = discover()
     pro_variant_fn = lambda model, list_names: get_agent_pro_variant(plugins, model, list_names)
     try:
-        rc = launch_agent(Path(args.dir), pro_variant_fn=pro_variant_fn)
+        rc = launch_agent(Path(args.dir), pro_variant_fn=pro_variant_fn, context_override=args.context)
     except (
         OpenCodeNotFound,
         OpenCodeUnsupportedVersion,
@@ -1432,6 +1432,7 @@ def build_parser(*, include_plugins=True):
 
     p_agent = sub.add_parser("agent", help="Launch the LAC local-model coding agent (OpenCode + hardware brain)")
     p_agent.add_argument("dir", nargs="?", default=".", help="Project directory (default: current)")
+    p_agent.add_argument("--context", type=int, default=None, help="Override the agent context window in tokens (floored at the agent-loop minimum)")
 
     p_setup = sub.add_parser("setup", help="Provision OpenCode globally for local agents (provider, permissions, commands, plugin)")
     p_setup.add_argument("--undo", action="store_true", help="Restore the OpenCode config from the LAC backup")
