@@ -24,6 +24,8 @@ class ModelEntry:
     active_params_b: Optional[float] = None
     sub4bit: bool = False
     new: bool = False
+    distill_of: Optional[str] = None
+    family: Optional[str] = None
 
 
 @dataclass

@@ -695,3 +695,19 @@ def test_register_custom_model_dedupes_on_reimport(tmp_path, monkeypatch):
 
     raw = json.loads(custom_path.read_text())
     assert len(raw) == 1
+
+
+def test_catalog_lineage_fields_present():
+    ids = {m.id: m for m in load_models()}
+    # Curated, verifiable distill relationships (DeepSeek-R1 distills).
+    assert ids["deepseek-r1:7b"].distill_of == "qwen2.5:7b"
+    assert ids["deepseek-r1:8b"].distill_of == "llama3.1:8b"
+    assert ids["deepseek-r1:14b"].distill_of == "qwen2.5:14b"
+    assert ids["deepseek-r1:32b"].distill_of == "qwen2.5:32b"
+    assert ids["deepseek-r1:70b"].distill_of == "llama3.3:70b"
+    # Family grouping (not a strict distill).
+    assert ids["gpt-oss:20b"].family == "gpt-oss"
+    assert ids["gpt-oss:120b"].family == "gpt-oss"
+    # A model with no lineage defaults to None.
+    assert ids["qwen3.6:27b"].distill_of is None
+    assert ids["qwen3.6:27b"].family is None
