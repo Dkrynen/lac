@@ -138,3 +138,24 @@ def test_launch_mentions_a_better_model_the_user_could_pull(tmp_path):
 
     text = "\n".join(printed)
     assert "qwen3:30b-a3b" in text, "should surface the better option it did not use"
+
+
+def test_launch_context_override_sets_num_ctx(tmp_path):
+    events = {}
+    kwargs = _base_kwargs(events, tmp_path, [_rec("qwen3:8b", 65536)])
+    rc = launch_agent(tmp_path, context_override=98304, **kwargs)
+    assert rc == 0
+    assert events["ensure"] == ("qwen3:8b", 98304)
+
+
+def test_launch_context_override_clamps_to_the_agent_floor(tmp_path):
+    from backend.cookbook.recommend import AGENT_MIN_CONTEXT
+    events = {}
+    printed = []
+    kwargs = _base_kwargs(events, tmp_path, [_rec("qwen3:8b", 65536)])
+    kwargs["out"] = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+    launch_agent(tmp_path, context_override=100, **kwargs)
+
+    assert events["ensure"][1] == AGENT_MIN_CONTEXT
+    assert "floor" in "\n".join(printed)

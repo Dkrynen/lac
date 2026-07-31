@@ -2,6 +2,9 @@
 
 # LAC — local AI, sorted.
 
+![tests](https://github.com/Dkrynen/lac/actions/workflows/test.yml/badge.svg)
+![opencode compat](https://github.com/Dkrynen/lac/actions/workflows/opencode-compat.yml/badge.svg)
+
 <!-- HERO: Replace with a screenshot of `lac agent .` launching — terminal
      showing the banner ("LAC picked + prepared …"), the model name, num_ctx,
      and OpenCode opening. Save as assets/hero-agent.png (1280×720). -->

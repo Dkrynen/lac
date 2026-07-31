@@ -20,6 +20,10 @@ def test_is_cli_invocation_routes_top_level_help_to_cli():
     assert server._is_cli_invocation(["-h"]) is True
 
 
+def test_is_cli_invocation_routes_version_to_cli():
+    assert server._is_cli_invocation(["--version"]) is True
+
+
 def test_is_cli_invocation_false_for_server_flags_and_empty():
     assert server._is_cli_invocation([]) is False
     assert server._is_cli_invocation(["--window"]) is False
@@ -55,3 +59,15 @@ def test_main_delegates_global_host_eval_to_cli(monkeypatch):
     with __import__("pytest").raises(SystemExit):
         server.main()
     assert called.get("ran") is True
+
+
+def test_version_flag_prints_version_and_exits_cleanly(capsys):
+    import pytest
+    import cli
+    from backend.version import __version__
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+
+    assert exc.value.code == 0
+    assert __version__ in capsys.readouterr().out

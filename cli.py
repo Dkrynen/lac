@@ -963,7 +963,7 @@ def cmd_agent(args):
     plugins = discover()
     pro_variant_fn = lambda model, list_names: get_agent_pro_variant(plugins, model, list_names)
     try:
-        rc = launch_agent(Path(args.dir), pro_variant_fn=pro_variant_fn)
+        rc = launch_agent(Path(args.dir), pro_variant_fn=pro_variant_fn, context_override=args.context)
     except (
         OpenCodeNotFound,
         OpenCodeUnsupportedVersion,
@@ -972,6 +972,74 @@ def cmd_agent(args):
         eprint(f"{C['yellow']}{e}{C['reset']}")
         sys.exit(1)
     sys.exit(rc)
+
+
+def cmd_setup(args):
+    script_dir = Path(__file__).parent
+    sys.path.insert(0, str(script_dir))
+    from backend.agent_launch.global_setup import (
+        undo_global_opencode_setup,
+        write_global_opencode_config,
+    )
+
+    if getattr(args, "undo", False):
+        try:
+            target = undo_global_opencode_setup()
+        except FileNotFoundError as e:
+            eprint(f"{C['yellow']}{e}{C['reset']}")
+            sys.exit(1)
+        print(f"Restored {target} from the LAC backup.")
+        return 0
+
+    from backend.agent_launch.launcher import _installed_names
+    from backend.agent_launch.variant import (
+        BaseModelNotInstalled,
+        ensure_agent_variant,
+        is_installed,
+    )
+    from backend.config import resolve_config
+    from backend.cookbook.hardware import detect
+    from backend.cookbook.recommend import AGENT_MIN_CONTEXT, recommend
+    from backend.plugins import discover
+    from backend.provider.registry import create_provider
+
+    host = resolve_config(None).ollama_host
+    recs = recommend(detect(), use_case="agent", top_k=100)
+    provider = create_provider("ollama")
+    installed = _installed_names(provider)
+    rec = next((r for r in recs if is_installed(r.model.id, installed)), None)
+    if rec is None:
+        if recs:
+            eprint(f"{C['yellow']}None of the agent-capable models for this machine are installed.{C['reset']}")
+            eprint(f"LAC's best fit is {recs[0].model.id}:")
+            eprint(f"    ollama pull {recs[0].model.id}")
+            eprint("Then re-run `lac setup`.")
+        else:
+            eprint(f"{C['yellow']}No agent-capable model fits this machine.{C['reset']}")
+        sys.exit(1)
+    try:
+        variant = ensure_agent_variant(
+            rec.model.id,
+            max(int(rec.context_used), AGENT_MIN_CONTEXT),
+            list_names=lambda: installed,
+            create=provider.create,
+        )
+    except BaseModelNotInstalled as e:
+        eprint(f"{C['yellow']}{e}{C['reset']}")
+        sys.exit(1)
+
+    plugins = discover()
+    pro_available = any(getattr(p, "name", None) == "pro" for p in plugins)
+    report = write_global_opencode_config(variant, host, pro_available=pro_available)
+    print(f"Global OpenCode provisioned: {report['config']}")
+    if report["backup"]:
+        print(f"  backup  : {report['backup']} (restore: `lac setup --undo`)")
+    if report["model_preserved"]:
+        print("  model   : kept your existing OpenCode default")
+    else:
+        print(f"  model   : {report['model']}")
+    print(f"  extras  : {len(report['commands'])} slash commands + lac.ts plugin")
+    return 0
 
 
 def cmd_eval(args):
@@ -1288,6 +1356,7 @@ def build_parser(*, include_plugins=True):
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_core_host_argument(parser)
+    parser.add_argument("--version", action="version", version=f"lac {__version__}")
 
     sub = parser.add_subparsers(dest="command")
 
@@ -1364,6 +1433,11 @@ def build_parser(*, include_plugins=True):
 
     p_agent = sub.add_parser("agent", help="Launch the LAC local-model coding agent (OpenCode + hardware brain)")
     p_agent.add_argument("dir", nargs="?", default=".", help="Project directory (default: current)")
+    p_agent.add_argument("--context", type=int, default=None, help="Override the agent context window in tokens (floored at the agent-loop minimum)")
+
+    p_setup = sub.add_parser("setup", help="Provision OpenCode globally for local agents (provider, permissions, commands, plugin)")
+    p_setup.add_argument("--undo", action="store_true", help="Restore the OpenCode config from the LAC backup")
+    p_setup.set_defaults(func=cmd_setup)
 
     p_eval = sub.add_parser(
         "eval",

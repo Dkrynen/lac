@@ -2,10 +2,12 @@
 pointed at the LAC-chosen model, plus LAC hardware slash-commands. Written into the
 project's `.opencode/` dir. We never edit OpenCode itself -- only its config."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from backend import self_invoke
 from backend.agent_eval.schedule import GenerationSettings
 
 
@@ -49,7 +51,7 @@ _SCAN_MD = """\
 description: Scan this machine's hardware (LAC)
 ---
 Here is the current hardware scan:
-!`lac scan`
+!`{lac} scan`
 """
 
 _RECOMMEND_MD = """\
@@ -57,7 +59,7 @@ _RECOMMEND_MD = """\
 description: Recommend the best agent-capable local model for this machine (LAC)
 ---
 Here are LAC's agent-capable model recommendations for this machine:
-!`lac recommend --use-case agent`
+!`{lac} recommend --use-case agent`
 """
 
 _TUNE_MD = """\
@@ -65,12 +67,18 @@ _TUNE_MD = """\
 description: Tune a model for this machine (LAC Pro)
 ---
 Tuning the model for this machine:
-!`lac pro tune --apply $ARGUMENTS`
+!`{lac} pro tune --apply $ARGUMENTS`
 """
 
 _LAC_PLUGIN_TS = """\
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { execSync } from "child_process"
+
+const LAC_CLI: string[] = {lac_cli_json}
+
+function lacCommand(args: string): string {
+  return LAC_CLI.map((part) => '"' + part + '"').join(" ") + " " + args
+}
 
 export const LacPlugin: Plugin = async (ctx) => {
   return {
@@ -80,7 +88,7 @@ export const LacPlugin: Plugin = async (ctx) => {
         args: {},
         async execute(args, context) {
           try {
-            return execSync("lac scan", { encoding: "utf-8", cwd: context.directory })
+            return execSync(lacCommand("scan"), { encoding: "utf-8", cwd: context.directory })
           } catch (e) {
             return `LAC scan failed: ${e}`
           }
@@ -91,7 +99,7 @@ export const LacPlugin: Plugin = async (ctx) => {
         args: {},
         async execute(args, context) {
           try {
-            return execSync("lac recommend --use-case agent", { encoding: "utf-8", cwd: context.directory })
+            return execSync(lacCommand("recommend --use-case agent"), { encoding: "utf-8", cwd: context.directory })
           } catch (e) {
             return `LAC recommend failed: ${e}`
           }
@@ -101,6 +109,16 @@ export const LacPlugin: Plugin = async (ctx) => {
   }
 }
 """
+
+
+def _resolve_cli_prefix(cli_prefix) -> list[str]:
+    if cli_prefix is None:
+        return list(self_invoke.cli_prefix())
+    return list(cli_prefix)
+
+
+def _quoted_cli(cli_prefix) -> str:
+    return " ".join('"' + part + '"' for part in _resolve_cli_prefix(cli_prefix))
 
 
 def write_opencode_config(project_dir, model: str, ollama_host: str) -> Path:
@@ -236,13 +254,17 @@ def _write_config(project_dir, cfg: dict) -> Path:
     return out
 
 
-def write_agent_commands(project_dir, pro_available: bool = False) -> list[Path]:
-    cmd_dir = Path(project_dir) / ".opencode" / "commands"
+def write_commands_into(cmd_dir, pro_available: bool = False, cli_prefix=None) -> list[Path]:
+    cmd_dir = Path(cmd_dir)
     cmd_dir.mkdir(parents=True, exist_ok=True)
-    written = []
-    commands = [("scan.md", _SCAN_MD), ("recommend.md", _RECOMMEND_MD)]
+    lac = _quoted_cli(cli_prefix)
+    commands = [
+        ("scan.md", _SCAN_MD.format(lac=lac)),
+        ("recommend.md", _RECOMMEND_MD.format(lac=lac)),
+    ]
     if pro_available:
-        commands.append(("tune.md", _TUNE_MD))
+        commands.append(("tune.md", _TUNE_MD.format(lac=lac)))
+    written = []
     for name, body in commands:
         p = cmd_dir / name
         p.write_text(body, encoding="utf-8")
@@ -250,9 +272,125 @@ def write_agent_commands(project_dir, pro_available: bool = False) -> list[Path]
     return written
 
 
-def write_agent_plugin(project_dir) -> Path:
-    plugins_dir = Path(project_dir) / ".opencode" / "plugins"
+def write_plugin_into(plugins_dir, cli_prefix=None) -> Path:
+    plugins_dir = Path(plugins_dir)
     plugins_dir.mkdir(parents=True, exist_ok=True)
     out = plugins_dir / "lac.ts"
-    out.write_text(_LAC_PLUGIN_TS, encoding="utf-8")
+    body = _LAC_PLUGIN_TS.replace(
+        "{lac_cli_json}", json.dumps(_resolve_cli_prefix(cli_prefix))
+    )
+    out.write_text(body, encoding="utf-8")
     return out
+
+
+def write_agent_commands(project_dir, pro_available: bool = False, cli_prefix=None) -> list[Path]:
+    return write_commands_into(
+        Path(project_dir) / ".opencode" / "commands", pro_available, cli_prefix
+    )
+
+
+def write_agent_plugin(project_dir, cli_prefix=None) -> Path:
+    return write_plugin_into(Path(project_dir) / ".opencode" / "plugins", cli_prefix)
+
+
+_LAC_LOCAL_AGENT_MD = """\
+---
+description: Local-model coding agent prepared by LAC for this machine
+mode: primary
+model: ollama/{model}
+temperature: 0.2
+steps: 20
+permission:
+  edit: ask
+  bash: ask
+  webfetch: ask
+  websearch: ask
+  external_directory: deny
+  task: deny
+color: success
+---
+You are a coding agent running entirely on this machine, on a local model
+prepared by LAC (hardware-scanned, context-raised, optionally tuned).
+
+Local models do targeted work well and long open-ended loops badly:
+- Keep changes small and targeted; one concern per edit.
+- Verify with tools (read the file, run the check) instead of guessing.
+- If a task grows past a few steps, stop and summarize progress and the
+  next steps.
+- Never claim work is done without a tool result that proves it.
+"""
+
+_LAC_REVIEW_AGENT_MD = """\
+---
+description: Read-only code and plan review on the local model (LAC)
+mode: subagent
+temperature: 0.1
+permission:
+  edit: deny
+  bash: deny
+  webfetch: deny
+  websearch: deny
+  external_directory: deny
+  task: deny
+---
+You review code and plans on this machine's local model. You cannot change
+files or run commands. Read what you need, then report: what is correct,
+what is risky, and the smallest concrete fix for each issue.
+"""
+
+
+_PROFILES_MANIFEST = ".lac-profiles.json"
+
+
+def _profile_digest(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _read_profiles_manifest(agents_dir: Path) -> dict:
+    try:
+        data = json.loads(
+            (agents_dir / _PROFILES_MANIFEST).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_agent_profiles_into(agents_dir, model) -> dict:
+    """Write LAC's agent profiles, never clobbering user edits.
+
+    A sidecar manifest records the hash of every profile LAC wrote. A
+    profile whose on-disk content still matches the manifest is
+    LAC-managed and gets refreshed (model updates propagate); anything
+    else is treated as user-edited and preserved untouched.
+    """
+    agents_dir = Path(agents_dir)
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _read_profiles_manifest(agents_dir)
+    profiles = [
+        ("lac-local.md", _LAC_LOCAL_AGENT_MD.format(model=model)),
+        ("lac-review.md", _LAC_REVIEW_AGENT_MD.format(model=model)),
+    ]
+    written: list[Path] = []
+    preserved: list[Path] = []
+    for name, body in profiles:
+        path = agents_dir / name
+        if path.exists():
+            current = path.read_text(encoding="utf-8")
+            lac_managed = manifest.get(name) == _profile_digest(current)
+            if current != body and not lac_managed:
+                preserved.append(path)
+                continue
+        path.write_text(body, encoding="utf-8")
+        manifest[name] = _profile_digest(body)
+        written.append(path)
+    (agents_dir / _PROFILES_MANIFEST).write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+    return {"written": written, "preserved": preserved}
+
+
+def write_agent_profiles(project_dir, model) -> dict:
+    return write_agent_profiles_into(
+        Path(project_dir) / ".opencode" / "agents", model
+    )

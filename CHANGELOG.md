@@ -2,12 +2,21 @@
 
 ## [Unreleased]
 
-- **Launch-gate release scopes** - `enterprise_launch_gate.py` now takes `--release-scope {local,cloud}` (default `cloud`). The `local` scope gates the signed installer release on 5 evidence gates plus the repository and installer lanes and passes with zero cloud evidence; the `cloud` scope keeps all 19 gates fail-closed. Evidence manifests are schema v3 and scope-bound (signatures cover the scope).
-- **2.7.0 release candidate** - Staged the two-tier Local Pro/Pro Cloud contracts, mandatory artifact integrity, hardened delivery gate, enterprise CI gates, and fail-closed Authenticode release workflow. This remains unreleased until the IP, signing, paid-platform, audit, beta, and external-review gates pass.
-- **Import preflight smoke** - Added a cheap `live_import_stress.py --preflight-only` mode and wired it into the public-readiness live lane so GGUF preflight, Pro resolver, and HF token route shape are checked before any slow import.
-- **Live import stress timing** - Raised the slow import stress defaults and public-readiness gate wiring to match the installed-app HF import/delete smoke timing observed on Windows.
-- **Strict release match** - `release_readiness.py --strict-public-match` now requires the latest public tag, installer size, and `SHA256SUMS.txt` entry to match the local app build.
-- **Public copy truth pass** - Tightened README/site Pro claims and the Pro delivery runbook so public-facing docs distinguish verified local automation from Duan-gated release/payment smoke.
+## 2.7.1 (2026-07-30)
+
+The agent release: LAC provisions OpenCode for local coding agents, end to end.
+
+- **Terminal agent** - `lac agent .` scans hardware, picks the best installed agent-capable model, bakes a context-raised variant, writes the project's OpenCode config (provider, fail-closed permissions, slash commands, plugin, agent profiles), and launches OpenCode.
+- **`lac setup`** - the same provisioning, machine-wide: merge-writes `~/.config/opencode` (never clobbers other providers, your default model, or your permission overrides), with a backup and `lac setup --undo`.
+- **Shipped agent profiles** - `lac-local` (primary, pinned to the prepared model, low temperature, step-capped) and `lac-review` (read-only subagent). LAC-managed profiles get model updates; anything you edit is never overwritten.
+- **`lac agent --context N`** - override the agent context window, floored at the agent-loop minimum with the usable ~N/2 prompt budget reported.
+- **OpenCode compatibility** - `lac agent` accepts any newer 1.18.x (the exact pin bricked it on every fresh install); the evidence pipeline stays exact-pinned. New `opencode-compat` workflow: pinned is a hard gate, latest is a weekly drift warning.
+- **PATH-independent commands/plugin** - generated slash commands and the `lac.ts` plugin embed the resolved LAC executable.
+- **`lac --version`** - clean version output, routed through the frozen exe too.
+- **Doctor truthfulness** - reports the installed OpenCode version against the verified one; remediation states the real 1.18.x policy.
+- **Web app** - the agent workbench is gone; chat is plain local-model chat (sessions, streaming, warm-first-message).
+- **Pro** - insights now names the fix on regression (`lac pro tune --apply <model>`), closing the tuning-as-a-service loop; cockpit audited (all routes wired). `lac-opencode` npm plugin scaffolded (publish pending).
+- **Release gates** - launch-gate release scopes (`local`/`cloud`), deterministic private artifact builds, signed offline entitlement receipts, import preflight smoke, strict public-release matching, public copy truth pass.
 
 ## 2.6.4 (2026-07-09)
 

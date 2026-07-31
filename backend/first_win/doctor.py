@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from backend.agent_launch.opencode_bin import (
     SUPPORTED_OPENCODE_VERSION,
+    _probe_version,
     resolve_opencode_binary,
 )
 from backend.agent_launch.variant import normalize_model_name
@@ -316,18 +317,31 @@ def run_doctor(
 
     try:
         binary = opencode_probe_fn()
+        try:
+            installed = _probe_version(binary)
+        except Exception:  # noqa: BLE001
+            installed = None
+        if installed is None or installed == SUPPORTED_OPENCODE_VERSION:
+            summary = f"Supported OpenCode {SUPPORTED_OPENCODE_VERSION} is available."
+        else:
+            summary = (
+                f"OpenCode {installed} is available "
+                f"(verified: {SUPPORTED_OPENCODE_VERSION})."
+            )
         checks.append(
             DoctorCheck(
                 "opencode",
                 "pass",
-                f"Supported OpenCode {SUPPORTED_OPENCODE_VERSION} is available.",
+                summary,
                 {
                     "path": str(binary),
                     "supported_version": SUPPORTED_OPENCODE_VERSION,
+                    "installed_version": installed,
                 },
             )
         )
     except Exception as exc:  # noqa: BLE001
+        compat_minor = SUPPORTED_OPENCODE_VERSION.rsplit(".", 1)[0]
         checks.append(
             DoctorCheck(
                 "opencode",
@@ -337,8 +351,8 @@ def run_doctor(
                     "error": _error(exc),
                     "supported_version": SUPPORTED_OPENCODE_VERSION,
                 },
-                f"Install OpenCode {SUPPORTED_OPENCODE_VERSION} and ensure "
-                "`opencode` is on PATH.",
+                f"Install OpenCode {SUPPORTED_OPENCODE_VERSION} (any newer "
+                f"{compat_minor}.x works) and ensure `opencode` is on PATH.",
             )
         )
 

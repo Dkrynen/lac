@@ -177,7 +177,7 @@ def test_agent_unsupported_opencode_exits_with_clean_remediation(
     )
 
     with pytest.raises(SystemExit) as exc:
-        cli.cmd_agent(SimpleNamespace(dir=str(tmp_path)))
+        cli.cmd_agent(SimpleNamespace(dir=str(tmp_path), context=None))
 
     assert exc.value.code == 1
     assert "use 1.18.9" in capsys.readouterr().err

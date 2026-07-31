@@ -1,8 +1,6 @@
 // Thin client for the LAC Flask API. In dev Vite proxies /api -> :5050;
 // in prod Flask serves the built bundle on the same origin.
 
-import { decodeProjectFileDetail, decodeProjectFilesResponse, normalizeProjectFilePath } from "./project-files.ts";
-
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -27,82 +25,6 @@ async function readErrorBody(res: Response): Promise<unknown> {
   } catch {
     return text;
   }
-}
-
-const SANDBOX_STATUS_KEYS = [
-  "available",
-  "backend",
-  "code",
-  "image",
-  "message",
-  "network",
-  "tasks",
-] as const;
-const SANDBOX_TASK_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
-const SANDBOX_LOCAL_IMAGE_ID_PATTERN = /^sha256:[0-9a-fA-F]{64}$/;
-const SANDBOX_PINNED_IMAGE_PATTERN = /^[A-Za-z0-9][^\s@]*@sha256:[0-9a-fA-F]{64}$/;
-
-function invalidSandboxStatus(): never {
-  throw new Error("Invalid agent sandbox status response");
-}
-
-function exactImageReference(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 512 && (
-    SANDBOX_LOCAL_IMAGE_ID_PATTERN.test(value) ||
-    SANDBOX_PINNED_IMAGE_PATTERN.test(value)
-  );
-}
-
-export function decodeAgentSandboxStatus(
-  value: unknown
-): import("./types").AgentSandboxStatus {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return invalidSandboxStatus();
-  }
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
-  const hasKnownKeys = keys.every((key) => (SANDBOX_STATUS_KEYS as readonly string[]).includes(key));
-  const hasRequiredKeys = ["available", "backend", "code", "message", "network", "tasks"]
-    .every((key) => Object.prototype.hasOwnProperty.call(record, key));
-  if (!hasKnownKeys || !hasRequiredKeys) return invalidSandboxStatus();
-
-  const tasks = record.tasks;
-  if (
-    record.backend !== "docker" ||
-    typeof record.available !== "boolean" ||
-    typeof record.code !== "string" ||
-    !/^[a-z][a-z0-9_]{0,63}$/.test(record.code) ||
-    typeof record.message !== "string" ||
-    record.message.trim().length === 0 ||
-    record.message.length > 4096 ||
-    record.network !== "none" ||
-    !Array.isArray(tasks) ||
-    tasks.length > 64 ||
-    !tasks.every((task) => typeof task === "string" && SANDBOX_TASK_NAME_PATTERN.test(task)) ||
-    new Set(tasks).size !== tasks.length
-  ) return invalidSandboxStatus();
-
-  const image = record.image;
-  if (image !== undefined && image !== null && !exactImageReference(image)) {
-    return invalidSandboxStatus();
-  }
-  if (record.available) {
-    if (record.code !== "ready" || tasks.length === 0 || !exactImageReference(image)) {
-      return invalidSandboxStatus();
-    }
-  } else if (record.code === "ready") {
-    return invalidSandboxStatus();
-  }
-
-  return {
-    backend: "docker",
-    available: record.available,
-    code: record.code,
-    message: record.message,
-    tasks: [...tasks],
-    ...(image === undefined ? {} : { image }),
-    network: "none",
-  };
 }
 
 export async function getJSON<T>(url: string, init: RequestInit = {}): Promise<T> {
@@ -324,62 +246,6 @@ export const api = {
 
   config: () => getJSON<import("./types").AptConfig>("/api/config"),
   saveConfig: (patch: Partial<import("./types").AptConfig>) => putJSON("/api/config", patch),
-  workspaces: () => getJSON<import("./types").WorkspaceInfo[]>("/api/workspaces"),
-  switchWorkspace: (workspace: string) => postJSON<{ success: boolean; workspace: string }>(
-    `/api/workspaces/${encodeURIComponent(workspace)}/switch`,
-    {}
-  ),
-  projects: (workspace: string) =>
-    getJSON<import("./types").ProjectInfo[]>(
-      `/api/workspaces/${encodeURIComponent(workspace)}/projects`
-    ),
-  registerProject: (workspace: string, body: import("./types").ProjectRegistrationInput) =>
-    postJSON<import("./types").ProjectInfo>(
-      `/api/workspaces/${encodeURIComponent(workspace)}/projects`,
-      body
-    ),
-  project: (projectId: string) =>
-    getJSON<import("./types").ProjectInfo>(`/api/projects/${encodeURIComponent(projectId)}`),
-  projectFiles: async (projectId: string, path = "", signal?: AbortSignal) => {
-    if (!/^[0-9a-f]{14}$/.test(projectId)) {
-      throw new Error("Invalid project identity");
-    }
-    const relativePath = normalizeProjectFilePath(path);
-    const query = new URLSearchParams();
-    if (relativePath) query.set("path", relativePath);
-    const suffix = query.toString();
-    const value = await getJSON<unknown>(
-      `/api/projects/${encodeURIComponent(projectId)}/files${suffix ? `?${suffix}` : ""}`,
-      { cache: "no-store", signal }
-    );
-    return decodeProjectFilesResponse(value, relativePath);
-  },
-  projectFile: async (projectId: string, path: string, signal?: AbortSignal) => {
-    if (!/^[0-9a-f]{14}$/.test(projectId)) {
-      throw new Error("Invalid project identity");
-    }
-    const relativePath = normalizeProjectFilePath(path, false);
-    const query = new URLSearchParams({ path: relativePath });
-    const value = await getJSON<unknown>(
-      `/api/projects/${encodeURIComponent(projectId)}/file?${query}`,
-      { cache: "no-store", signal }
-    );
-    return decodeProjectFileDetail(value, relativePath);
-  },
-  sessions: (params: { workspace?: string; projectId?: string; limit?: number } = {}) => {
-    const query = new URLSearchParams();
-    if (params.workspace) query.set("workspace", params.workspace);
-    if (params.projectId) query.set("project_id", params.projectId);
-    if (params.limit) query.set("limit", String(params.limit));
-    const suffix = query.toString();
-    return getJSON<import("./types").SessionSummary[]>(`/api/sessions${suffix ? `?${suffix}` : ""}`);
-  },
-  session: (id: string) => getJSON<import("./types").SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`),
-  createSession: (body: { name?: string; model?: string; system_prompt?: string; workspace?: string; project_id?: string }) =>
-    postJSON<{ id: string }>("/api/sessions", body),
-  saveSession: (id: string, body: { name?: string; model?: string; messages?: import("./types").SessionMessage[]; workspace?: string }) =>
-    putJSON<{ success: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, body),
-
   version: () => getJSON<import("./types").VersionInfo>("/api/system/version"),
   storage: () => getJSON<import("./types").StorageInfo>("/api/system/storage"),
   modelStoreDoctor: () => getJSON<import("./types").ModelStoreDoctor>("/api/system/model-store-doctor"),
@@ -403,69 +269,6 @@ export const api = {
   chat(model: string, messages: { role: string; content: string }[], signal?: AbortSignal) {
     return sse("/api/ollama/chat", { model, messages }, signal);
   },
-  /** Stream a Workbench agent run. Yields run/ask identity, deltas, tool events, done/error. */
-  agentChat(payload: import("./types").AgentChatPayload, signal?: AbortSignal) {
-    return sse("/api/agent/chat", payload, signal);
-  },
-  agentSandbox: async (projectId: string) =>
-    decodeAgentSandboxStatus(
-      await getJSON<unknown>(`/api/agent/sandbox?project_id=${encodeURIComponent(projectId)}`)
-    ),
-  answerApproval: (
-    runId: string,
-    approvalToken: string,
-    body: import("./types").AgentApprovalAnswerBody
-  ) =>
-    postJSON<import("./types").AgentApprovalAnswerResponse>(
-      `/api/agent/runs/${encodeURIComponent(runId)}/answer`,
-      { ...body, approval_token: approvalToken }
-    ),
-  cancelAgentRun: (runId: string, approvalToken: string) =>
-    postJSON<import("./types").AgentRunCancelResponse>(
-      `/api/agent/runs/${encodeURIComponent(runId)}/cancel`,
-      { approval_token: approvalToken }
-    ),
-  stagedChanges: (
-    sessionId: string,
-    filters: { runId?: string; status?: import("./types").StagedChangeStatus } = {}
-  ) => {
-    const query = new URLSearchParams();
-    if (filters.runId) query.set("run_id", filters.runId);
-    if (filters.status) query.set("status", filters.status);
-    const suffix = query.toString();
-    return getJSON<import("./types").StagedChangesResponse>(
-      `/api/agent/sessions/${encodeURIComponent(sessionId)}/changes${suffix ? `?${suffix}` : ""}`
-    );
-  },
-  stagedChange: (changeId: string) =>
-    getJSON<import("./types").StagedChangeDetail>(
-      `/api/agent/changes/${encodeURIComponent(changeId)}`
-    ),
-  applyStagedChange: (changeId: string) =>
-    postJSON<import("./types").StagedChangeActionResponse>(
-      `/api/agent/changes/${encodeURIComponent(changeId)}/apply`,
-      {}
-    ),
-  rejectStagedChange: (changeId: string) =>
-    postJSON<import("./types").StagedChangeActionResponse>(
-      `/api/agent/changes/${encodeURIComponent(changeId)}/reject`,
-      {}
-    ),
-  revertStagedChange: (changeId: string) =>
-    postJSON<import("./types").StagedChangeActionResponse>(
-      `/api/agent/changes/${encodeURIComponent(changeId)}/revert`,
-      {}
-    ),
-  applyAllStagedChanges: (sessionId: string, ids?: string[]) =>
-    postJSON<import("./types").StagedBatchApplyResponse>(
-      `/api/agent/sessions/${encodeURIComponent(sessionId)}/changes/apply`,
-      ids ? { ids } : {}
-    ),
-  saveProjectFile: (projectId: string, body: import("./types").ProjectFileSaveRequest) =>
-    postJSON<import("./types").ProjectFileSaveResponse>(
-      `/api/projects/${encodeURIComponent(projectId)}/file/save`,
-      body
-    ),
   /** Poll LAC Pro's autopilot status for a just-installed model. */
   proOptimizeStatus: (model: string) =>
     getJSON<{ state: "idle" | "running" | "done" | "failed_silent" | "not_licensed"; tokens_per_second?: number }>(
@@ -518,14 +321,6 @@ export const api = {
     postJSON<{ state: string; configured?: boolean; error?: string }>("/api/pro/hf-token", { token }),
   clearHfToken: () =>
     fetch("/api/pro/hf-token", { method: "DELETE", headers: { Accept: "application/json" } }).then((r) => r.json()),
-  /** Activate LAC Pro: send a license key → the core route bootstrap-installs the
-   *  plugin. Returns the installer's honest result (200 for both outcomes; the
-   *  frontend branches on `state`). */
-  unlockPro: (key: string) =>
-    postJSON<
-      | { state: "installed"; path: string }
-      | { state: "failed"; error_type: string; message: string }
-    >("/api/pro/unlock", { key }),
 
   proStatus: async (): Promise<import("./types").ProStatus> => {
     const r = await fetch("/api/pro/status");

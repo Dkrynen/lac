@@ -70,13 +70,13 @@ const CAPABILITIES: Capability[] = [
   },
   {
     icon: Code2,
-    title: "Build workbench",
-    free: "Chat plus read-only Plan and Explore agents.",
-    pro: "Build Mode is free on your local models; Pro makes them build-ready — per-model tuning and a readiness benchmark.",
-    licensedState: "Safety gated",
-    licensedVariant: "warning",
-    lockedState: "Preview",
-    lockedVariant: "warning",
+    title: "Local agents",
+    free: "LAC prepares a context-ready model and launches OpenCode on it.",
+    pro: "Pro tunes the agent model to your exact rig and proves it with a readiness benchmark.",
+    licensedState: "Active",
+    licensedVariant: "success",
+    lockedState: "Key required",
+    lockedVariant: "outline",
   },
 ];
 
