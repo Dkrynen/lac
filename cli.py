@@ -902,6 +902,29 @@ def cmd_recommend(args):
         info = detect()
         use_case = args.use_case or "coding"
 
+        if getattr(args, "model", None):
+            from backend.cookbook.fit import fit_verdict, recommend_distill
+            from backend.cookbook.recommend import load_models
+            by_id = {m.id: m for m in load_models()}
+            target = by_id.get(args.model)
+            if target is None:
+                eprint(f"{C['red']}Unknown model '{args.model}'.{C['reset']}")
+                sys.exit(1)
+            v = fit_verdict(target, info, use_case)
+            if v.kind == "fits":
+                print(f"{C['green']}{target.name} fits your hardware at {v.quant}.{C['reset']}")
+            elif v.kind == "fits_at_quant":
+                print(f"{C['yellow']}{target.name} fits at {v.quant} (~{v.quality_cost:.0f} quality pts below F16).{C['reset']}")
+            elif v.kind == "quantize_to_fit":
+                print(f"{C['yellow']}{target.name} doesn't fit as-is; quantizing to ~{v.bpp} bpp would fit.{C['reset']}")
+            else:
+                print(f"{C['red']}{target.name} won't fit your hardware.{C['reset']}")
+            sugg = recommend_distill(info, args.model, use_case)
+            if sugg is not None:
+                tag = "" if sugg.verified else f" {C['gray']}(unverified){C['reset']}"
+                print(f"  {C['bold']}Try instead:{C['reset']} {sugg.note}{tag}")
+            return
+
         if getattr(args, "no_calibration", False):
             _cal = None
         else:
@@ -1434,6 +1457,7 @@ def build_parser(*, include_plugins=True):
     p_rec = sub.add_parser("recommend", aliases=["rec"], help="Get model recommendations")
     p_rec.add_argument("--use-case", default="coding", choices=["coding", "general", "reasoning", "chat", "agent"], help="Use case")
     p_rec.add_argument("--top-k", type=int, default=10, help="Number of recommendations")
+    p_rec.add_argument("--model", help="Check whether a specific model fits (and get a distill suggestion if not)")
     p_rec.add_argument("--no-calibration", action="store_true", help="Ignore measured benchmarks in results.jsonl")
 
     p_agent = sub.add_parser("agent", help="Launch the LAC local-model coding agent (OpenCode + hardware brain)")
