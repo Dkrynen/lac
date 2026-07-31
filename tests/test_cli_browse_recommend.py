@@ -45,3 +45,22 @@ def test_cli_recommend_rejects_negative_top_k(capsys):
     with pytest.raises(SystemExit) as e:
         cli_mod.cmd_recommend(args)
     assert e.value.code == 1
+
+
+def test_cli_recommend_model_flag_reports_fit(monkeypatch, capsys):
+    import cli as cli_mod
+    import backend.cookbook.hardware as hw_mod
+    from backend.cookbook.hardware import SystemInfo, GPUInfo
+
+    monkeypatch.setattr(hw_mod, "detect", lambda: SystemInfo(
+        os="Test", cpu="Test", cpu_cores=8, ram_gb=32.0,
+        gpus=[GPUInfo("Test GPU", 16.0, backend="cuda")], total_vram_gb=16.0,
+    ))
+
+    parser = cli_mod.build_parser()
+    args = parser.parse_args(["recommend", "--model", "qwen3:4b"])
+    cli_mod.cmd_recommend(args)
+
+    out = capsys.readouterr().out
+    assert "qwen3:4b" in out or "Qwen3 4B" in out
+    assert "fit" in out.lower()

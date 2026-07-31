@@ -921,6 +921,7 @@ def api_recommend():
     use_case = request.args.get("use_case", default="coding")
     top_k = request.args.get("top_k", type=int, default=5)
     no_calibration = request.args.get("no_calibration", type=int, default=0)
+    model = request.args.get("model", "")
     gpu_mask_raw = request.args.get("gpu_mask", "")
     allow_spill = request.args.get("allow_spill", type=int, default=1)
 
@@ -960,10 +961,29 @@ def api_recommend():
         _cal = load_calibration(info, _stack, _results)
 
     recs = recommend(info, use_case=use_case, top_k=top_k, calibration=_cal)
+
+    fit = None
+    suggestion = None
+    if model:
+        from .cookbook.fit import fit_verdict, recommend_distill
+        by_id = {m.id: m for m in load_models()}
+        target = by_id.get(model)
+        if target is not None:
+            v = fit_verdict(target, info, use_case)
+            fit = {"kind": v.kind, "quant": v.quant, "quality_cost": v.quality_cost,
+                   "bpp": v.bpp, "context": v.context}
+            s = recommend_distill(info, model, use_case)
+            if s is not None:
+                suggestion = {"model_id": s.model.id, "name": s.model.name,
+                              "relationship": s.relationship, "verified": s.verified,
+                              "note": s.note}
+
     return jsonify({
         "vram_gb": info.total_vram_gb,
         "combined_vram_gb": info.combined_vram_gb,
         "ram_gb": info.ram_gb,
+        "fit": fit,
+        "suggestion": suggestion,
         "recommendations": [
             {
                 "name": r.model.name,
@@ -978,6 +998,7 @@ def api_recommend():
                 "ollama_cmd": r.ollama_cmd,
                 "speed_source": r.speed_source,
                 "speed_band_pct": r.speed_band_pct,
+                "quant_quality_cost": r.details.get("quant_quality_cost", 0.0),
                 "scores": {
                     "quality": r.quality_score,
                     "speed": r.speed_score,

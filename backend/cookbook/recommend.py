@@ -24,6 +24,8 @@ class ModelEntry:
     active_params_b: Optional[float] = None
     sub4bit: bool = False
     new: bool = False
+    distill_of: Optional[str] = None
+    family: Optional[str] = None
 
 
 @dataclass
@@ -594,6 +596,7 @@ def recommend(info: SystemInfo, use_case: str = "coding",
                         "active_params_b": model.active_params_b,
                         "is_moe": model.is_moe,
                         "new": model.new,
+                        "quant_quality_cost": abs(quant.quality_penalty),
                     },
                     split_plan=split,
                     speed_source=speed_source,

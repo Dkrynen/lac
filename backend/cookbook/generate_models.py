@@ -97,11 +97,11 @@ MODELS = [
 
     # === DeepSeek R1 (distills: 1.5b=Qwen2.5-1.5B, 7b=Qwen2.5-7B, 8b=Llama-3.1-8B, 14b=Qwen2.5-14B, 32b=Qwen2.5-32B, 70b=Llama-3.3-70B; 671b MoE) ===
     {"id": "deepseek-r1:1.5b", "name": "DeepSeek R1 1.5B", "provider": "DeepSeek", "params_b": 1.5, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning"], "is_moe": False},
-    {"id": "deepseek-r1:7b", "name": "DeepSeek R1 7B", "provider": "DeepSeek", "params_b": 7.6, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False},
-    {"id": "deepseek-r1:8b", "name": "DeepSeek R1 8B", "provider": "DeepSeek", "params_b": 8.0, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False},
-    {"id": "deepseek-r1:14b", "name": "DeepSeek R1 14B", "provider": "DeepSeek", "params_b": 14.8, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False},
-    {"id": "deepseek-r1:32b", "name": "DeepSeek R1 32B", "provider": "DeepSeek", "params_b": 32.8, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False},
-    {"id": "deepseek-r1:70b", "name": "DeepSeek R1 70B", "provider": "DeepSeek", "params_b": 70.0, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False},
+    {"id": "deepseek-r1:7b", "name": "DeepSeek R1 7B", "provider": "DeepSeek", "params_b": 7.6, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False, "distill_of": "qwen2.5:7b"},
+    {"id": "deepseek-r1:8b", "name": "DeepSeek R1 8B", "provider": "DeepSeek", "params_b": 8.0, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False, "distill_of": "llama3.1:8b"},
+    {"id": "deepseek-r1:14b", "name": "DeepSeek R1 14B", "provider": "DeepSeek", "params_b": 14.8, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False, "distill_of": "qwen2.5:14b"},
+    {"id": "deepseek-r1:32b", "name": "DeepSeek R1 32B", "provider": "DeepSeek", "params_b": 32.8, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False, "distill_of": "qwen2.5:32b"},
+    {"id": "deepseek-r1:70b", "name": "DeepSeek R1 70B", "provider": "DeepSeek", "params_b": 70.0, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False, "distill_of": "llama3.3:70b"},
     {"id": "deepseek-r1:671b", "name": "DeepSeek R1 671B", "provider": "DeepSeek", "params_b": 671.0, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": True, "active_params_b": 37.0},
 
     # === DeepSeek V3 (671B MoE, 37B active) ===
@@ -167,8 +167,8 @@ MODELS = [
     {"id": "dbrx:132b", "name": "DBRX 132B", "provider": "Databricks", "params_b": 132.0, "arch": "dbrx", "context": 131072, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 36.0},
 
     # === GPT-OSS (OpenAI MoE: 20B/3.6B active fits 16GB at Q4; 120B/5.1B active) ===
-    {"id": "gpt-oss:20b", "name": "GPT-OSS 20B", "provider": "OpenAI", "params_b": 20.0, "arch": "gpt-oss", "context": 131072, "use_cases": ["general","chat","coding","reasoning"], "is_moe": True, "active_params_b": 3.6},
-    {"id": "gpt-oss:120b", "name": "GPT-OSS 120B", "provider": "OpenAI", "params_b": 120.0, "arch": "gpt-oss", "context": 131072, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 5.1},
+    {"id": "gpt-oss:20b", "name": "GPT-OSS 20B", "provider": "OpenAI", "params_b": 20.0, "arch": "gpt-oss", "context": 131072, "use_cases": ["general","chat","coding","reasoning"], "is_moe": True, "active_params_b": 3.6, "family": "gpt-oss"},
+    {"id": "gpt-oss:120b", "name": "GPT-OSS 120B", "provider": "OpenAI", "params_b": 120.0, "arch": "gpt-oss", "context": 131072, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 5.1, "family": "gpt-oss"},
 
     # === SmolLM2 (efficient small models) ===
     {"id": "smollm2:360m", "name": "SmolLM2 360M", "provider": "Hugging Face", "params_b": 0.36, "arch": "smollm", "context": 8192, "use_cases": ["general","chat"], "is_moe": False},

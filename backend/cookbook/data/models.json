@@ -800,6 +800,7 @@
       "coding"
     ],
     "is_moe": false,
+    "distill_of": "qwen2.5:7b",
     "vram_q4": 4.7,
     "vram_q8": 8.3,
     "vram_f16": 15.5
@@ -816,6 +817,7 @@
       "coding"
     ],
     "is_moe": false,
+    "distill_of": "llama3.1:8b",
     "vram_q4": 4.9,
     "vram_q8": 8.7,
     "vram_f16": 16.3
@@ -832,6 +834,7 @@
       "coding"
     ],
     "is_moe": false,
+    "distill_of": "qwen2.5:14b",
     "vram_q4": 8.9,
     "vram_q8": 15.8,
     "vram_f16": 29.9
@@ -848,6 +851,7 @@
       "coding"
     ],
     "is_moe": false,
+    "distill_of": "qwen2.5:32b",
     "vram_q4": 19.3,
     "vram_q8": 34.7,
     "vram_f16": 65.9
@@ -864,6 +868,7 @@
       "coding"
     ],
     "is_moe": false,
+    "distill_of": "llama3.3:70b",
     "vram_q4": 40.9,
     "vram_q8": 73.8,
     "vram_f16": 140.3
@@ -1474,6 +1479,7 @@
     ],
     "is_moe": true,
     "active_params_b": 3.6,
+    "family": "gpt-oss",
     "vram_q4": 11.9,
     "vram_q8": 21.3,
     "vram_f16": 40.3
@@ -1492,6 +1498,7 @@
     ],
     "is_moe": true,
     "active_params_b": 5.1,
+    "family": "gpt-oss",
     "vram_q4": 69.9,
     "vram_q8": 126.3,
     "vram_f16": 240.3

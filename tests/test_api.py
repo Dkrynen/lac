@@ -320,6 +320,19 @@ def test_recommend_no_calibration_escape_hatch(
         assert rec["speed_source"] == "estimated"
 
 
+def test_api_recommend_model_returns_fit(flask_app, isolated_home, monkeypatch):
+    """?model=<id> adds a fit verdict for that model alongside the recs."""
+    import backend.api as api_mod
+
+    monkeypatch.setattr(api_mod, "detect", _fake_detect_factory())
+    client = flask_app.test_client()
+    r = client.get("/api/recommend?model=qwen3:4b&use_case=coding&top_k=3")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["fit"] is not None
+    assert data["fit"]["kind"] in ("fits", "fits_at_quant", "quantize_to_fit", "too_big")
+
+
 def test_api_benchmark_route_removed(flask_app):
     """The free-tier web benchmark surface is gone entirely — benchmarking
     only happens through LAC Pro's autopilot from now on (spec decision 1).
