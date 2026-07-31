@@ -1,5 +1,5 @@
-// Release gate: no CDN/external host in the shipped bundle, and the lazy
-// editor chunk stays within a sane ceiling. Run AFTER `npm run build`.
+// Release gate: no CDN/external host in the shipped bundle, and the entry
+// chunk stays within a sane ceiling. Run AFTER `npm run build`.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,9 +13,10 @@ const CDN_HOSTS = [
   "cdn.skypack.dev",
   "ga.jspm.io",
 ];
-// Raw-byte ceilings (not gzip). Editor chunk is CM6-heavy but must not balloon;
-// index must NOT absorb CM6 (that would mean the lazy split broke).
-const CEILINGS = { editorPane: 900_000, index: 700_000 };
+// Raw-byte ceilings (not gzip). The agent workbench (and its CM6 editor chunk)
+// was removed in the OpenCode pivot, so the entry chunk must stay lean on its
+// own — index must NOT balloon past the ceiling.
+const CEILINGS = { index: 700_000 };
 
 let files;
 try {
@@ -26,7 +27,6 @@ try {
 }
 
 const failures = [];
-let editorBytes = 0;
 let indexBytes = 0;
 
 for (const file of files) {
@@ -36,15 +36,12 @@ for (const file of files) {
     if (text.includes(host)) failures.push(`CDN host "${host}" found in ${file}`);
   }
   const bytes = statSync(path).size;
-  if (file.startsWith("editor-pane")) editorBytes = bytes;
   if (file.startsWith("index")) indexBytes = bytes;
 }
 
-console.log(`check-bundle: editor-pane=${editorBytes}B index=${indexBytes}B`);
-if (editorBytes === 0) failures.push("editor-pane chunk missing (lazy split broken?)");
+console.log(`check-bundle: index=${indexBytes}B`);
 if (indexBytes === 0) failures.push("index chunk missing (renamed entry chunk?)");
-if (editorBytes > CEILINGS.editorPane) failures.push(`editor-pane ${editorBytes}B > ceiling ${CEILINGS.editorPane}B`);
-if (indexBytes > CEILINGS.index) failures.push(`index ${indexBytes}B > ceiling ${CEILINGS.index}B (CM6 may have leaked into the initial chunk)`);
+if (indexBytes > CEILINGS.index) failures.push(`index ${indexBytes}B > ceiling ${CEILINGS.index}B (entry chunk ballooned)`);
 
 if (failures.length) {
   console.error("check-bundle FAILED:\n" + failures.map((f) => `  - ${f}`).join("\n"));
