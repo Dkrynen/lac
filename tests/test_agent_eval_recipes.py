@@ -10,6 +10,7 @@ from backend.agent_eval.recipes import (
     aggregate_recipes,
     hardware_class,
     lookup_recipe,
+    proven_for,
 )
 
 
@@ -138,3 +139,25 @@ def test_lookup_recipe_by_model_and_class(tmp_path, monkeypatch):
     assert lookup_recipe(cards, "gpt-oss:20b", amd16) is not None
     assert lookup_recipe(cards, "gpt-oss:20b", _info("NVIDIA GeForce RTX 4090", 24.0, "cuda")) is None
     assert lookup_recipe(cards, "qwen3.6:27b", amd16) is None
+
+
+def test_proven_for_returns_card_when_evidence_exists(tmp_path, monkeypatch):
+    _seal_all(monkeypatch)
+    _make_run(tmp_path, "r1", "amd-16gb", "gpt-oss:20b", [90.0])
+    _make_run(tmp_path, "r2", "amd-16gb", "gpt-oss:20b", [94.0])
+    _make_run(tmp_path, "r3", "amd-16gb", "gpt-oss:20b", [92.0])
+    card = proven_for(_info("AMD Radeon RX 6800 XT", 16.0, "rocm"), "gpt-oss:20b", root=tmp_path)
+    assert card is not None
+    assert card.tokens_per_second == 92.0
+
+
+def test_proven_for_returns_none_when_no_evidence_root(tmp_path):
+    assert proven_for(_info("AMD Radeon RX 6800 XT", 16.0, "rocm"), "gpt-oss:20b", root=tmp_path / "missing") is None
+
+
+def test_proven_for_returns_none_for_unproven_model(tmp_path, monkeypatch):
+    _seal_all(monkeypatch)
+    _make_run(tmp_path, "r1", "amd-16gb", "gpt-oss:20b", [90.0])
+    _make_run(tmp_path, "r2", "amd-16gb", "gpt-oss:20b", [94.0])
+    _make_run(tmp_path, "r3", "amd-16gb", "gpt-oss:20b", [92.0])
+    assert proven_for(_info("AMD Radeon RX 6800 XT", 16.0, "rocm"), "qwen3.6:27b", root=tmp_path) is None

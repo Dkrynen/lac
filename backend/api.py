@@ -37,6 +37,7 @@ from .cookbook.hardware import (
     print_system,
 )
 from .cookbook.recommend import recommend, load_models
+from .agent_eval.recipes import proven_for
 from .plugin.builtins.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 from .permission import PermissionEngine
 from .pro_install import install_pro_plugin
@@ -1006,6 +1007,13 @@ def api_recommend():
                     "context": r.context_score,
                 },
                 "split_plan": _serialize_split_plan(r.split_plan) if r.split_plan else None,
+                "proven": (
+                    lambda c: None if c is None else {
+                        "tokens_per_second": c.tokens_per_second, "quant": c.quant,
+                        "trials": c.trials, "hardware_class": c.hardware_class,
+                        "evidence_run": c.evidence_run,
+                    }
+                )(proven_for(info, r.model.id)),
             }
             for r in recs
         ],

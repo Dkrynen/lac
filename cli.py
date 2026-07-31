@@ -892,6 +892,7 @@ def cmd_recommend(args):
     try:
         from backend.cookbook.hardware import detect
         from backend.cookbook.recommend import recommend
+        from backend.agent_eval.recipes import proven_for
 
         top_k = args.top_k if args.top_k is not None else 10
         if top_k < 1:
@@ -958,6 +959,11 @@ def cmd_recommend(args):
         cost = top.details.get("quant_quality_cost", 0.0)
         if top.quant != "Q4_K_M" and cost:
             print(f"  {C['gray']}Note: best fit is {top.quant} — ~{cost:.0f} quality pts below F16.{C['reset']}")
+
+        for r in recs:
+            card = proven_for(info, r.model.id)
+            if card is not None:
+                print(f"  {C['green']}✓ {r.model.name}: proven {card.tokens_per_second} tok/s @ {card.quant} ({card.trials} trials) on {card.hardware_class}{C['reset']}")
 
         # Show split-plan detail for top 3 multi-GPU / offload picks.
         print()
