@@ -25,8 +25,18 @@ tweakability items as independent tasks. Each gets its own TDD plan.
 
 `backend/agent_eval/result.py::ArmResult` is the eval contract:
 `arm`, `model`, `runtime`, `completed`, `timed_out`, `wall_time_ms`, `metrics: dict`,
-`exit_code`. The `metrics` dict carries throughput (tok/s) and match scores. `ledger.py`
-persists runs. Recipe cards are a **projection** of ledger evidence onto hardware classes.
+`exit_code`. Throughput is computed into `metrics["tokens_per_second"]`
+(`raw_ollama.py`). **Important:** `ledger.py` is a hash-sealing *integrity* system
+(`evidence.json`), NOT a queryable results store — runs persist as file artifacts
+(per-arm `prompt.txt`/`stdout.log`/`stderr.log` under a run directory), and there is
+**no existing aggregated, queryable results index.**
+
+**Consequence:** recipe cards need a thin **results-aggregation layer** that scans eval
+run directories, extracts `ArmResult` model/runtime/`tokens_per_second`/pass-fail, and
+indexes them by (model, hardware class). This is new code (a `results_store`), not a read
+of an existing store — and it is the real build cost of this deliverable. The aggregation
+must verify each run's `evidence.json` seal (via `ledger.verify_evidence`) before trusting
+its numbers, so a card is only ever projected from sealed, valid evidence.
 
 ### 2.2 Recipe card schema
 
