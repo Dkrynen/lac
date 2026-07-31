@@ -280,6 +280,63 @@
     "vram_f16": 60.3
   },
   {
+    "id": "qwen3.6:27b",
+    "name": "Qwen 3.6 27B",
+    "provider": "Alibaba",
+    "params_b": 27.8,
+    "arch": "qwen3",
+    "context": 262144,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning",
+      "chat"
+    ],
+    "is_moe": false,
+    "new": true,
+    "vram_q4": 16.4,
+    "vram_q8": 29.5,
+    "vram_f16": 55.9
+  },
+  {
+    "id": "qwen3.6:35b",
+    "name": "Qwen 3.6 35B A3B",
+    "provider": "Alibaba",
+    "params_b": 35.0,
+    "arch": "qwen3",
+    "context": 262144,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning",
+      "chat"
+    ],
+    "is_moe": true,
+    "active_params_b": 3.0,
+    "new": true,
+    "vram_q4": 20.6,
+    "vram_q8": 37.0,
+    "vram_f16": 70.3
+  },
+  {
+    "id": "qwen3-coder-next",
+    "name": "Qwen3 Coder Next",
+    "provider": "Alibaba",
+    "params_b": 80.0,
+    "arch": "qwen3",
+    "context": 262144,
+    "use_cases": [
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 3.0,
+    "new": true,
+    "vram_q4": 46.7,
+    "vram_q8": 84.3,
+    "vram_f16": 160.3
+  },
+  {
     "id": "qwen2.5:0.5b",
     "name": "Qwen2.5 0.5B",
     "provider": "Alibaba",
@@ -565,7 +622,7 @@
     "provider": "Meta",
     "params_b": 109.0,
     "arch": "llama",
-    "context": 1048576,
+    "context": 10485760,
     "use_cases": [
       "general",
       "coding",
@@ -700,6 +757,23 @@
     "vram_f16": 48.3
   },
   {
+    "id": "devstral:24b",
+    "name": "Devstral 24B",
+    "provider": "Mistral",
+    "params_b": 24.0,
+    "arch": "mistral",
+    "context": 131072,
+    "use_cases": [
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "new": true,
+    "vram_q4": 14.2,
+    "vram_q8": 25.5,
+    "vram_f16": 48.3
+  },
+  {
     "id": "deepseek-r1:1.5b",
     "name": "DeepSeek R1 1.5B",
     "provider": "DeepSeek",
@@ -825,6 +899,25 @@
     ],
     "is_moe": true,
     "active_params_b": 37.0,
+    "vram_q4": 389.5,
+    "vram_q8": 704.9,
+    "vram_f16": 1342.3
+  },
+  {
+    "id": "deepseek-v3.1:671b",
+    "name": "DeepSeek V3.1 671B",
+    "provider": "DeepSeek",
+    "params_b": 671.0,
+    "arch": "deepseek",
+    "context": 163840,
+    "use_cases": [
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": true,
+    "active_params_b": 37.0,
+    "new": true,
     "vram_q4": 389.5,
     "vram_q8": 704.9,
     "vram_f16": 1342.3
@@ -1018,6 +1111,43 @@
     "vram_f16": 54.3
   },
   {
+    "id": "gemma4:e2b",
+    "name": "Gemma 4 E2B",
+    "provider": "Google",
+    "params_b": 5.1,
+    "arch": "gemma",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding"
+    ],
+    "is_moe": false,
+    "new": true,
+    "vram_q4": 3.3,
+    "vram_q8": 5.7,
+    "vram_f16": 10.5
+  },
+  {
+    "id": "gemma4:e4b",
+    "name": "Gemma 4 E4B",
+    "provider": "Google",
+    "params_b": 8.0,
+    "arch": "gemma",
+    "context": 131072,
+    "use_cases": [
+      "general",
+      "chat",
+      "coding",
+      "reasoning"
+    ],
+    "is_moe": false,
+    "new": true,
+    "vram_q4": 4.9,
+    "vram_q8": 8.7,
+    "vram_f16": 16.3
+  },
+  {
     "id": "gemma4:2b",
     "name": "Gemma 4 2B",
     "provider": "Google",
@@ -1056,7 +1186,7 @@
     "provider": "Google",
     "params_b": 12.0,
     "arch": "gemma",
-    "context": 32768,
+    "context": 262144,
     "use_cases": [
       "general",
       "coding",
@@ -1070,37 +1200,38 @@
   },
   {
     "id": "gemma4:26b",
-    "name": "Gemma 4 26B",
+    "name": "Gemma 4 26B A4B",
     "provider": "Google",
-    "params_b": 26.0,
+    "params_b": 25.2,
     "arch": "gemma",
-    "context": 131072,
+    "context": 262144,
     "use_cases": [
       "general",
       "coding",
       "reasoning"
     ],
-    "is_moe": false,
-    "vram_q4": 15.4,
-    "vram_q8": 27.6,
-    "vram_f16": 52.3
+    "is_moe": true,
+    "active_params_b": 3.8,
+    "vram_q4": 14.9,
+    "vram_q8": 26.8,
+    "vram_f16": 50.7
   },
   {
     "id": "gemma4:31b",
     "name": "Gemma 4 31B",
     "provider": "Google",
-    "params_b": 31.0,
+    "params_b": 30.7,
     "arch": "gemma",
-    "context": 131072,
+    "context": 262144,
     "use_cases": [
       "general",
       "reasoning",
       "coding"
     ],
     "is_moe": false,
-    "vram_q4": 18.3,
-    "vram_q8": 32.9,
-    "vram_f16": 62.3
+    "vram_q4": 18.1,
+    "vram_q8": 32.5,
+    "vram_f16": 61.7
   },
   {
     "id": "codegemma:2b",
