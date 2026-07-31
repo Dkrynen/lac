@@ -37,7 +37,7 @@ def test_merge_on_empty_sets_provider_model_and_permission():
 def test_merge_preserves_other_providers():
     existing = {
         "provider": {
-            "anthropic": {"options": {"apiKey": "sk-kept"}},
+            "anthropic": {"options": {"apiKey": "sk-kept"}},  # pragma: allowlist secret
         }
     }
     merged, _ = merge_opencode_config(existing, lac_cfg())
