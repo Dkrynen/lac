@@ -23,6 +23,7 @@ class ModelEntry:
     vram_f16: float = 0
     active_params_b: Optional[float] = None
     sub4bit: bool = False
+    new: bool = False
 
 
 @dataclass
@@ -592,6 +593,7 @@ def recommend(info: SystemInfo, use_case: str = "coding",
                         "provider": model.provider,
                         "active_params_b": model.active_params_b,
                         "is_moe": model.is_moe,
+                        "new": model.new,
                     },
                     split_plan=split,
                     speed_source=speed_source,
