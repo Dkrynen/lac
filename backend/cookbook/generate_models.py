@@ -40,6 +40,13 @@ MODELS = [
     # === Qwen3 Coder (30b MoE, 480b MoE — 480b omitted: unusable on consumer HW) ===
     {"id": "qwen3-coder:30b", "name": "Qwen3 Coder 30B", "provider": "Alibaba", "params_b": 30.0, "arch": "qwen3", "context": 131072, "use_cases": ["coding","reasoning"], "is_moe": True, "active_params_b": 3.0},
 
+    # === Qwen 3.6 (2026 flagship: 27b dense, 35b A3B MoE — vision+tools+thinking, 256K) ===
+    {"id": "qwen3.6:27b", "name": "Qwen 3.6 27B", "provider": "Alibaba", "params_b": 27.8, "arch": "qwen3", "context": 262144, "use_cases": ["general","coding","reasoning","chat"], "is_moe": False, "new": True},
+    {"id": "qwen3.6:35b", "name": "Qwen 3.6 35B A3B", "provider": "Alibaba", "params_b": 35.0, "arch": "qwen3", "context": 262144, "use_cases": ["general","coding","reasoning","chat"], "is_moe": True, "active_params_b": 3.0, "new": True},
+
+    # === Qwen3 Coder Next (80B/3B-active hybrid-attention MoE, agentic, 256K, non-thinking) ===
+    {"id": "qwen3-coder-next", "name": "Qwen3 Coder Next", "provider": "Alibaba", "params_b": 80.0, "arch": "qwen3", "context": 262144, "use_cases": ["coding","reasoning"], "is_moe": True, "active_params_b": 3.0, "new": True},
+
     # === Qwen2.5 (non-coder dense) ===
     {"id": "qwen2.5:0.5b", "name": "Qwen2.5 0.5B", "provider": "Alibaba", "params_b": 0.5, "arch": "qwen", "context": 32768, "use_cases": ["general","chat"], "is_moe": False},
     {"id": "qwen2.5:1.5b", "name": "Qwen2.5 1.5B", "provider": "Alibaba", "params_b": 1.5, "arch": "qwen", "context": 32768, "use_cases": ["general","chat"], "is_moe": False},
@@ -68,7 +75,7 @@ MODELS = [
     {"id": "llama3.3:70b", "name": "Llama 3.3 70B", "provider": "Meta", "params_b": 70.0, "arch": "llama", "context": 131072, "use_cases": ["general","reasoning","coding","chat"], "is_moe": False},
 
     # === Llama 4 (Scout 16x17b=109B/17B active; Maverick 128x17b=402B/17B active) ===
-    {"id": "llama4:scout", "name": "Llama 4 Scout", "provider": "Meta", "params_b": 109.0, "arch": "llama", "context": 1048576, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 17.0},
+    {"id": "llama4:scout", "name": "Llama 4 Scout", "provider": "Meta", "params_b": 109.0, "arch": "llama", "context": 10485760, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 17.0},
     {"id": "llama4:maverick", "name": "Llama 4 Maverick", "provider": "Meta", "params_b": 402.0, "arch": "llama", "context": 1048576, "use_cases": ["general","reasoning","coding"], "is_moe": True, "active_params_b": 17.0},
 
     # === Mistral ===
@@ -85,6 +92,9 @@ MODELS = [
     # === Mistral Small 3.2 (dense 24B) ===
     {"id": "mistral-small3.2:24b", "name": "Mistral Small 3.2 24B", "provider": "Mistral", "params_b": 24.0, "arch": "mistral", "context": 131072, "use_cases": ["general","coding","reasoning","chat"], "is_moe": False},
 
+    # === Devstral (24B dense agentic coder, Mistral x All Hands AI; tools, SWE-bench 46.8%) ===
+    {"id": "devstral:24b", "name": "Devstral 24B", "provider": "Mistral", "params_b": 24.0, "arch": "mistral", "context": 131072, "use_cases": ["coding","reasoning"], "is_moe": False, "new": True},
+
     # === DeepSeek R1 (distills: 1.5b=Qwen2.5-1.5B, 7b=Qwen2.5-7B, 8b=Llama-3.1-8B, 14b=Qwen2.5-14B, 32b=Qwen2.5-32B, 70b=Llama-3.3-70B; 671b MoE) ===
     {"id": "deepseek-r1:1.5b", "name": "DeepSeek R1 1.5B", "provider": "DeepSeek", "params_b": 1.5, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning"], "is_moe": False},
     {"id": "deepseek-r1:7b", "name": "DeepSeek R1 7B", "provider": "DeepSeek", "params_b": 7.6, "arch": "deepseek", "context": 131072, "use_cases": ["reasoning","coding"], "is_moe": False},
@@ -96,6 +106,9 @@ MODELS = [
 
     # === DeepSeek V3 (671B MoE, 37B active) ===
     {"id": "deepseek-v3:671b", "name": "DeepSeek V3 671B", "provider": "DeepSeek", "params_b": 671.0, "arch": "deepseek", "context": 131072, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 37.0},
+
+    # === DeepSeek V3.1 (671B MoE, 37B active; hybrid thinking + tools, 160K) ===
+    {"id": "deepseek-v3.1:671b", "name": "DeepSeek V3.1 671B", "provider": "DeepSeek", "params_b": 671.0, "arch": "deepseek", "context": 163840, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 37.0, "new": True},
 
     # === DeepSeek V4 (speculative families on Ollama; active params estimated) ===
     {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash", "provider": "DeepSeek", "params_b": 67.0, "arch": "deepseek", "context": 131072, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 8.0},
@@ -118,12 +131,14 @@ MODELS = [
     {"id": "gemma3:12b", "name": "Gemma 3 12B", "provider": "Google", "params_b": 12.0, "arch": "gemma", "context": 32768, "use_cases": ["general","coding","reasoning"], "is_moe": False},
     {"id": "gemma3:27b", "name": "Gemma 3 27B", "provider": "Google", "params_b": 27.0, "arch": "gemma", "context": 131072, "use_cases": ["general","coding","reasoning"], "is_moe": False},
 
-    # === Gemma 4 (e2b/e4b/12b/26b/31b — dense; internals estimated) ===
+    # === Gemma 4 (e2b/e4b edge; 12b dense; 26b A4B MoE; 31b dense — vision+tools+thinking) ===
+    {"id": "gemma4:e2b", "name": "Gemma 4 E2B", "provider": "Google", "params_b": 5.1, "arch": "gemma", "context": 131072, "use_cases": ["general","chat","coding"], "is_moe": False, "new": True},
+    {"id": "gemma4:e4b", "name": "Gemma 4 E4B", "provider": "Google", "params_b": 8.0, "arch": "gemma", "context": 131072, "use_cases": ["general","chat","coding","reasoning"], "is_moe": False, "new": True},
     {"id": "gemma4:2b", "name": "Gemma 4 2B", "provider": "Google", "params_b": 2.6, "arch": "gemma", "context": 32768, "use_cases": ["general","chat"], "is_moe": False},
     {"id": "gemma4:4b", "name": "Gemma 4 4B", "provider": "Google", "params_b": 4.0, "arch": "gemma", "context": 32768, "use_cases": ["general","chat","coding"], "is_moe": False},
-    {"id": "gemma4:12b", "name": "Gemma 4 12B", "provider": "Google", "params_b": 12.0, "arch": "gemma", "context": 32768, "use_cases": ["general","coding","reasoning","chat"], "is_moe": False},
-    {"id": "gemma4:26b", "name": "Gemma 4 26B", "provider": "Google", "params_b": 26.0, "arch": "gemma", "context": 131072, "use_cases": ["general","coding","reasoning"], "is_moe": False},
-    {"id": "gemma4:31b", "name": "Gemma 4 31B", "provider": "Google", "params_b": 31.0, "arch": "gemma", "context": 131072, "use_cases": ["general","reasoning","coding"], "is_moe": False},
+    {"id": "gemma4:12b", "name": "Gemma 4 12B", "provider": "Google", "params_b": 12.0, "arch": "gemma", "context": 262144, "use_cases": ["general","coding","reasoning","chat"], "is_moe": False},
+    {"id": "gemma4:26b", "name": "Gemma 4 26B A4B", "provider": "Google", "params_b": 25.2, "arch": "gemma", "context": 262144, "use_cases": ["general","coding","reasoning"], "is_moe": True, "active_params_b": 3.8},
+    {"id": "gemma4:31b", "name": "Gemma 4 31B", "provider": "Google", "params_b": 30.7, "arch": "gemma", "context": 262144, "use_cases": ["general","reasoning","coding"], "is_moe": False},
 
     # === CodeGemma ===
     {"id": "codegemma:2b", "name": "CodeGemma 2B", "provider": "Google", "params_b": 2.0, "arch": "gemma", "context": 16384, "use_cases": ["coding"], "is_moe": False},
