@@ -978,6 +978,7 @@ def api_recommend():
                 "ollama_cmd": r.ollama_cmd,
                 "speed_source": r.speed_source,
                 "speed_band_pct": r.speed_band_pct,
+                "quant_quality_cost": r.details.get("quant_quality_cost", 0.0),
                 "scores": {
                     "quality": r.quality_score,
                     "speed": r.speed_score,

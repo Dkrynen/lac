@@ -931,6 +931,11 @@ def cmd_recommend(args):
         for row in rows:
             print(f"  {row[0]:<3} {C['bold']}{row[1]:<35}{C['reset']} {row[2]:<7} {row[3]:<7} {row[4]:<7} {row[5]:<7} {row[6]}")
 
+        top = recs[0]
+        cost = top.details.get("quant_quality_cost", 0.0)
+        if top.quant != "Q4_K_M" and cost:
+            print(f"  {C['gray']}Note: best fit is {top.quant} — ~{cost:.0f} quality pts below F16.{C['reset']}")
+
         # Show split-plan detail for top 3 multi-GPU / offload picks.
         print()
         for i, r in enumerate(recs[:3], 1):

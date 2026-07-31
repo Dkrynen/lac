@@ -711,3 +711,13 @@ def test_catalog_lineage_fields_present():
     # A model with no lineage defaults to None.
     assert ids["qwen3.6:27b"].distill_of is None
     assert ids["qwen3.6:27b"].family is None
+
+
+def test_recommend_details_carry_quant_quality_cost():
+    recs = recommend(_sys16(), use_case="coding", top_k=100)
+    assert recs, "expected at least one recommendation"
+    for r in recs:
+        assert "quant_quality_cost" in r.details
+        assert r.details["quant_quality_cost"] >= 0
+    for r in (r for r in recs if r.quant == "F16"):
+        assert r.details["quant_quality_cost"] == 0.0
