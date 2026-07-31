@@ -43,6 +43,12 @@ def _load_gate():
     return module
 
 
+# The gate binds release artifacts to the live APP_VERSION; fixtures must
+# track it or the suite breaks on every version bump.
+_GATE = _load_gate()
+APP_VERSION = _GATE.APP_VERSION
+
+
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -127,7 +133,7 @@ def _check_evidence(
 
 
 def _release_fixture(tmp_path: Path, gate) -> dict[str, object]:
-    installer = tmp_path / "LAC-Setup-2.7.0.exe"
+    installer = tmp_path / f"LAC-Setup-{APP_VERSION}.exe"
     application = tmp_path / "lac.exe"
     dependency_lock = tmp_path / "requirements-release.lock"
     python_sbom = tmp_path / "python-sbom.json"
@@ -153,8 +159,8 @@ def _release_fixture(tmp_path: Path, gate) -> dict[str, object]:
     }
     record = {
         "schema_version": 2,
-        "version": "2.7.0",
-        "tag": "v2.7.0",
+        "version": APP_VERSION,
+        "tag": f"v{APP_VERSION}",
         "source_commit": "a" * 40,
         "built_at_utc": "2026-07-13T00:00:01.0000000Z",
         "dependency_lock_sha256": _sha256(dependency_lock),
@@ -669,7 +675,7 @@ def test_build_attestations_bind_every_subject_to_repository_workflow_commit_and
         assert command[command.index("--repo") + 1] == "Dkrynen/lac"
         assert command[command.index("--signer-workflow") + 1].endswith("/.github/workflows/build.yml")
         assert command[command.index("--source-digest") + 1] == source_commit
-        assert command[command.index("--source-ref") + 1] == "refs/tags/v2.7.0"
+        assert command[command.index("--source-ref") + 1] == f"refs/tags/v{APP_VERSION}"
         assert "--deny-self-hosted-runners" in command
 
 
