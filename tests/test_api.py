@@ -333,6 +333,22 @@ def test_api_recommend_model_returns_fit(flask_app, isolated_home, monkeypatch):
     assert data["fit"]["kind"] in ("fits", "fits_at_quant", "quantize_to_fit", "too_big")
 
 
+def test_api_recommend_includes_proven_badge(flask_app, isolated_home, monkeypatch):
+    import backend.api as api_mod
+    from backend.agent_eval.recipes import RecipeCard
+
+    monkeypatch.setattr(api_mod, "detect", _fake_detect_factory())
+    card = RecipeCard(
+        model_id="gpt-oss:20b", hardware_class="amd-16gb", tokens_per_second=94.67,
+        quant="Q4_K_M", context=65536, trials=3, evidence_run="r1",
+    )
+    monkeypatch.setattr(api_mod, "proven_for", lambda info, model_id: card)
+    r = flask_app.test_client().get("/api/recommend?use_case=coding&top_k=100")
+    assert r.status_code == 200
+    recs = r.get_json()["recommendations"]
+    assert recs and all(rec["proven"]["tokens_per_second"] == 94.67 for rec in recs)
+
+
 def test_api_benchmark_route_removed(flask_app):
     """The free-tier web benchmark surface is gone entirely — benchmarking
     only happens through LAC Pro's autopilot from now on (spec decision 1).

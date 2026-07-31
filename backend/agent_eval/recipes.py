@@ -8,6 +8,7 @@ results-aggregation layer that projects cards from sealed eval runs builds on it
 from __future__ import annotations
 
 import json
+import os
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,3 +150,23 @@ def aggregate_recipes(evidence_root, min_trials: int = 3) -> dict[tuple[str, str
 def lookup_recipe(cards, model_id: str, info: SystemInfo):
     """Return the proven card for model_id on info's hardware class, or None."""
     return cards.get((model_id, hardware_class(info)))
+
+
+DEFAULT_EVIDENCE_ROOT = Path.home() / ".model-hub" / "evaluations"
+
+
+def evidence_root() -> Path:
+    """Where sealed eval runs accumulate. Overridable via LAC_EVAL_ROOT."""
+    return Path(os.environ.get("LAC_EVAL_ROOT") or DEFAULT_EVIDENCE_ROOT)
+
+
+def proven_for(info: SystemInfo, model_id: str, root=None):
+    """Return the proven card for model_id on info's hardware, or None.
+
+    Scans the evidence root and projects cards; returns None when the root
+    doesn't exist or no sealed evidence proves this model on this class.
+    """
+    scan_root = Path(root) if root is not None else evidence_root()
+    if not scan_root.is_dir():
+        return None
+    return lookup_recipe(aggregate_recipes(scan_root), model_id, info)
