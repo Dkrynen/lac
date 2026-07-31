@@ -41,7 +41,7 @@ def test_merge_preserves_other_providers():
         }
     }
     merged, _ = merge_opencode_config(existing, lac_cfg())
-    assert merged["provider"]["anthropic"] == {"options": {"apiKey": "sk-kept"}}
+    assert merged["provider"]["anthropic"] == {"options": {"apiKey": "sk-kept"}}  # pragma: allowlist secret
     assert "ollama" in merged["provider"]
 
 
