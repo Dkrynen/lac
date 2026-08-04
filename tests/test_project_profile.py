@@ -5,10 +5,12 @@ import json
 import pytest
 
 from backend.agent_launch.project_profile import (
+    PRESETS,
     PROFILE_FILENAME,
     ProfileError,
     ProjectProfile,
     load_profile,
+    preset_permissions,
     profile_path,
     save_profile,
 )
@@ -87,3 +89,37 @@ def test_load_profile_defaults_context_and_preset(tmp_path):
     assert loaded is not None
     assert loaded.context is None
     assert loaded.preset == "strict"
+
+
+SECRET_READ_DENIALS = ["*.env", "*.env.*", "*credentials.json", "*token.json", "*.pem", "*.key"]
+
+
+def test_every_preset_keeps_the_secret_safety_floor():
+    for name in PRESETS:
+        perms = preset_permissions(name)
+        for pattern in SECRET_READ_DENIALS:
+            assert perms["read"][pattern] == "deny", f"preset {name} lost the deny on {pattern}"
+        assert perms["external_directory"] == "deny", f"preset {name} relaxed external_directory"
+        assert perms["task"] == "deny", f"preset {name} relaxed task"
+
+
+def test_preset_permissions_returns_copies():
+    perms = preset_permissions("strict")
+    perms["read"]["*.env"] = "allow"
+    perms["bash"] = "allow"
+    fresh = preset_permissions("strict")
+    assert fresh["read"]["*.env"] == "deny"
+    assert fresh["bash"] == "ask"
+
+
+def test_preset_permissions_unknown_raises():
+    with pytest.raises(ProfileError, match="preset"):
+        preset_permissions("yolo")
+
+
+def test_dev_preset_relaxes_working_tools():
+    perms = preset_permissions("dev")
+    assert perms["edit"] == "allow"
+    assert perms["bash"] == "allow"
+    assert perms["grep"] == "allow"
+    assert perms["webfetch"] == "allow"
