@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,11 @@ from backend.cookbook.quantize import (
     NonGgufWeights,
     QuantizePlan,
     QuantizeRefusal,
+    QuantizerNotFound,
+    QuantizeRunFailed,
+    find_quantizer,
     resolve_source_gguf,
+    run_quantize,
     select_target_quant,
 )
 
@@ -125,3 +130,78 @@ def test_resolve_source_gguf_refuses_non_gguf_weights(tmp_path):
 def test_resolve_source_gguf_missing_manifest(tmp_path):
     with pytest.raises(ManifestNotFound):
         resolve_source_gguf("nope:1b", store_root=tmp_path)
+
+
+def test_find_quantizer_explicit_override_wins(tmp_path):
+    tool = tmp_path / "llama-quantize.exe"
+    tool.write_bytes(b"MZ")
+    assert find_quantizer(override=str(tool)) == tool
+
+
+def test_find_quantizer_missing_override_refuses(tmp_path):
+    with pytest.raises(QuantizerNotFound):
+        find_quantizer(override=str(tmp_path / "absent.exe"))
+
+
+def test_find_quantizer_env_var(tmp_path, monkeypatch):
+    tool = tmp_path / "llama-quantize"
+    tool.write_bytes(b"#")
+    monkeypatch.setenv("LAC_LLAMA_QUANTIZE", str(tool))
+    assert find_quantizer() == tool
+
+
+def test_find_quantizer_path_discovery(monkeypatch):
+    monkeypatch.delenv("LAC_LLAMA_QUANTIZE", raising=False)
+    seen = []
+
+    def fake_which(name):
+        seen.append(name)
+        return "/usr/bin/llama-quantize" if name == "llama-quantize" else None
+
+    monkeypatch.setattr("backend.cookbook.quantize.shutil.which", fake_which)
+    assert find_quantizer() == Path("/usr/bin/llama-quantize")
+    assert seen[0] == "llama-quantize"
+
+
+def test_find_quantizer_not_found_has_install_guidance(monkeypatch):
+    monkeypatch.delenv("LAC_LLAMA_QUANTIZE", raising=False)
+    monkeypatch.setattr("backend.cookbook.quantize.shutil.which", lambda name: None)
+    with pytest.raises(QuantizerNotFound) as exc:
+        find_quantizer()
+    assert "llama.cpp" in exc.value.reason
+
+
+class _FakeRun:
+    def __init__(self, returncode, dst=None, stdout="", stderr=""):
+        self.returncode = returncode
+        self.dst = dst
+        self.stdout = stdout
+        self.stderr = stderr
+        self.cmd = None
+
+    def __call__(self, cmd, **kw):
+        self.cmd = cmd
+        if self.dst is not None:
+            Path(self.dst).write_bytes(b"partial")
+        return self
+
+
+def test_run_quantize_success_keeps_output(tmp_path):
+    src = tmp_path / "src.gguf"
+    src.write_bytes(GGUF_MAGIC)
+    dst = tmp_path / "out.gguf"
+    fake = _FakeRun(0, dst=dst, stdout="done")
+    run_quantize(src, dst, "Q3_K_M", quantizer=Path("llama-quantize"), run=fake)
+    assert dst.exists()
+    assert fake.cmd == ["llama-quantize", str(src), str(dst), "Q3_K_M"]
+
+
+def test_run_quantize_failure_deletes_partial_output(tmp_path):
+    src = tmp_path / "src.gguf"
+    src.write_bytes(GGUF_MAGIC)
+    dst = tmp_path / "out.gguf"
+    fake = _FakeRun(1, dst=dst, stderr="boom")
+    with pytest.raises(QuantizeRunFailed) as exc:
+        run_quantize(src, dst, "Q3_K_M", quantizer=Path("llama-quantize"), run=fake)
+    assert not dst.exists()
+    assert "boom" in exc.value.reason

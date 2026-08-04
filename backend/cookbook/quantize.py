@@ -174,3 +174,52 @@ def resolve_source_gguf(model_name: str, *, store_root: Path | None = None) -> P
             f"quantize GGUF models."
         )
     return blob
+
+
+class QuantizerNotFound(QuantizeError):
+    pass
+
+
+class QuantizeRunFailed(QuantizeError):
+    pass
+
+
+def find_quantizer(*, override: str | None = None) -> Path:
+    """Locate the llama.cpp quantize binary: explicit override, then
+    LAC_LLAMA_QUANTIZE, then PATH ('llama-quantize', legacy 'quantize')."""
+    if override:
+        p = Path(override)
+        if p.is_file():
+            return p
+        raise QuantizerNotFound(f"quantizer not found at the given path: {override}")
+    env = os.environ.get("LAC_LLAMA_QUANTIZE")
+    if env:
+        p = Path(env)
+        if p.is_file():
+            return p
+        raise QuantizerNotFound(
+            f"LAC_LLAMA_QUANTIZE points at a missing file: {env}"
+        )
+    for name in ("llama-quantize", "quantize"):
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+    raise QuantizerNotFound(
+        "No llama.cpp quantizer found. Install llama.cpp (build it or grab a "
+        "release) so `llama-quantize` is on your PATH, or point "
+        "LAC_LLAMA_QUANTIZE at the binary."
+    )
+
+
+def run_quantize(src: Path, dst: Path, quant_type: str, *,
+                 quantizer: Path, run=subprocess.run) -> None:
+    """Run the quantizer to completion; delete any partial output on failure."""
+    result = run([str(quantizer), str(src), str(dst), quant_type],
+                 capture_output=True, text=True)
+    if result.returncode != 0:
+        if Path(dst).exists():
+            Path(dst).unlink()
+        tail = ((result.stdout or "") + (result.stderr or ""))[-500:]
+        raise QuantizeRunFailed(
+            f"llama-quantize failed (exit {result.returncode}): {tail.strip()}"
+        )
