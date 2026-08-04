@@ -59,6 +59,11 @@ lac inspect .      # local-only repository map + durable JSON receipt
 lac agent .        # launch the supported local-model agent when ready
 ```
 
+The first `lac agent .` run in a repository records what LAC picked (model,
+context, permission preset) in a project profile under `.opencode/`; later runs
+reuse it instead of re-picking. `lac agent --model <m>` pins a specific
+installed model, `lac agent --reselect` re-picks and updates the profile.
+
 `lac inspect .` does not execute project code, package scripts, tests, or
 network requests. It discovers supported stacks, entry points, repository
 instructions, and candidate checks while excluding secret-shaped files,
