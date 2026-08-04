@@ -8,6 +8,8 @@ files behind on any failure path.
 """
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -94,3 +96,81 @@ def select_target_quant(model: ModelEntry, info, *,
         f"~{bpp:.2f} bpp at context {small_ctx}, more aggressive than Q2_K "
         f"({QUANTS[-1].bpp} bpp) — the deepest quant LAC produces."
     )
+
+
+class StoreError(QuantizeError):
+    """The Ollama store could not resolve an installed model to one GGUF file."""
+
+
+class ManifestNotFound(StoreError):
+    pass
+
+
+class MultiPartModel(StoreError):
+    pass
+
+
+class NonGgufWeights(StoreError):
+    pass
+
+
+_WEIGHTS_MEDIA_TYPE = "application/vnd.ollama.image.model"
+_GGUF_MAGIC = b"GGUF"
+
+
+def default_store_root() -> Path:
+    configured = os.environ.get("OLLAMA_MODELS")
+    if configured:
+        return Path(configured)
+    return Path.home() / ".ollama" / "models"
+
+
+def _manifest_path(store_root: Path, model_name: str) -> Path:
+    name, _, tag = model_name.partition(":")
+    tag = tag or "latest"
+    first, slash, rest = name.partition("/")
+    if slash and "." in first:
+        return store_root / "manifests" / first / rest / tag
+    return store_root / "manifests" / "registry.ollama.ai" / "library" / name / tag
+
+
+def resolve_source_gguf(model_name: str, *, store_root: Path | None = None) -> Path:
+    """Resolve an installed model to its single GGUF blob path (read-only).
+
+    Refuses manifests that are absent, sharded across several weights layers
+    (llama-quantize needs one input file), or backed by non-GGUF weights.
+    """
+    root = Path(store_root) if store_root is not None else default_store_root()
+    manifest_file = _manifest_path(root, model_name)
+    if not manifest_file.is_file():
+        raise ManifestNotFound(
+            f"{model_name} has no manifest in the Ollama store at {root} — "
+            f"is it installed? Run `lac pull {model_name}` first."
+        )
+    try:
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManifestNotFound(f"{model_name} has an unreadable manifest: {exc}") from exc
+    weights = [
+        layer for layer in manifest.get("layers", [])
+        if isinstance(layer, dict) and layer.get("mediaType") == _WEIGHTS_MEDIA_TYPE
+    ]
+    if not weights:
+        raise NonGgufWeights(f"{model_name} has no weights layer in its manifest.")
+    if len(weights) > 1:
+        raise MultiPartModel(
+            f"{model_name} is stored in {len(weights)} shards; LAC quantizes "
+            f"single-file GGUF models only."
+        )
+    digest = weights[0].get("digest", "")
+    blob = root / "blobs" / digest.replace(":", "-", 1)
+    if not blob.is_file():
+        raise ManifestNotFound(f"{model_name} manifest points at a missing blob: {digest}")
+    with open(blob, "rb") as f:
+        magic = f.read(4)
+    if magic != _GGUF_MAGIC:
+        raise NonGgufWeights(
+            f"{model_name} weights are not GGUF (e.g. safetensors) — LAC can only "
+            f"quantize GGUF models."
+        )
+    return blob

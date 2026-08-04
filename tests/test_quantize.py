@@ -6,7 +6,31 @@ import pytest
 
 from backend.cookbook.hardware import GPUInfo, SystemInfo, build_compute_tiers
 from backend.cookbook.recommend import ModelEntry
-from backend.cookbook.quantize import QuantizePlan, QuantizeRefusal, select_target_quant
+from backend.cookbook.quantize import (
+    ManifestNotFound,
+    MultiPartModel,
+    NonGgufWeights,
+    QuantizePlan,
+    QuantizeRefusal,
+    resolve_source_gguf,
+    select_target_quant,
+)
+
+GGUF_MAGIC = b"GGUF" + b"\x00" * 16
+
+
+def _fake_store(tmp_path, name, tag, layers, blob_heads):
+    manifest_dir = tmp_path / "manifests" / "registry.ollama.ai" / "library" / name
+    manifest_dir.mkdir(parents=True)
+    manifest = {"schemaVersion": 2, "layers": [
+        {"digest": f"sha256:{d}", "mediaType": mt, "size": 1} for d, mt in layers
+    ]}
+    (manifest_dir / tag).write_text(json.dumps(manifest), encoding="utf-8")
+    blobs = tmp_path / "blobs"
+    blobs.mkdir(exist_ok=True)
+    for d, head in blob_heads.items():
+        (blobs / f"sha256-{d}").write_bytes(head)
+    return tmp_path
 
 
 def _box(vram_gb: float, ram_gb: float = 32.0) -> SystemInfo:
@@ -63,3 +87,41 @@ def test_select_target_quant_moe_uses_active_params_for_kv():
     plan = select_target_quant(moe, _box(12.0, ram_gb=0.0))
     assert plan.target_quant in ("Q3_K_M", "Q2_K", "Q4_K_M")
     assert plan.estimated_size_gb == pytest.approx(30.0 * plan.target_bpp)
+
+
+def test_resolve_source_gguf_finds_single_weights_blob(tmp_path):
+    d = "a" * 64
+    root = _fake_store(tmp_path, "qwen3", "4b",
+                       [(d, "application/vnd.ollama.image.model"),
+                        ("b" * 64, "application/vnd.ollama.image.license")],
+                       {d: GGUF_MAGIC})
+    assert resolve_source_gguf("qwen3:4b", store_root=root) == root / "blobs" / f"sha256-{d}"
+
+
+def test_resolve_source_gguf_defaults_latest_tag(tmp_path):
+    d = "c" * 64
+    root = _fake_store(tmp_path, "llama3.2", "latest",
+                       [(d, "application/vnd.ollama.image.model")], {d: GGUF_MAGIC})
+    assert resolve_source_gguf("llama3.2", store_root=root).name == f"sha256-{d}"
+
+
+def test_resolve_source_gguf_refuses_multipart(tmp_path):
+    root = _fake_store(tmp_path, "big", "70b",
+                       [("a" * 64, "application/vnd.ollama.image.model"),
+                        ("b" * 64, "application/vnd.ollama.image.model")],
+                       {"a" * 64: GGUF_MAGIC, "b" * 64: GGUF_MAGIC})
+    with pytest.raises(MultiPartModel):
+        resolve_source_gguf("big:70b", store_root=root)
+
+
+def test_resolve_source_gguf_refuses_non_gguf_weights(tmp_path):
+    d = "d" * 64
+    root = _fake_store(tmp_path, "st", "1b",
+                       [(d, "application/vnd.ollama.image.model")], {d: b"\x00" * 8})
+    with pytest.raises(NonGgufWeights):
+        resolve_source_gguf("st:1b", store_root=root)
+
+
+def test_resolve_source_gguf_missing_manifest(tmp_path):
+    with pytest.raises(ManifestNotFound):
+        resolve_source_gguf("nope:1b", store_root=tmp_path)
