@@ -35,6 +35,7 @@ from .http_observer import (
 )
 from .ledger import atomic_write_json, seal_evidence
 from .raw_ollama import _is_loopback_ollama_host, build_raw_prompt, run_raw
+from .recipes import write_run_manifest
 from .result import ArmResult
 from .runtime_provenance import attest_runtime_bootstrap
 from .opencode_contract import rebind_config_manifest
@@ -741,6 +742,7 @@ def run_evaluation(
     identity_compare_fn: Callable[[EvaluationIdentitySnapshot, EvaluationIdentitySnapshot], tuple[EvidenceControlResult, EvidenceControlResult]] = compare_postflight_identities,
     identity_lease_fn: Callable[[EvaluationIdentitySnapshot], Any] = acquire_runtime_identity_leases,
     containment_wfp_api: object | None = None,
+    hardware_fn: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     run_id = run_id or _default_run_id()
     if not _RUN_ID.fullmatch(run_id):
@@ -1562,6 +1564,16 @@ def run_evaluation(
                 "observer_cleanup_complete": False,
             },
         )
+    if hardware_fn is None:
+        from ..cookbook.hardware import detect as _detect
+        hardware_fn = _detect
+    write_run_manifest(
+        run_root,
+        hardware_fn(),
+        plan.base_model,
+        plan.lac_model,
+        plan.task.generation.to_dict() if plan.task.generation is not None else None,
+    )
     evidence = seal_evidence(
         run_root,
         mode,
