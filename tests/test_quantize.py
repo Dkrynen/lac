@@ -8,6 +8,7 @@ import pytest
 from backend.cookbook.hardware import GPUInfo, SystemInfo, build_compute_tiers
 from backend.cookbook.recommend import ModelEntry
 from backend.cookbook.quantize import (
+    InsufficientDiskSpace,
     ManifestNotFound,
     MultiPartModel,
     NonGgufWeights,
@@ -15,7 +16,9 @@ from backend.cookbook.quantize import (
     QuantizeRefusal,
     QuantizerNotFound,
     QuantizeRunFailed,
+    check_disk_space,
     find_quantizer,
+    required_space_gb,
     resolve_source_gguf,
     run_quantize,
     select_target_quant,
@@ -205,3 +208,47 @@ def test_run_quantize_failure_deletes_partial_output(tmp_path):
         run_quantize(src, dst, "Q3_K_M", quantizer=Path("llama-quantize"), run=fake)
     assert not dst.exists()
     assert "boom" in exc.value.reason
+
+
+def _plan(size_gb=10.0):
+    return QuantizePlan(target_quant="Q3_K_M", target_bpp=0.48,
+                        estimated_size_gb=size_gb, quality_cost=8.0, context=8192)
+
+
+def test_required_space_covers_staging_plus_import_copy():
+    assert required_space_gb(_plan(10.0)) == pytest.approx(22.0)
+
+
+def _usage(free_gb_by_path):
+    def fake(path):
+        for key, free in free_gb_by_path.items():
+            if key in str(path):
+                return type("U", (), {"free": int(free * 1024**3)})()
+        return type("U", (), {"free": int(1000 * 1024**3)})()
+    return fake
+
+
+def test_check_disk_space_passes_when_both_volumes_have_room(tmp_path):
+    staging = tmp_path / "staging"
+    store = tmp_path / "store"
+    staging.mkdir()
+    store.mkdir()
+    check_disk_space(staging, store, 22.0, disk_usage=_usage({}))
+
+
+def test_check_disk_space_refuses_short_staging_volume(tmp_path):
+    staging = tmp_path / "staging"
+    store = tmp_path / "store"
+    staging.mkdir()
+    store.mkdir()
+    with pytest.raises(InsufficientDiskSpace, match="staging"):
+        check_disk_space(staging, store, 22.0, disk_usage=_usage({"staging": 5.0}))
+
+
+def test_check_disk_space_refuses_short_store_volume(tmp_path):
+    staging = tmp_path / "staging"
+    store = tmp_path / "store"
+    staging.mkdir()
+    store.mkdir()
+    with pytest.raises(InsufficientDiskSpace, match="store"):
+        check_disk_space(staging, store, 22.0, disk_usage=_usage({"store": 5.0}))

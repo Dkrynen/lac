@@ -223,3 +223,34 @@ def run_quantize(src: Path, dst: Path, quant_type: str, *,
         raise QuantizeRunFailed(
             f"llama-quantize failed (exit {result.returncode}): {tail.strip()}"
         )
+
+
+class InsufficientDiskSpace(QuantizeError):
+    pass
+
+
+def required_space_gb(plan: QuantizePlan) -> float:
+    """Staged file + Ollama's import copy + 10% margin."""
+    return plan.estimated_size_gb * 2.2
+
+
+def _existing_anchor(path: Path) -> Path:
+    anchor = Path(path)
+    while not anchor.exists() and anchor.parent != anchor:
+        anchor = anchor.parent
+    return anchor
+
+
+def check_disk_space(staging_dir: Path, store_root: Path, required_gb: float, *,
+                     disk_usage=shutil.disk_usage) -> None:
+    """Refuse unless BOTH the staging volume and the Ollama store volume have
+    required_gb free — the quantized file is staged, then Ollama copies it into
+    its blob store on import."""
+    for label, path in (("staging", Path(staging_dir)), ("Ollama store", Path(store_root))):
+        free_gb = disk_usage(str(_existing_anchor(path))).free / (1024 ** 3)
+        if free_gb < required_gb:
+            raise InsufficientDiskSpace(
+                f"Not enough disk space: the {label} volume at {path} has "
+                f"{free_gb:.1f} GB free but ~{required_gb:.1f} GB is needed "
+                f"(quantized file + Ollama's import copy)."
+            )
