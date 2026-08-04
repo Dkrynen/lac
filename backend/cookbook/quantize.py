@@ -11,13 +11,21 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from . import proc
+
 from .fit import _ctx_options, available_vram_gb
-from .recommend import QUANTS, ModelEntry, _estimate_vram
+from .recommend import (
+    QUANTS,
+    ModelEntry,
+    _estimate_vram,
+    load_models,
+    register_custom_model,
+)
+from ..agent_launch.variant import is_installed, normalize_model_name
 
 QUANT_ALIASES = {"Q8_0": "Q8"}
 LLAMA_QUANT_NAMES = {"Q8": "Q8_0"}
@@ -55,7 +63,7 @@ def _active_params_b(model: ModelEntry) -> float:
     return model.active_params_b if model.is_moe and model.active_params_b else model.params_b
 
 
-def select_target_quant(model: ModelEntry, info, *,
+def select_target_quant(model: ModelEntry, info=None, *,
                         vram_override_gb: float | None = None) -> QuantizePlan:
     """Pick the quant + context that makes `model` fit, or raise QuantizeRefusal.
 
@@ -63,6 +71,8 @@ def select_target_quant(model: ModelEntry, info, *,
     only lose quality) and when nothing on the ladder fits (shows the bpp budget
     a custom quant would need — below Q2_K is beyond what LAC produces).
     """
+    if vram_override_gb is None and info is None:
+        raise ValueError("select_target_quant needs info or vram_override_gb")
     avail = vram_override_gb if vram_override_gb is not None else available_vram_gb(info)
     q4 = QUANTS[_Q4_INDEX]
     for ctx in _ctx_options(model):
@@ -212,7 +222,7 @@ def find_quantizer(*, override: str | None = None) -> Path:
 
 
 def run_quantize(src: Path, dst: Path, quant_type: str, *,
-                 quantizer: Path, run=subprocess.run) -> None:
+                 quantizer: Path, run=proc.run) -> None:
     """Run the quantizer to completion; delete any partial output on failure."""
     result = run([str(quantizer), str(src), str(dst), quant_type],
                  capture_output=True, text=True)
@@ -254,3 +264,110 @@ def check_disk_space(staging_dir: Path, store_root: Path, required_gb: float, *,
                 f"{free_gb:.1f} GB free but ~{required_gb:.1f} GB is needed "
                 f"(quantized file + Ollama's import copy)."
             )
+
+
+STAGING_DIR = Path.home() / ".model-hub" / "quantize-staging"
+
+
+def quantize_variant_name(base_model: str, quant: str) -> str:
+    return f"{base_model}-{quant.lower()}-fit"
+
+
+@dataclass(frozen=True)
+class QuantizeResult:
+    variant: str
+    plan: QuantizePlan
+    source: str
+    catalog_id: str
+
+
+def _quant_bpp(quant_name: str) -> float | None:
+    name = QUANT_ALIASES.get(quant_name, quant_name)
+    for q in QUANTS:
+        if q.name == name:
+            return q.bpp
+    return None
+
+
+def quantize_model(model_id: str, *,
+                   info=None,
+                   vram_override_gb: float | None = None,
+                   list_names: Callable[[], Iterable[str]],
+                   quant_levels: Callable[[], dict],
+                   create_from_file: Callable[[str, Path], None],
+                   store_root: Path | None = None,
+                   quantizer: str | None = None,
+                   run=proc.run,
+                   disk_usage=shutil.disk_usage) -> QuantizeResult:
+    """Quantize an installed model into a fitting local variant.
+
+    Every refusal is a QuantizeError subclass with a user-facing reason; every
+    failure after staging deletes the staged file. Never triggers a download:
+    the source must already be installed (variant.py hard rule).
+    """
+    by_id = {m.id: m for m in load_models()}
+    model = by_id.get(model_id)
+    if model is None:
+        raise QuantizeRefusal(
+            f"Unknown model '{model_id}'. LAC quantizes models it knows — "
+            f"see `lac browse` for the catalog."
+        )
+    installed = list(list_names())
+    if not is_installed(model_id, installed):
+        raise QuantizeRefusal(
+            f"{model_id} is not installed. Run `lac pull {model_id}` first — "
+            f"LAC never downloads a model silently."
+        )
+    plan = select_target_quant(model, info, vram_override_gb=vram_override_gb)
+    variant = quantize_variant_name(normalize_model_name(model_id), plan.target_quant)
+    if is_installed(variant, installed):
+        raise QuantizeRefusal(
+            f"{variant} already exists. Delete it first: `lac delete {variant}`."
+        )
+    levels = quant_levels()
+    source_level = None
+    for name, level in levels.items():
+        if normalize_model_name(name) == normalize_model_name(model_id):
+            source_level = level or None
+            break
+    source_bpp = _quant_bpp(source_level) if source_level else None
+    if source_bpp is None:
+        raise QuantizeRefusal(
+            f"Cannot verify the quant of {model_id} (reported: "
+            f"{source_level or 'unknown'}) — LAC only quantizes from known "
+            f"ladder quants."
+        )
+    if plan.target_bpp >= source_bpp:
+        raise QuantizeRefusal(
+            f"{model_id} is already at {source_level}; re-quantizing to "
+            f"{plan.target_quant} cannot improve it."
+        )
+    src = resolve_source_gguf(model_id, store_root=store_root)
+    root = Path(store_root) if store_root is not None else default_store_root()
+    check_disk_space(STAGING_DIR, root, required_space_gb(plan), disk_usage=disk_usage)
+    quantizer_path = find_quantizer(override=quantizer)
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    safe = model_id.replace(":", "-").replace("/", "-")
+    staged = STAGING_DIR / f"{safe}-{plan.target_quant.lower()}.gguf"
+    try:
+        run_quantize(src, staged, LLAMA_QUANT_NAMES.get(plan.target_quant, plan.target_quant),
+                     quantizer=quantizer_path, run=run)
+        create_from_file(variant, staged)
+        entry = {
+            "id": variant,
+            "name": f"{model.name} {plan.target_quant} (LAC quantized)",
+            "provider": model.provider,
+            "params_b": model.params_b,
+            "arch": model.arch,
+            "context": plan.context,
+            "use_cases": list(model.use_cases),
+            "is_moe": model.is_moe,
+            "quantized_from": model.id,
+        }
+        if model.active_params_b is not None:
+            entry["active_params_b"] = model.active_params_b
+        register_custom_model(entry)
+    finally:
+        if staged.exists():
+            staged.unlink()
+    return QuantizeResult(variant=variant, plan=plan, source=model_id, catalog_id=variant)

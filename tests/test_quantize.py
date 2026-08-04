@@ -175,17 +175,17 @@ def test_find_quantizer_not_found_has_install_guidance(monkeypatch):
 
 
 class _FakeRun:
-    def __init__(self, returncode, dst=None, stdout="", stderr=""):
+    def __init__(self, returncode, write_dst=False, stdout="", stderr=""):
         self.returncode = returncode
-        self.dst = dst
+        self.write_dst = write_dst
         self.stdout = stdout
         self.stderr = stderr
         self.cmd = None
 
     def __call__(self, cmd, **kw):
         self.cmd = cmd
-        if self.dst is not None:
-            Path(self.dst).write_bytes(b"partial")
+        if self.write_dst:
+            Path(cmd[2]).write_bytes(b"partial")
         return self
 
 
@@ -193,7 +193,7 @@ def test_run_quantize_success_keeps_output(tmp_path):
     src = tmp_path / "src.gguf"
     src.write_bytes(GGUF_MAGIC)
     dst = tmp_path / "out.gguf"
-    fake = _FakeRun(0, dst=dst, stdout="done")
+    fake = _FakeRun(0, write_dst=True, stdout="done")
     run_quantize(src, dst, "Q3_K_M", quantizer=Path("llama-quantize"), run=fake)
     assert dst.exists()
     assert fake.cmd == ["llama-quantize", str(src), str(dst), "Q3_K_M"]
@@ -203,7 +203,7 @@ def test_run_quantize_failure_deletes_partial_output(tmp_path):
     src = tmp_path / "src.gguf"
     src.write_bytes(GGUF_MAGIC)
     dst = tmp_path / "out.gguf"
-    fake = _FakeRun(1, dst=dst, stderr="boom")
+    fake = _FakeRun(1, write_dst=True, stderr="boom")
     with pytest.raises(QuantizeRunFailed) as exc:
         run_quantize(src, dst, "Q3_K_M", quantizer=Path("llama-quantize"), run=fake)
     assert not dst.exists()
@@ -252,3 +252,147 @@ def test_check_disk_space_refuses_short_store_volume(tmp_path):
     store.mkdir()
     with pytest.raises(InsufficientDiskSpace, match="store"):
         check_disk_space(staging, store, 22.0, disk_usage=_usage({"store": 5.0}))
+
+
+import backend.cookbook.quantize as quantize_mod
+from backend.cookbook.quantize import (
+    QuantizeResult,
+    quantize_model,
+    quantize_variant_name,
+)
+
+
+def test_quantize_variant_name_follows_agent_variant_convention():
+    assert quantize_variant_name("qwen3:14b", "Q3_K_M") == "qwen3:14b-q3_k_m-fit"
+
+
+def _catalog_model():
+    return ModelEntry(id="qwen3:14b", name="Qwen3 14B", provider="Qwen",
+                      params_b=14.0, arch="qwen3", context=32768,
+                      use_cases=["coding", "general"], is_moe=False)
+
+
+def _orchestra(tmp_path, monkeypatch, *,
+               names=("qwen3:14b",), levels=None, store_layers=None,
+               run=None, create=None, registered=None,
+               disk_free_gb=1000.0, quantizer_file=True):
+    monkeypatch.setattr(quantize_mod, "load_models", lambda: [_catalog_model()])
+    monkeypatch.setattr(quantize_mod, "register_custom_model",
+                        lambda entry: registered.append(entry) if registered is not None else None)
+    monkeypatch.setattr(quantize_mod, "STAGING_DIR", tmp_path / "staging")
+    store = tmp_path / "store"
+    d = "a" * 64
+    layers = store_layers if store_layers is not None else [(d, "application/vnd.ollama.image.model")]
+    _fake_store(store, "qwen3", "14b", layers, {d: GGUF_MAGIC})
+    quantizer = None
+    if quantizer_file:
+        quantizer = tmp_path / "llama-quantize.exe"
+        quantizer.write_bytes(b"MZ")
+    return dict(
+        list_names=lambda: list(names),
+        quant_levels=lambda: (levels if levels is not None else {"qwen3:14b": "Q4_K_M"}),
+        create_from_file=create if create is not None else (lambda name, path: None),
+        store_root=store,
+        quantizer=str(quantizer) if quantizer else None,
+        run=run if run is not None else _FakeRun(0, write_dst=True),
+        disk_usage=_usage({}) if disk_free_gb > 500 else _usage({"": disk_free_gb}),
+    )
+
+
+def test_quantize_model_happy_path(tmp_path, monkeypatch):
+    created = []
+    registered = []
+    kw = _orchestra(tmp_path, monkeypatch,
+                    create=lambda name, path: created.append((name, Path(path))),
+                    registered=registered)
+    result = quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+    assert isinstance(result, QuantizeResult)
+    assert result.variant == "qwen3:14b-q3_k_m-fit"
+    assert result.plan.target_quant == "Q3_K_M"
+    assert result.source == "qwen3:14b"
+    assert created == [(result.variant, kw["run"].cmd and Path(kw["run"].cmd[2]))]
+    assert registered[0]["id"] == result.variant
+    assert registered[0]["quantized_from"] == "qwen3:14b"
+    assert not Path(kw["run"].cmd[2]).exists()
+
+
+def test_quantize_model_refuses_unknown_model(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch)
+    with pytest.raises(QuantizeRefusal, match="Unknown model"):
+        quantize_model("nope:1b", vram_override_gb=8.0, **kw)
+
+
+def test_quantize_model_refuses_uninstalled_source(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch, names=("other:1b",))
+    with pytest.raises(QuantizeRefusal, match="lac pull"):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+
+
+def test_quantize_model_refuses_when_model_already_fits(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch)
+    with pytest.raises(QuantizeRefusal, match="already fits"):
+        quantize_model("qwen3:14b", vram_override_gb=48.0, **kw)
+
+
+def test_quantize_model_refuses_when_source_already_at_target(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch, levels={"qwen3:14b": "Q3_K_M"})
+    with pytest.raises(QuantizeRefusal, match="already"):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+
+
+def test_quantize_model_refuses_upward_requant(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch, levels={"qwen3:14b": "Q2_K"})
+    with pytest.raises(QuantizeRefusal, match="cannot"):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+
+
+def test_quantize_model_refuses_existing_variant(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch,
+                    names=("qwen3:14b", "qwen3:14b-q3_k_m-fit"))
+    with pytest.raises(QuantizeRefusal, match="exists"):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+
+
+def test_quantize_model_refuses_multipart_store(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch, store_layers=[
+        ("a" * 64, "application/vnd.ollama.image.model"),
+        ("b" * 64, "application/vnd.ollama.image.model"),
+    ])
+    with pytest.raises(MultiPartModel):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+
+
+def test_quantize_model_refuses_insufficient_disk(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch, disk_free_gb=1.0)
+    with pytest.raises(InsufficientDiskSpace):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+
+
+def test_quantize_model_refuses_missing_quantizer(tmp_path, monkeypatch):
+    monkeypatch.delenv("LAC_LLAMA_QUANTIZE", raising=False)
+    monkeypatch.setattr("backend.cookbook.quantize.shutil.which", lambda name: None)
+    kw = _orchestra(tmp_path, monkeypatch, quantizer_file=False)
+    with pytest.raises(QuantizerNotFound, match="llama.cpp"):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+
+
+def test_quantize_model_runner_failure_cleans_staging(tmp_path, monkeypatch):
+    created = []
+    kw = _orchestra(tmp_path, monkeypatch,
+                    run=_FakeRun(1, write_dst=True, stderr="boom"),
+                    create=lambda name, path: created.append(name))
+    with pytest.raises(QuantizeRunFailed):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+    assert created == []
+    staging = tmp_path / "staging"
+    assert not staging.exists() or not any(staging.iterdir())
+
+
+def test_quantize_model_import_failure_cleans_staging(tmp_path, monkeypatch):
+    def boom(name, path):
+        raise RuntimeError("ollama import failed")
+    kw = _orchestra(tmp_path, monkeypatch, create=boom)
+    with pytest.raises(RuntimeError, match="ollama import failed"):
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+    staging = tmp_path / "staging"
+    assert not staging.exists() or not any(staging.iterdir())
