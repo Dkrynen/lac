@@ -721,3 +721,25 @@ def test_recommend_details_carry_quant_quality_cost():
         assert r.details["quant_quality_cost"] >= 0
     for r in (r for r in recs if r.quant == "F16"):
         assert r.details["quant_quality_cost"] == 0.0
+
+
+def test_quantized_from_defaults_none():
+    m = ModelEntry(id="x", name="X", provider="p", params_b=1.0, arch="llama",
+                   context=4096, use_cases=["coding"], is_moe=False)
+    assert m.quantized_from is None
+
+
+def test_recommend_top_k_excludes_quantized_derivatives(monkeypatch):
+    import sys
+    rec_mod = sys.modules["backend.cookbook.recommend"]
+    base = load_models()
+    derivative = ModelEntry(
+        id="qwen3:4b-q3_k_m-fit", name="Qwen3 4B Q3_K_M (LAC quantized)",
+        provider="Qwen", params_b=4.0, arch="qwen3", context=32768,
+        use_cases=["coding", "general"], is_moe=False,
+        quantized_from="qwen3:4b",
+    )
+    monkeypatch.setattr(rec_mod, "load_models", lambda: base + [derivative])
+    recs = recommend(_sys16(), use_case="coding", top_k=200)
+    assert _find(recs, "qwen3:4b-q3_k_m-fit") is None
+    assert _find(recs, "qwen3:4b") is not None

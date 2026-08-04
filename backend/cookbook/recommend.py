@@ -26,6 +26,7 @@ class ModelEntry:
     new: bool = False
     distill_of: Optional[str] = None
     family: Optional[str] = None
+    quantized_from: Optional[str] = None
 
 
 @dataclass
@@ -530,6 +531,8 @@ def recommend(info: SystemInfo, use_case: str = "coding",
     all_recs: list[Recommendation] = []
 
     for model in models:
+        if model.quantized_from:
+            continue
         if use_case == "agent":
             if not _is_agent_capable(model):
                 continue
