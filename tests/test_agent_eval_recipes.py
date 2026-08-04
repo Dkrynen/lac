@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+
+import pytest
 
 import backend.agent_eval.recipes as recipes_mod
 from backend.cookbook.hardware import GPUInfo, SystemInfo
@@ -11,7 +14,10 @@ from backend.agent_eval.recipes import (
     hardware_class,
     lookup_recipe,
     proven_for,
+    write_run_manifest,
 )
+
+WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="atomic_write_json is Windows-only")
 
 
 def _info(gpu_name="", vram=0.0, backend="cuda", apple=False, ram=32.0):
@@ -65,9 +71,12 @@ def _make_run(root, name, hw_class, model, tok_s_list, quant="Q4_K_M", context=6
         }), encoding="utf-8")
     if manifest:
         run_root.mkdir(parents=True, exist_ok=True)
-        (run_root / "run_manifest.json").write_text(json.dumps({
-            "hardware_class": hw_class, "quant": quant, "context": context, "use_case": "agent",
-        }), encoding="utf-8")
+        manifest_payload = {"hardware_class": hw_class, "use_case": "agent"}
+        if quant is not None:
+            manifest_payload["quant"] = quant
+        if context is not None:
+            manifest_payload["context"] = context
+        (run_root / "run_manifest.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
     return run_root
 
 
@@ -161,3 +170,78 @@ def test_proven_for_returns_none_for_unproven_model(tmp_path, monkeypatch):
     _make_run(tmp_path, "r2", "amd-16gb", "gpt-oss:20b", [94.0])
     _make_run(tmp_path, "r3", "amd-16gb", "gpt-oss:20b", [92.0])
     assert proven_for(_info("AMD Radeon RX 6800 XT", 16.0, "rocm"), "qwen3.6:27b", root=tmp_path) is None
+
+
+def test_aggregate_tolerates_manifest_without_quant_or_context(tmp_path, monkeypatch):
+    _seal_all(monkeypatch)
+    _make_run(tmp_path, "r1", "amd-16gb", "gpt-oss:20b", [90.0], quant=None, context=None)
+    _make_run(tmp_path, "r2", "amd-16gb", "gpt-oss:20b", [94.0], quant=None, context=None)
+    _make_run(tmp_path, "r3", "amd-16gb", "gpt-oss:20b", [92.0], quant=None, context=None)
+    cards = aggregate_recipes(tmp_path, min_trials=3)
+    card = cards[("gpt-oss:20b", "amd-16gb")]
+    assert card.quant is None  # not recorded by the eval: honest, never guessed
+    assert card.context is None
+
+
+@WINDOWS_ONLY
+def test_write_run_manifest_records_hardware_models_and_generation(tmp_path):
+    run_root = tmp_path / "run-001"
+    run_root.mkdir()
+    generation = {"temperature": 0.0, "seed_base": 1234, "max_output_tokens": 512}
+    write_run_manifest(
+        run_root,
+        _info("AMD Radeon RX 6800 XT", 16.0, "rocm"),
+        "gpt-oss:20b",
+        "gpt-oss:20b-agent",
+        generation=generation,
+    )
+    manifest = json.loads((run_root / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest == {
+        "hardware_class": "amd-16gb",
+        "base_model": "gpt-oss:20b",
+        "lac_model": "gpt-oss:20b-agent",
+        "generation": generation,
+    }
+    with pytest.raises(FileExistsError):  # sealed artifacts are immutable
+        write_run_manifest(
+            run_root,
+            _info("AMD Radeon RX 6800 XT", 16.0, "rocm"),
+            "gpt-oss:20b",
+            "gpt-oss:20b-agent",
+        )
+
+
+@WINDOWS_ONLY
+def test_write_run_manifest_omits_what_the_plan_does_not_track(tmp_path):
+    run_root = tmp_path / "run-002"
+    run_root.mkdir()
+    write_run_manifest(
+        run_root,
+        _info("NVIDIA GeForce RTX 4090", 24.0, "cuda"),
+        "gpt-oss:20b",
+        "gpt-oss:20b-agent",
+    )
+    manifest = json.loads((run_root / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest == {
+        "hardware_class": "nvidia-24gb",
+        "base_model": "gpt-oss:20b",
+        "lac_model": "gpt-oss:20b-agent",
+    }
+    assert "generation" not in manifest
+    assert "quant" not in manifest  # the plan tracks neither: omit, never guess
+    assert "context" not in manifest
+
+
+@WINDOWS_ONLY
+def test_write_run_manifest_round_trips_into_recipe_card(tmp_path, monkeypatch):
+    _seal_all(monkeypatch)
+    info = _info("AMD Radeon RX 6800 XT", 16.0, "rocm")
+    for name, tok_s in (("r1", 90.0), ("r2", 94.0), ("r3", 92.0)):
+        run_root = _make_run(tmp_path, name, "amd-16gb", "gpt-oss:20b", [tok_s], manifest=False)
+        write_run_manifest(run_root, info, "gpt-oss:20b", "gpt-oss:20b-agent")
+    card = proven_for(info, "gpt-oss:20b", root=tmp_path)
+    assert card is not None
+    assert card.tokens_per_second == 92.0  # median of 90/92/94
+    assert card.trials == 3
+    assert card.quant is None
+    assert card.context is None

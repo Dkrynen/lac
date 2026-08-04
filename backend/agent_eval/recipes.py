@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..cookbook.hardware import SystemInfo
-from .ledger import verify_evidence
+from .ledger import atomic_write_json, verify_evidence
 
 # Common discrete-VRAM sizes; a card's class buckets to the nearest so a
 # 15.9 GB card and a 16 GB card match the same "amd-16gb" recipes.
@@ -26,10 +26,10 @@ class RecipeCard:
     model_id: str
     hardware_class: str
     tokens_per_second: float
-    quant: str
-    context: int
     trials: int
     evidence_run: str
+    quant: str | None = None
+    context: int | None = None
     use_case: str = "agent"
 
 
@@ -138,10 +138,10 @@ def aggregate_recipes(evidence_root, min_trials: int = 3) -> dict[tuple[str, str
             model_id=model,
             hardware_class=hw_class,
             tokens_per_second=round(statistics.median(entry["tok_s"]), 2),
-            quant=manifest.get("quant", "Q4_K_M"),
-            context=int(manifest.get("context", 0)),
             trials=trials,
             evidence_run=sorted(entry["runs"])[-1],
+            quant=manifest.get("quant"),
+            context=manifest.get("context"),
             use_case=manifest.get("use_case", "agent"),
         )
     return cards
@@ -170,3 +170,21 @@ def proven_for(info: SystemInfo, model_id: str, root=None):
     if not scan_root.is_dir():
         return None
     return lookup_recipe(aggregate_recipes(scan_root), model_id, info)
+
+
+def write_run_manifest(run_root, hardware_info, base_model, lac_model, generation=None):
+    """Write the eval-time hardware + config manifest, sealed with the run.
+
+    Captures the hardware class the eval ran on (so recipe cards can be
+    projected per class) plus the base/lac models and generation settings.
+    quant/num_ctx are not tracked by the eval plan, so they are omitted
+    rather than guessed.
+    """
+    manifest = {
+        "hardware_class": hardware_class(hardware_info),
+        "base_model": base_model,
+        "lac_model": lac_model,
+    }
+    if generation is not None:
+        manifest["generation"] = generation
+    atomic_write_json(Path(run_root) / "run_manifest.json", manifest)
