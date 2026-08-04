@@ -68,3 +68,15 @@ def test_fits_verdict_carries_a_context():
     v = fit_verdict(_model("qwen3.6:27b"), _box(24.0))
     assert v.kind == "fits"
     assert v.context is not None and v.context > 0
+
+
+def test_available_vram_gb_is_public():
+    from backend.cookbook.fit import available_vram_gb
+    # No compute tiers: best discrete VRAM, with the RAM-quarter fallback below it.
+    assert available_vram_gb(_box(16.0)) == 16.0
+    assert available_vram_gb(_box(0.0, ram_gb=16.0)) == 4.0
+    # With compute tiers: combined GPU tier memory wins.
+    from backend.cookbook.hardware import build_compute_tiers
+    info = _box(16.0)
+    info.compute_tiers = build_compute_tiers(info.gpus, info.ram_gb)
+    assert available_vram_gb(info) == 16.0

@@ -494,6 +494,83 @@ def cmd_delete(args):
     print(f"{C['green']}✓ {model} deleted.{C['reset']}")
 
 
+def cmd_quantize(args):
+    from backend.cookbook.quantize import (
+        QuantizeError,
+        quantize_model,
+        select_target_quant,
+    )
+    from backend.cookbook.recommend import load_models
+
+    by_id = {m.id: m for m in load_models()}
+    model = by_id.get(args.model)
+    if model is None:
+        eprint(f"{C['red']}Unknown model '{args.model}'. LAC quantizes models it "
+               f"knows — see `lac browse`.{C['reset']}")
+        sys.exit(1)
+
+    info = None
+    if args.vram is None:
+        from backend.cookbook.hardware import detect
+        print(f"{C['yellow']}Scanning hardware...{C['reset']}")
+        info = detect()
+
+    try:
+        plan = select_target_quant(model, info, vram_override_gb=args.vram)
+    except QuantizeError as e:
+        eprint(f"{C['red']}{e.reason}{C['reset']}")
+        sys.exit(1)
+
+    print(f"\n{C['bold']}Plan:{C['reset']} {model.name} -> {plan.target_quant} "
+          f"at context {plan.context}")
+    print(f"  ~{plan.estimated_size_gb} GB on disk, "
+          f"~{plan.quality_cost:.0f} quality pts below F16.")
+    if not args.yes:
+        print(f"{C['yellow']}Proceed? [y/N] {C['reset']}", end="", flush=True)
+        if input().strip().lower() not in ("y", "yes"):
+            print(f"{C['gray']}Cancelled.{C['reset']}")
+            return
+
+    tags = ollama("GET", "/api/tags")
+    if "error" in tags:
+        eprint(f"{C['red']}{tags['error']}{C['reset']}")
+        sys.exit(1)
+    installed = tags.get("models", [])
+    names = [m["name"] for m in installed]
+    levels = {m["name"]: (m.get("details") or {}).get("quantization_level", "")
+              for m in installed}
+
+    def create_from_file(name, path):
+        for chunk in ollama_stream(
+            "/api/create", {"model": name, "from": str(path), "stream": True},
+            timeout=3600,
+        ):
+            if "error" in chunk:
+                raise RuntimeError(chunk["error"])
+
+    print(f"{C['yellow']}Quantizing {args.model} -> {plan.target_quant} "
+          f"(this can take a while for large models)...{C['reset']}")
+    try:
+        result = quantize_model(
+            args.model,
+            info=info,
+            vram_override_gb=args.vram,
+            list_names=lambda: names,
+            quant_levels=lambda: levels,
+            create_from_file=create_from_file,
+        )
+    except QuantizeError as e:
+        eprint(f"{C['red']}{e.reason}{C['reset']}")
+        sys.exit(1)
+    except RuntimeError as e:
+        eprint(f"{C['red']}Ollama import failed: {e}{C['reset']}")
+        sys.exit(1)
+
+    print(f"{C['green']}✓ {result.variant} created — {result.plan.target_quant}, "
+          f"~{result.plan.estimated_size_gb} GB at context "
+          f"{result.plan.context}.{C['reset']}")
+
+
 def cmd_ps(args):
     result = ollama("GET", "/api/ps")
     if "error" in result:
@@ -916,8 +993,10 @@ def cmd_recommend(args):
                 print(f"{C['green']}{target.name} fits your hardware at {v.quant}.{C['reset']}")
             elif v.kind == "fits_at_quant":
                 print(f"{C['yellow']}{target.name} fits at {v.quant} (~{v.quality_cost:.0f} quality pts below F16).{C['reset']}")
+                print(f"  {C['cyan']}Run: lac quantize {args.model} — builds a local {v.quant} copy that fits.{C['reset']}")
             elif v.kind == "quantize_to_fit":
-                print(f"{C['yellow']}{target.name} doesn't fit as-is; quantizing to ~{v.bpp} bpp would fit.{C['reset']}")
+                print(f"{C['yellow']}{target.name} doesn't fit as-is; quantizing to ~{v.bpp} bpp would fit — "
+                      f"deeper than Q2_K, beyond what LAC can quantize today.{C['reset']}")
             else:
                 print(f"{C['red']}{target.name} won't fit your hardware.{C['reset']}")
             sugg = recommend_distill(info, args.model, use_case)
@@ -1405,6 +1484,18 @@ def build_parser(*, include_plugins=True):
     p_delete = sub.add_parser("delete", aliases=["rm"], help="Delete a model")
     p_delete.add_argument("model", help="Model name")
     p_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+
+    p_quant = sub.add_parser(
+        "quantize",
+        help="Quantize an installed model so it fits your hardware",
+    )
+    p_quant.add_argument("model", help="Installed model name (e.g. qwen3:14b)")
+    p_quant.add_argument(
+        "--vram", type=float, default=None,
+        help="Override available VRAM in GB (default: scan hardware)",
+    )
+    p_quant.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_quant.set_defaults(func=cmd_quantize)
 
     p_ps = sub.add_parser("ps", help="Show running models")
     p_inspect = sub.add_parser(

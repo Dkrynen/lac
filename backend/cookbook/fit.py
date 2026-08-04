@@ -41,7 +41,10 @@ def _ctx_options(model: ModelEntry) -> list[int]:
     return [c for c in [model.context, *CTX_LADDER] if c <= model.context]
 
 
-def _available_vram_gb(info: SystemInfo) -> float:
+def available_vram_gb(info: SystemInfo) -> float:
+    """VRAM budget LAC plans against: combined GPU tier memory when compute
+    tiers exist (RAM-half fallback when they hold nothing), else the best
+    discrete VRAM with a RAM-quarter fallback."""
     tiers = info.compute_tiers
     if tiers:
         combined = sum(t.memory_gb for t in tiers if t.kind != "ram")
@@ -52,7 +55,7 @@ def _available_vram_gb(info: SystemInfo) -> float:
 def _max_fitting_bpp(model: ModelEntry, info: SystemInfo, ctx: int) -> Optional[float]:
     """Largest bits/param at which the model's weights+KV+overhead fit. None if
     even an arbitrarily small quant cannot fit (KV alone exceeds the budget)."""
-    avail = _available_vram_gb(info)
+    avail = available_vram_gb(info)
     active = model.active_params_b if model.is_moe and model.active_params_b else model.params_b
     kv = 0.000008 * active * ctx
     overhead = 0.5
