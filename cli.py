@@ -21,6 +21,7 @@ Subcommands:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -494,6 +495,47 @@ def cmd_delete(args):
     print(f"{C['green']}✓ {model} deleted.{C['reset']}")
 
 
+def sha256_file(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _upload_blob(path, digest_hex):
+    url = f"{get_host()}/api/blobs/sha256:{digest_hex}"
+    with open(path, "rb") as f:
+        req = urllib.request.Request(url, data=f, method="POST")
+        req.add_header("Content-Type", "application/octet-stream")
+        try:
+            resp = urllib.request.urlopen(req, timeout=7200)
+            resp.read()
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"blob upload failed: HTTP {e.code}: {e.read().decode()[:200]}"
+            ) from None
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"blob upload failed: {e.reason}") from None
+
+
+def ollama_import_gguf(name, path, *, upload_fn=None, create_stream_fn=None):
+    """Import a local GGUF into Ollama: upload it as a blob, then create the
+    model via `files`. Ollama 0.31 rejects `from: <path>` ("invalid model
+    name") — blob upload + files is the supported local-import flow."""
+    digest = sha256_file(path)
+    upload = upload_fn if upload_fn is not None else _upload_blob
+    upload(path, digest)
+    stream = create_stream_fn if create_stream_fn is not None else (
+        lambda body: ollama_stream("/api/create", body, timeout=7200)
+    )
+    for chunk in stream({"model": name,
+                         "files": {"model.gguf": f"sha256:{digest}"},
+                         "stream": True}):
+        if "error" in chunk:
+            raise RuntimeError(chunk["error"])
+
+
 def cmd_quantize(args):
     from backend.cookbook.quantize import (
         QuantizeError,
@@ -541,12 +583,8 @@ def cmd_quantize(args):
               for m in installed}
 
     def create_from_file(name, path):
-        for chunk in ollama_stream(
-            "/api/create", {"model": name, "from": str(path), "stream": True},
-            timeout=3600,
-        ):
-            if "error" in chunk:
-                raise RuntimeError(chunk["error"])
+        print(f"{C['yellow']}Importing {name} into Ollama...{C['reset']}")
+        ollama_import_gguf(name, path)
 
     print(f"{C['yellow']}Quantizing {args.model} -> {plan.target_quant} "
           f"(this can take a while for large models)...{C['reset']}")
@@ -555,6 +593,7 @@ def cmd_quantize(args):
             args.model,
             info=info,
             vram_override_gb=args.vram,
+            requantize=args.requantize,
             list_names=lambda: names,
             quant_levels=lambda: levels,
             create_from_file=create_from_file,
@@ -1501,6 +1540,8 @@ def build_parser(*, include_plugins=True):
         help="Override available VRAM in GB (default: scan hardware)",
     )
     p_quant.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_quant.add_argument("--requantize", action="store_true",
+                         help="Allow quantizing from an already-quantized source (compounds quality loss)")
     p_quant.set_defaults(func=cmd_quantize)
 
     p_ps = sub.add_parser("ps", help="Show running models")
