@@ -1115,6 +1115,20 @@ def cmd_agent(args):
         sys.exit(1)
     plugins = discover()
     pro_variant_fn = lambda model, list_names: get_agent_pro_variant(plugins, model, list_names)
+    if getattr(args, "customize", False):
+        from backend.agent_launch.customize import open_agent_profile
+        from backend.agent_launch.project_profile import load_profile
+        from backend.agent_launch.variant import agent_variant_name
+        try:
+            profile = load_profile(Path(args.dir))
+        except ProfileError as e:
+            eprint(f"{C['red']}{e.reason}{C['reset']}")
+            sys.exit(1)
+        if profile is None:
+            eprint(f"{C['yellow']}No project profile yet - run `lac agent` once first "
+                   f"(it records the model LAC picks), then re-run with --customize.{C['reset']}")
+            sys.exit(1)
+        sys.exit(open_agent_profile(Path(args.dir), agent_variant_name(profile.model)))
     try:
         rc = launch_agent(Path(args.dir), pro_variant_fn=pro_variant_fn,
                           context_override=args.context,
@@ -1609,6 +1623,7 @@ def build_parser(*, include_plugins=True):
     p_agent.add_argument("--context", type=int, default=None, help="Override the agent context window in tokens (floored at the agent-loop minimum)")
     p_agent.add_argument("--model", default=None, help="Pin this project's agent model (recorded in the project profile)")
     p_agent.add_argument("--reselect", action="store_true", help="Ignore the project profile and re-pick a model, updating the profile")
+    p_agent.add_argument("--customize", action="store_true", help="Open this project's LAC agent profile for editing (no launch)")
 
     p_setup = sub.add_parser("setup", help="Provision OpenCode globally for local agents (provider, permissions, commands, plugin)")
     p_setup.add_argument("--undo", action="store_true", help="Restore the OpenCode config from the LAC backup")
