@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 from types import SimpleNamespace
 
 from backend.agent_launch.launcher import launch_agent
@@ -39,7 +39,7 @@ def test_pro_variant_fn_used_when_it_returns_a_name(tmp_path):
         detect_fn=lambda: SimpleNamespace(),
         recommend_fn=lambda info, use_case, top_k: [_rec()],
         ensure_variant_fn=fake_ensure,
-        write_config_fn=lambda pd, model, host: Path(pd),
+        write_config_fn=lambda pd, model, host, permission=None: Path(pd),
         write_commands_fn=lambda pd, pro_available=False: [],
         resolve_bin_fn=lambda: Path("opencode"),
         provider_factory=_prov,
@@ -65,7 +65,7 @@ def test_pro_variant_fn_falls_back_to_agent_variant_when_none(tmp_path):
         detect_fn=lambda: SimpleNamespace(),
         recommend_fn=lambda info, use_case, top_k: [_rec()],
         ensure_variant_fn=fake_ensure,
-        write_config_fn=lambda pd, model, host: Path(pd),
+        write_config_fn=lambda pd, model, host, permission=None: Path(pd),
         write_commands_fn=lambda pd, pro_available=False: [],
         resolve_bin_fn=lambda: Path("opencode"),
         provider_factory=_prov,

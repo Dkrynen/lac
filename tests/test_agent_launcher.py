@@ -29,7 +29,7 @@ def _base_kwargs(events, tmp_path, recs, *, ensure=None):
         list(list_names())            # exercise the names callable
         return f"{base}-agent"
 
-    def fake_write_config(pd, model, host):
+    def fake_write_config(pd, model, host, permission=None):
         events["config"] = (Path(pd), model, host)
         return Path(pd) / ".opencode/opencode.json"
 

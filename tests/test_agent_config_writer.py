@@ -157,6 +157,21 @@ def test_write_opencode_config_is_fail_closed(tmp_path):
         assert read_action(secret_path) == "deny", secret_path
 
 
+def test_write_opencode_config_accepts_explicit_permission(tmp_path):
+    from backend.agent_launch.project_profile import preset_permissions
+
+    perms = preset_permissions("dev")
+    out = write_opencode_config(
+        tmp_path, "qwen3:8b-agent", "http://localhost:11434", permission=perms
+    )
+    cfg = json.loads(out.read_text(encoding="utf-8"))
+    assert cfg["permission"] == perms
+    assert cfg["permission"]["edit"] == "allow"
+    assert cfg["permission"]["bash"] == "allow"
+    assert cfg["permission"]["read"]["*.env"] == "deny"
+    assert cfg["model"] == "ollama/qwen3:8b-agent"
+
+
 def test_fail_closed_policy_is_not_shared_between_config_builds():
     first = build_opencode_config(
         "qwen3:8b-agent",

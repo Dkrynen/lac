@@ -1,11 +1,23 @@
 """`lac agent [dir]` -- LAC's local-model coding agent: scan the box, pick an
 agent-capable local model, bake a num_ctx-raised variant, point stock OpenCode at
-it, and launch. The hardware brain is the moat; OpenCode is wrapped, never edited."""
+it, and launch. The hardware brain is the moat; OpenCode is wrapped, never edited.
+
+Per-project profiles (tweakability 3b): the first run records what LAC picked in
+<project>/.opencode/lac-profile.json; later runs honor it instead of re-rolling.
+`--model` pins explicitly, `--reselect` re-picks and updates. A pinned model that
+isn't installed is an honest refusal -- never a silent pull, never a silent substitute.
+"""
 from pathlib import Path
 
 from .variant import ensure_agent_variant, is_installed
 from .config_writer import write_opencode_config, write_agent_commands, write_agent_plugin, write_agent_profiles
 from .opencode_bin import resolve_opencode_binary
+from .project_profile import (
+    ProjectProfile,
+    load_profile as _load_project_profile,
+    preset_permissions,
+    save_profile as _save_project_profile,
+)
 
 # Consider the whole catalog when ranking, then filter to what is actually on disk.
 _CANDIDATE_DEPTH = 100
@@ -31,6 +43,11 @@ def _default_config(start=None):
     return resolve_config(start)
 
 
+def _default_catalog():
+    from backend.cookbook.recommend import load_models
+    return load_models()
+
+
 def _default_launch(cmd, **kwargs):
     """Route the interactive OpenCode launch through the guarded proc wrapper
     (inherits the console; never hides it)."""
@@ -49,6 +66,14 @@ def _installed_names(provider) -> list[str]:
     return [n for n in out if n]
 
 
+def _clamped_context(request, floor, out) -> int:
+    num_ctx = max(int(request), floor)
+    if int(request) < floor:
+        out("  [!] context %s is below the agent-loop floor; using %s."
+            % (request, floor))
+    return num_ctx
+
+
 def launch_agent(project_dir, *,
                  detect_fn=_default_detect,
                  recommend_fn=_default_recommend,
@@ -62,6 +87,11 @@ def launch_agent(project_dir, *,
                  launch_fn=_default_launch,
                  pro_variant_fn=None,
                  context_override=None,
+                 model_pin=None,
+                 reselect=False,
+                 load_profile_fn=None,
+                 save_profile_fn=None,
+                 catalog_fn=None,
                  out=print) -> int:
     from backend.cookbook.recommend import (
         AGENT_MIN_CONTEXT, AGENT_PROMPT_BUDGET_FRACTION,
@@ -71,45 +101,89 @@ def launch_agent(project_dir, *,
     cfg = config_fn(project_dir)
     host = cfg.ollama_host
 
-    info = detect_fn()
-    recs = recommend_fn(info, use_case="agent", top_k=_CANDIDATE_DEPTH)
-    if not recs:
-        out("No agent-capable local model fits this machine. "
-            "Try installing a 7B+ tool-calling model (e.g. `ollama pull qwen3:8b`) "
-            "and re-run `lac agent`.")
-        return 1
+    load_profile = load_profile_fn if load_profile_fn is not None else _load_project_profile
+    save_profile = save_profile_fn if save_profile_fn is not None else _save_project_profile
 
     provider = provider_factory()
     installed = _installed_names(provider)
 
-    # Rank by fit for the box, but only ever run a model the user already has:
-    # building a variant from an absent base makes Ollama pull it (GBs, unasked).
-    rec = next((r for r in recs if is_installed(r.model.id, installed)), None)
-    if rec is None:
-        best = recs[0]
-        out("None of the agent-capable models for this machine are installed.")
-        out("LAC's best fit for your box is %s. To use it:" % best.model.id)
-        out("    ollama pull %s" % best.model.id)
-        alternatives = [r.model.id for r in recs[1:4]]
-        if alternatives:
-            out("Or a lighter option: %s" % ", ".join(alternatives))
-        out("Then re-run `lac agent`.")
-        return 1
+    existing = load_profile(project_dir)
+    profile = None if reselect else existing
+    preset = existing.preset if existing is not None else "strict"
+    rec = None
 
-    base = rec.model.id
-    if context_override is not None:
-        num_ctx = max(int(context_override), AGENT_MIN_CONTEXT)
-        if int(context_override) < AGENT_MIN_CONTEXT:
-            out("  [!] --context %s is below the agent-loop floor; using %s."
-                % (context_override, AGENT_MIN_CONTEXT))
+    if model_pin is not None:
+        catalog = catalog_fn() if catalog_fn is not None else _default_catalog()
+        if not any(getattr(m, "id", None) == model_pin for m in catalog):
+            out("Unknown model '%s'. LAC pins models it knows - see `lac browse`."
+                % model_pin)
+            return 1
+        if not is_installed(model_pin, installed):
+            out("%s is not installed. Run `lac pull %s` first, then re-run "
+                "`lac agent --model %s`." % (model_pin, model_pin, model_pin))
+            return 1
+        base = model_pin
+        if context_override is not None:
+            num_ctx = _clamped_context(context_override, AGENT_MIN_CONTEXT, out)
+        elif profile is not None and profile.context:
+            num_ctx = max(int(profile.context), AGENT_MIN_CONTEXT)
+        else:
+            num_ctx = AGENT_MIN_CONTEXT
+        save_profile(project_dir, ProjectProfile(model=base, context=num_ctx, preset=preset))
+        out("Pinned %s as this project's agent model." % base)
+
+    elif profile is not None:
+        if not is_installed(profile.model, installed):
+            out("%s (pinned in this project's profile) is not installed. Run "
+                "`lac pull %s` - or `lac agent --reselect` to pick a different model."
+                % (profile.model, profile.model))
+            return 1
+        base = profile.model
+        ctx_request = context_override if context_override is not None else profile.context
+        if ctx_request is not None:
+            num_ctx = _clamped_context(ctx_request, AGENT_MIN_CONTEXT, out)
+        else:
+            num_ctx = AGENT_MIN_CONTEXT
+        out("Using project profile: %s (pinned) - `lac agent --reselect` to re-pick."
+            % base)
+
     else:
-        num_ctx = max(int(rec.context_used), AGENT_MIN_CONTEXT)
+        info = detect_fn()
+        recs = recommend_fn(info, use_case="agent", top_k=_CANDIDATE_DEPTH)
+        if not recs:
+            out("No agent-capable local model fits this machine. "
+                "Try installing a 7B+ tool-calling model (e.g. `ollama pull qwen3:8b`) "
+                "and re-run `lac agent`.")
+            return 1
 
-    # Rank-0 is the best fit for the box; if it isn't installed, say so rather than
-    # quietly running something worse.
-    if rec is not recs[0]:
-        out("Using %s (installed). A better fit for your box is %s - "
-            "`ollama pull %s` to use it." % (base, recs[0].model.id, recs[0].model.id))
+        # Rank by fit for the box, but only ever run a model the user already has:
+        # building a variant from an absent base makes Ollama pull it (GBs, unasked).
+        rec = next((r for r in recs if is_installed(r.model.id, installed)), None)
+        if rec is None:
+            best = recs[0]
+            out("None of the agent-capable models for this machine are installed.")
+            out("LAC's best fit for your box is %s. To use it:" % best.model.id)
+            out("    ollama pull %s" % best.model.id)
+            alternatives = [r.model.id for r in recs[1:4]]
+            if alternatives:
+                out("Or a lighter option: %s" % ", ".join(alternatives))
+            out("Then re-run `lac agent`.")
+            return 1
+
+        base = rec.model.id
+        if context_override is not None:
+            num_ctx = _clamped_context(context_override, AGENT_MIN_CONTEXT, out)
+        else:
+            num_ctx = max(int(rec.context_used), AGENT_MIN_CONTEXT)
+
+        # Rank-0 is the best fit for the box; if it isn't installed, say so rather
+        # than quietly running something worse.
+        if rec is not recs[0]:
+            out("Using %s (installed). A better fit for your box is %s - "
+                "`ollama pull %s` to use it." % (base, recs[0].model.id, recs[0].model.id))
+
+        save_profile(project_dir, ProjectProfile(model=base, context=num_ctx, preset=preset))
+        out("Recorded project profile: %s (`lac agent --reselect` to re-pick)." % base)
 
     pro_available = pro_variant_fn is not None
     variant = None
@@ -120,7 +194,7 @@ def launch_agent(project_dir, *,
                                     list_names=lambda: installed,
                                     create=provider.create)
 
-    write_config_fn(project_dir, variant, host)
+    write_config_fn(project_dir, variant, host, permission=preset_permissions(preset))
     write_commands_fn(project_dir, pro_available=pro_available)
     write_agent_plugin(project_dir)
     write_profiles_fn(project_dir, variant)
@@ -129,13 +203,17 @@ def launch_agent(project_dir, *,
     # num_ctx alone overstates what the agent gets: Ollama truncates the input
     # prompt at ~num_ctx/2, so report the budget the user actually has.
     prompt_budget = int(num_ctx * AGENT_PROMPT_BUDGET_FRACTION)
-    out("LAC picked + prepared %s for your box (%s score %s, num_ctx %s, "
-        "~%s tokens of usable prompt). Launching OpenCode..."
-        % (base, getattr(rec, "speed_source", "estimated"),
-           getattr(rec, "score", "?"), num_ctx, prompt_budget))
-    warning = (rec.details or {}).get("agent_warning")
-    if warning:
-        out("  [!] " + warning)
+    if rec is not None:
+        out("LAC picked + prepared %s for your box (%s score %s, num_ctx %s, "
+            "~%s tokens of usable prompt). Launching OpenCode..."
+            % (base, getattr(rec, "speed_source", "estimated"),
+               getattr(rec, "score", "?"), num_ctx, prompt_budget))
+        warning = (rec.details or {}).get("agent_warning")
+        if warning:
+            out("  [!] " + warning)
+    else:
+        out("Launching OpenCode on %s (num_ctx %s, ~%s tokens of usable prompt)..."
+            % (base, num_ctx, prompt_budget))
 
     result = launch_fn([str(binary)], cwd=str(project_dir))
     return getattr(result, "returncode", 0)

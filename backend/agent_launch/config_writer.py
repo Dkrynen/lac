@@ -121,9 +121,11 @@ def _quoted_cli(cli_prefix) -> str:
     return " ".join('"' + part + '"' for part in _resolve_cli_prefix(cli_prefix))
 
 
-def write_opencode_config(project_dir, model: str, ollama_host: str) -> Path:
+def write_opencode_config(project_dir, model: str, ollama_host: str, *,
+                          permission: dict | None = None) -> Path:
     cfg = build_opencode_config(
-        model, ollama_host, permission=_FAIL_CLOSED_PERMISSIONS
+        model, ollama_host,
+        permission=_FAIL_CLOSED_PERMISSIONS if permission is None else permission,
     )
     return _write_config(project_dir, cfg)
 
