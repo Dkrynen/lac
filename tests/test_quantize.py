@@ -210,6 +210,16 @@ def test_run_quantize_failure_deletes_partial_output(tmp_path):
     assert "boom" in exc.value.reason
 
 
+def test_run_quantize_extra_args_precede_positionals(tmp_path):
+    src = tmp_path / "src.gguf"
+    src.write_bytes(GGUF_MAGIC)
+    dst = tmp_path / "out.gguf"
+    fake = _FakeRun(0, write_dst=True)
+    run_quantize(src, dst, "Q3_K_M", quantizer=Path("llama-quantize"), run=fake,
+                 extra_args=["--allow-requantize"])
+    assert fake.cmd == ["llama-quantize", "--allow-requantize", str(src), str(dst), "Q3_K_M"]
+
+
 def _plan(size_gb=10.0):
     return QuantizePlan(target_quant="Q3_K_M", target_bpp=0.48,
                         estimated_size_gb=size_gb, quality_cost=8.0, context=8192)
@@ -290,7 +300,7 @@ def _orchestra(tmp_path, monkeypatch, *,
         quantizer.write_bytes(b"MZ")
     return dict(
         list_names=lambda: list(names),
-        quant_levels=lambda: (levels if levels is not None else {"qwen3:14b": "Q4_K_M"}),
+        quant_levels=lambda: (levels if levels is not None else {"qwen3:14b": "F16"}),
         create_from_file=create if create is not None else (lambda name, path: None),
         store_root=store,
         quantizer=str(quantizer) if quantizer else None,
@@ -396,3 +406,18 @@ def test_quantize_model_import_failure_cleans_staging(tmp_path, monkeypatch):
         quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
     staging = tmp_path / "staging"
     assert not staging.exists() or not any(staging.iterdir())
+
+
+def test_quantize_model_refuses_requantize_without_opt_in(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch, levels={"qwen3:14b": "Q4_K_M"})
+    with pytest.raises(QuantizeRefusal) as exc:
+        quantize_model("qwen3:14b", vram_override_gb=8.0, **kw)
+    assert "already quantized" in exc.value.reason
+    assert "--requantize" in exc.value.reason
+
+
+def test_quantize_model_requantize_opt_in_runs_with_flag(tmp_path, monkeypatch):
+    kw = _orchestra(tmp_path, monkeypatch, levels={"qwen3:14b": "Q4_K_M"})
+    result = quantize_model("qwen3:14b", vram_override_gb=8.0, requantize=True, **kw)
+    assert result.variant == "qwen3:14b-q3_k_m-fit"
+    assert "--allow-requantize" in kw["run"].cmd

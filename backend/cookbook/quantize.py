@@ -222,10 +222,10 @@ def find_quantizer(*, override: str | None = None) -> Path:
 
 
 def run_quantize(src: Path, dst: Path, quant_type: str, *,
-                 quantizer: Path, run=proc.run) -> None:
+                 quantizer: Path, run=proc.run, extra_args=None) -> None:
     """Run the quantizer to completion; delete any partial output on failure."""
-    result = run([str(quantizer), str(src), str(dst), quant_type],
-                 capture_output=True, text=True)
+    cmd = [str(quantizer), *(extra_args or []), str(src), str(dst), quant_type]
+    result = run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         if Path(dst).exists():
             Path(dst).unlink()
@@ -292,6 +292,7 @@ def _quant_bpp(quant_name: str) -> float | None:
 def quantize_model(model_id: str, *,
                    info=None,
                    vram_override_gb: float | None = None,
+                   requantize: bool = False,
                    list_names: Callable[[], Iterable[str]],
                    quant_levels: Callable[[], dict],
                    create_from_file: Callable[[str, Path], None],
@@ -342,6 +343,15 @@ def quantize_model(model_id: str, *,
             f"{model_id} is already at {source_level}; re-quantizing to "
             f"{plan.target_quant} cannot improve it."
         )
+    extra_args: list[str] = []
+    if source_bpp < QUANTS[0].bpp:
+        if not requantize:
+            raise QuantizeRefusal(
+                f"{model_id} is already quantized ({source_level}). Quantizing "
+                f"from a quant compounds quality loss — re-run with --requantize "
+                f"to accept that, or quantize from an F16 source instead."
+            )
+        extra_args = ["--allow-requantize"]
     src = resolve_source_gguf(model_id, store_root=store_root)
     root = Path(store_root) if store_root is not None else default_store_root()
     check_disk_space(STAGING_DIR, root, required_space_gb(plan), disk_usage=disk_usage)
@@ -351,7 +361,7 @@ def quantize_model(model_id: str, *,
     staged = STAGING_DIR / f"{safe}-{plan.target_quant.lower()}.gguf"
     try:
         run_quantize(src, staged, LLAMA_QUANT_NAMES.get(plan.target_quant, plan.target_quant),
-                     quantizer=quantizer_path, run=run)
+                     quantizer=quantizer_path, run=run, extra_args=extra_args)
         create_from_file(variant, staged)
         entry = {
             "id": variant,
