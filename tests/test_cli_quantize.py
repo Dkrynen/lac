@@ -20,6 +20,14 @@ def test_parser_accepts_quantize_args():
     assert args.model == "qwen3:14b"
     assert args.vram == 12.0
     assert args.yes is True
+    assert args.requantize is False
+
+
+def test_parser_accepts_requantize_flag():
+    import cli as cli_mod
+    parser = cli_mod.build_parser(include_plugins=False)
+    args = parser.parse_args(["quantize", "qwen3:14b", "--requantize"])
+    assert args.requantize is True
 
 
 def test_cmd_quantize_refusal_prints_reason_and_exits(monkeypatch, capsys):
@@ -100,3 +108,29 @@ def test_recommend_model_quantize_to_fit_states_limit(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "lac quantize qwen3.6:27b" not in out
+
+
+def test_cmd_quantize_passes_requantize_flag(monkeypatch, capsys):
+    import cli as cli_mod
+    import backend.cookbook.quantize as quantize_mod
+    from backend.cookbook.quantize import QuantizePlan, QuantizeResult
+
+    plan = QuantizePlan(target_quant="Q3_K_M", target_bpp=0.48,
+                        estimated_size_gb=7.1, quality_cost=8.0, context=4096)
+    captured = {}
+
+    def fake_quantize(model_id, **kw):
+        captured.update(kw)
+        return QuantizeResult(variant="qwen3:14b-q3_k_m-fit", plan=plan,
+                              source=model_id, catalog_id="qwen3:14b-q3_k_m-fit")
+
+    monkeypatch.setattr(quantize_mod, "quantize_model", fake_quantize)
+    monkeypatch.setattr(cli_mod, "ollama", lambda method, path, body=None, timeout=30: {
+        "models": [{"name": "qwen3:14b:latest",
+                    "details": {"quantization_level": "Q4_K_M"}}],
+    })
+
+    parser = cli_mod.build_parser(include_plugins=False)
+    args = parser.parse_args(["quantize", "qwen3:14b", "--vram", "8", "-y", "--requantize"])
+    cli_mod.cmd_quantize(args)
+    assert captured["requantize"] is True
