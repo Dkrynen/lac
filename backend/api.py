@@ -21,17 +21,19 @@ except ImportError:
     __github_url__ = "https://github.com/Dkrynen/model-hub"
     __download_url__ = "https://github.com/Dkrynen/model-hub/releases"
 
+from . import storage
+
 app = Flask(__name__, static_folder="../frontend", static_url_path="", template_folder="../frontend")
 
-PULL_PROGRESS = {}
-
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+def _get_ollama_host() -> str:
+    return storage.get_setting("ollama_host") or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
 
 def _ollama_request(method: str, path: str, json_body: Optional[dict] = None, stream: bool = False):
     import urllib.request
     import urllib.error
-    url = f"{OLLAMA_HOST}{path}"
+    host = _get_ollama_host()
+    url = f"{host}{path}"
     data = json.dumps(json_body).encode() if json_body else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
@@ -133,12 +135,16 @@ def api_models():
 
 @app.route("/api/ollama/status")
 def ollama_status():
-    resp = _ollama_request("GET", "/api/tags")
-    if resp is None:
+    version_resp = _ollama_request("GET", "/api/version")
+    tags_resp = _ollama_request("GET", "/api/tags")
+    if tags_resp is None:
         return jsonify({"running": False, "version": None})
+    version = "unknown"
+    if version_resp and isinstance(version_resp, dict):
+        version = version_resp.get("version", "unknown")
     return jsonify({
         "running": True,
-        "version": resp.get("version", "unknown"),
+        "version": version,
     })
 
 
@@ -169,7 +175,8 @@ def ollama_pull():
     def generate():
         import urllib.request
         import urllib.error
-        url = f"{OLLAMA_HOST}/api/pull"
+        host = _get_ollama_host()
+        url = f"{host}/api/pull"
         body = json.dumps({"name": model_name}).encode()
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
@@ -216,11 +223,19 @@ def ollama_chat():
     if not model or not messages:
         return jsonify({"error": "Model and messages required"}), 400
 
+    options = data.get("options", {})
+    allowed = {"temperature", "top_p", "top_k", "repeat_penalty", "num_predict", "stop", "seed", "mirostat", "mirostat_tau", "mirostat_eta"}
+    clean_opts = {k: v for k, v in options.items() if k in allowed and v is not None}
+
     def generate():
         import urllib.request
         import urllib.error
-        url = f"{OLLAMA_HOST}/api/chat"
-        body = json.dumps({"model": model, "messages": messages, "stream": True}).encode()
+        host = _get_ollama_host()
+        url = f"{host}/api/chat"
+        payload = {"model": model, "messages": messages, "stream": True}
+        if clean_opts:
+            payload["options"] = clean_opts
+        body = json.dumps(payload).encode()
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         try:
@@ -244,11 +259,23 @@ def ollama_chat():
 
 @app.route("/api/ollama/check-install")
 def ollama_check_install():
+    import shutil
+    ollama_path = shutil.which("ollama")
     url = "https://ollama.com/download"
     system = platform.system().lower()
-    if system == "windows":
-        return jsonify({"installed": False, "download_url": url, "instructions": "Download and run the Ollama installer from ollama.com/download"})
-    return jsonify({"installed": False, "download_url": url})
+    if ollama_path:
+        try:
+            r = subprocess.run([ollama_path, "--version"], capture_output=True, text=True, timeout=5)
+            version = r.stdout.strip() or r.stderr.strip() or "unknown"
+        except Exception:
+            version = "unknown"
+        return jsonify({"installed": True, "path": ollama_path, "version": version, "download_url": url})
+    urls = {
+        "windows": "https://ollama.com/download/windows",
+        "darwin": "https://ollama.com/download/mac",
+        "linux": "https://ollama.com/download/linux",
+    }
+    return jsonify({"installed": False, "download_url": urls.get(system, url), "instructions": f"Download and install Ollama from ollama.com/download for your OS."})
 
 
 @app.route("/api/system/ollama-path")
@@ -264,9 +291,13 @@ def api_version():
         "version": APP_VERSION,
         "github_url": __github_url__,
         "download_url": __download_url__,
-        "app_name": "Model Hub",
+        "app_name": "Leaf",
     })
 
+
+def _parse_version(v: str) -> tuple:
+    parts = v.strip().lstrip("v").split(".")
+    return tuple(int(p) if p.isdigit() else p for p in parts)
 
 @app.route("/api/system/check-update")
 def api_check_update():
@@ -282,7 +313,7 @@ def api_check_update():
         resp = urllib.request.urlopen(req, timeout=5)
         data = _json.loads(resp.read().decode())
         latest = data.get("tag_name", "").lstrip("v")
-        if latest and latest != current:
+        if latest and _parse_version(latest) > _parse_version(current):
             return jsonify({
                 "update_available": True,
                 "latest_version": latest,
@@ -401,9 +432,9 @@ def api_library_browse():
             sys_info = detect()
             system_vram = sys_info.total_vram_gb or (sys_info.gpus[0].vram_gb if sys_info.gpus else 0)
             if compatible == "gpu":
-                models = [m for m in models if m.get("vram_q4", 999) > 0 and m["vram_q4"] <= system_vram * 0.9]
+                models = [m for m in models if m.get("vram_q4", 0) > 0 and m.get("vram_q4", 0) <= system_vram * 0.9]
             elif compatible == "cpu":
-                models = [m for m in models if m.get("vram_q4", 999) > 0 and m["vram_q4"] > system_vram]
+                models = [m for m in models if m.get("vram_q4", 0) > 0 and m.get("vram_q4", 0) > system_vram]
             elif compatible == "any":
                 pass
         except Exception:
@@ -489,6 +520,105 @@ def ollama_ps():
             "digest_short": (m.get("digest") or "")[:12],
         })
     return jsonify({"running": True, "models": models})
+
+
+@app.route("/api/sessions")
+def api_list_sessions():
+    sessions = storage.list_sessions()
+    return jsonify([
+        {
+            "id": s.id, "name": s.name, "model": s.model,
+            "system_prompt": s.system_prompt,
+            "message_count": s.message_count,
+            "created_at": s.created_at,
+            "updated_at": s.updated_at,
+        }
+        for s in sessions
+    ])
+
+
+@app.route("/api/sessions", methods=["POST"])
+def api_create_session():
+    data = request.get_json() or {}
+    sess = storage.create_session(
+        name=data.get("name", ""),
+        model=data.get("model", ""),
+        system_prompt=data.get("system_prompt", ""),
+    )
+    return jsonify({"id": sess.id, "name": sess.name, "model": sess.model, "system_prompt": sess.system_prompt}), 201
+
+
+@app.route("/api/sessions/<session_id>")
+def api_get_session(session_id: str):
+    sess = storage.get_session(session_id)
+    if not sess:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify({
+        "id": sess.id, "name": sess.name, "model": sess.model,
+        "system_prompt": sess.system_prompt, "context": sess.context,
+        "message_count": sess.message_count,
+        "created_at": sess.created_at, "updated_at": sess.updated_at,
+    })
+
+
+@app.route("/api/sessions/<session_id>", methods=["PATCH"])
+def api_update_session(session_id: str):
+    data = request.get_json() or {}
+    storage.update_session(session_id, **data)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/sessions/<session_id>", methods=["DELETE"])
+def api_delete_session(session_id: str):
+    storage.delete_session(session_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/sessions/<session_id>/messages")
+def api_get_messages(session_id: str):
+    msgs = storage.get_messages(session_id)
+    return jsonify([
+        {"id": m.id, "role": m.role, "content": m.content, "timestamp": m.timestamp}
+        for m in msgs
+    ])
+
+
+@app.route("/api/sessions/<session_id>/messages", methods=["POST"])
+def api_add_message(session_id: str):
+    data = request.get_json() or {}
+    role = data.get("role", "")
+    content = data.get("content", "")
+    if not role or not content:
+        return jsonify({"error": "role and content required"}), 400
+    m = storage.add_message(session_id, role, content)
+    return jsonify({"id": m.id, "role": m.role, "content": m.content, "timestamp": m.timestamp}), 201
+
+
+@app.route("/api/sessions/<session_id>/export")
+def api_export_session(session_id: str):
+    data = storage.export_session_json(session_id)
+    if not data:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify(data)
+
+
+@app.route("/api/sessions/import", methods=["POST"])
+def api_import_session():
+    data = request.get_json() or {}
+    sess = storage.import_session_json(data)
+    return jsonify({"id": sess.id, "name": sess.name}), 201
+
+
+@app.route("/api/settings")
+def api_get_settings():
+    return jsonify(storage.get_settings_with_defaults())
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_set_settings():
+    data = request.get_json() or {}
+    storage.set_settings(data)
+    return jsonify({"ok": True})
 
 
 def run_server(host="127.0.0.1", port=5050, debug=False):

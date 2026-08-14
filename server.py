@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import signal
 import webbrowser
 import threading
 import time
@@ -15,6 +16,22 @@ HOST = "127.0.0.1"
 PORT = 5050
 
 _here = Path(__file__).parent
+PID_FILE = _here / "model-hub.pid"
+
+
+def write_pid():
+    try:
+        PID_FILE.write_text(str(os.getpid()))
+    except Exception:
+        pass
+
+
+def cleanup_pid():
+    try:
+        if PID_FILE.exists():
+            PID_FILE.unlink()
+    except Exception:
+        pass
 
 
 def get_version():
@@ -25,6 +42,10 @@ def get_version():
         return "0.0.0"
 
 
+def _parse_version(v: str) -> tuple:
+    parts = v.strip().lstrip("v").split(".")
+    return tuple(int(p) if p.isdigit() else p for p in parts)
+
 def check_for_update(current_version: str) -> dict | None:
     try:
         url = "https://api.github.com/repos/Dkrynen/model-hub/releases/latest"
@@ -33,7 +54,7 @@ def check_for_update(current_version: str) -> dict | None:
         resp = urllib.request.urlopen(req, timeout=5)
         data = json.loads(resp.read().decode())
         latest = data.get("tag_name", "").lstrip("v")
-        if latest and latest != current_version:
+        if latest and _parse_version(latest) > _parse_version(current_version):
             return {
                 "latest_version": latest,
                 "download_url": data.get("html_url", ""),
@@ -49,14 +70,32 @@ def ollama_is_installed() -> bool:
     return shutil.which("ollama") is not None
 
 
+def stop_existing():
+    if not PID_FILE.exists():
+        return
+    try:
+        old_pid = int(PID_FILE.read_text().strip())
+        if old_pid == os.getpid():
+            return
+        if sys.platform == "win32":
+            os.system(f"taskkill /F /PID {old_pid} 2>nul")
+        else:
+            os.kill(old_pid, signal.SIGTERM)
+        time.sleep(1)
+    except Exception:
+        pass
+
+
 def main():
+    stop_existing()
+    write_pid()
     version = get_version()
     from backend.api import run_server
 
     print()
     print("  +------------------------------------------+")
-    print(f"  |          Model Hub v{version:<20} |")
-    print("  |  Hardware scan + model installer         |")
+    print(f"  |       Leaf v{version:<23} |")
+    print("  |  Local LLM companion for Ollama          |")
     print("  +------------------------------------------+")
     print()
 
@@ -77,7 +116,10 @@ def main():
         webbrowser.open(f"http://{HOST}:{PORT}")
 
     threading.Thread(target=open_browser, daemon=True).start()
-    run_server(host=HOST, port=PORT)
+    try:
+        run_server(host=HOST, port=PORT)
+    finally:
+        cleanup_pid()
 
 
 if __name__ == "__main__":

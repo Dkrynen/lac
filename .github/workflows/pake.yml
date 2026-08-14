@@ -1,0 +1,88 @@
+name: Build Desktop App
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version"
+        required: true
+        default: "2.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            suffix: linux-amd64
+          - os: windows-latest
+            suffix: windows-x64
+          - os: macos-latest
+            suffix: macos-universal
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Start backend server
+        run: |
+          pip install flask
+          python server.py &
+          sleep 3
+          curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5050 || echo "Server started"
+
+      - name: Install pake-cli
+        run: npm install -g pake-cli
+
+      - name: Build desktop app
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version || '2.0.0' }}"
+          ICON=""
+          [ -f icon.png ] && ICON="--icon icon.png"
+
+          pake http://127.0.0.1:5050 --name "Model Hub" \
+            --width 1200 --height 800 \
+            --app-version "$VERSION" $ICON
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-hub-${{ matrix.suffix }}
+          path: |
+            Model Hub*
+            model-hub*
+          if-no-files-found: warn
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Model Hub*
+            model-hub*
+          fail_on_unmatched_files: false

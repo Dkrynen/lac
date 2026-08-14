@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "model-hub"
+version = "2.0.0"
+description = "Local LLM model browser, installer, and chat client"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "flask>=3.0",
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.scripts]
+model-hub = "backend.cli_main:main"
+model-hub-server = "backend.server_launcher:main"
+
+[tool.setuptools.packages.find]
+include = ["backend*"]

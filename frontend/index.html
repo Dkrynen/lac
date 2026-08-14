@@ -4,7 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Model Hub</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
 </head>
 <body>
 <div class="sidebar" id="sidebar">
@@ -19,6 +22,8 @@
     <a data-page="models" href="#models">Installed</a>
     <a data-page="downloads" href="#downloads">Downloads</a>
     <a data-page="chat" href="#chat">Chat</a>
+    <a data-page="sessions" href="#sessions">Sessions</a>
+    <a data-page="settings" href="#settings">Settings</a>
   </nav>
   <div class="sidebar-footer">
     <div id="ollama-badge" class="badge-offline">Ollama: checking...</div>
@@ -48,9 +53,22 @@
       <h3>Installed Models</h3>
       <div class="card-body"><div class="spinner"></div></div>
     </div>
+    <div class="card" id="card-library">
+      <h3>Library Status</h3>
+      <div class="card-body"><div class="spinner"></div></div>
+    </div>
+    <div class="card" id="card-running">
+      <h3>Running</h3>
+      <div class="card-body"><div class="spinner"></div></div>
+    </div>
+  </div>
+  <div class="dash-actions">
+    <button class="btn" id="dash-scan">Scan Hardware</button>
+    <button class="btn btn-secondary" id="dash-browse">Browse Models</button>
+    <button class="btn btn-secondary" id="dash-chat">Open Chat</button>
   </div>
   <div class="quick-recs">
-    <h2>Quick Picks</h2>
+    <h2>Top Recommendations</h2>
     <div id="quick-picks"><em>Scan your hardware first.</em></div>
   </div>
 </div>
@@ -146,8 +164,36 @@
   <h1>Chat</h1>
   <div class="chat-controls">
     <select id="chat-model"><option value="">— Select a model —</option></select>
+    <select id="chat-session" class="browse-select" style="min-width:180px">
+      <option value="">Current session</option>
+    </select>
     <button class="btn btn-sm" id="btn-refresh-chat-models">Refresh</button>
     <button class="btn btn-sm btn-secondary" id="btn-clear-chat">Clear</button>
+    <button class="btn btn-sm btn-secondary" id="btn-save-session">Save</button>
+    <button class="btn btn-sm btn-secondary" id="btn-launch-cli" title="Launch CLI for this model">CLI</button>
+    <button class="btn btn-sm btn-secondary" id="btn-toggle-params" title="Model parameters">Params</button>
+  </div>
+  <div class="chat-params" id="chat-params" style="display:none">
+    <div class="param-row">
+      <label>Temperature <span id="param-temp-val">0.7</span></label>
+      <input type="range" id="param-temp" min="0" max="2" step="0.1" value="0.7">
+    </div>
+    <div class="param-row">
+      <label>Top P <span id="param-topp-val">0.9</span></label>
+      <input type="range" id="param-topp" min="0" max="1" step="0.05" value="0.9">
+    </div>
+    <div class="param-row">
+      <label>Top K <span id="param-topk-val">40</span></label>
+      <input type="range" id="param-topk" min="0" max="100" step="1" value="40">
+    </div>
+    <div class="param-row">
+      <label>Repeat Penalty <span id="param-repp-val">1.1</span></label>
+      <input type="range" id="param-repp" min="1" max="2" step="0.05" value="1.1">
+    </div>
+    <div class="param-row">
+      <label>Max Tokens</label>
+      <input type="number" id="param-maxtokens" min="64" max="65536" step="64" value="4096">
+    </div>
   </div>
   <div class="chat-box" id="chat-box">
     <div class="chat-welcome">Select a model above and start chatting.</div>
@@ -156,6 +202,68 @@
     <textarea id="chat-input" rows="2" placeholder="Type a message... (Ctrl+Enter to send)" disabled></textarea>
     <button class="btn" id="chat-send" disabled>Send</button>
     <button class="btn btn-secondary" id="chat-stop" style="display:none">Stop</button>
+  </div>
+</div>
+
+<div id="page-sessions" class="page">
+  <h1>Sessions</h1>
+  <div class="sessions-toolbar">
+    <input type="text" id="sessions-search" placeholder="Filter sessions..." class="search-input">
+    <button class="btn btn-sm" id="btn-refresh-sessions">Refresh</button>
+  </div>
+  <div id="sessions-list"><div class="spinner"></div></div>
+</div>
+
+<div id="page-settings" class="page">
+  <h1>Settings</h1>
+  <div class="settings-section">
+    <div class="settings-group">
+      <h3>General</h3>
+      <div class="setting-row">
+        <label>Default Model</label>
+        <select id="setting-default-model" class="browse-select">
+          <option value="">Auto (first installed)</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label>Default Use Case</label>
+        <select id="setting-default-use-case" class="browse-select">
+          <option value="coding">Coding</option>
+          <option value="general">General</option>
+          <option value="reasoning">Reasoning</option>
+          <option value="chat">Chat</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label>Ollama Host</label>
+        <input type="text" id="setting-ollama-host" class="search-input" placeholder="http://localhost:11434">
+      </div>
+      <div class="setting-row">
+        <label>Max Tokens</label>
+        <input type="number" id="setting-max-tokens" class="search-input" style="width:120px" min="512" max="131072" value="4096">
+      </div>
+      <div class="setting-row">
+        <label>Theme</label>
+        <select id="setting-theme" class="browse-select">
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label>Auto-save Sessions</label>
+        <label class="toggle"><input type="checkbox" id="setting-auto-save" checked> <span>Enabled</span></label>
+      </div>
+      <div style="margin-top:16px">
+        <button class="btn" id="btn-save-settings">Save Settings</button>
+        <span id="settings-saved-msg" style="color:var(--green);margin-left:12px;display:none">Saved!</span>
+      </div>
+    </div>
+    <div class="settings-group">
+      <h3>Data</h3>
+      <p style="font-size:0.85rem;color:var(--muted);margin-bottom:12px">Settings, sessions, and chat history are stored locally at <code>~/.model-hub/</code></p>
+      <button class="btn btn-sm btn-secondary" id="btn-export-all">Export All Sessions</button>
+      <button class="btn btn-sm btn-secondary" id="btn-import-session" style="margin-left:8px">Import Session</button>
+    </div>
   </div>
 </div>
 
